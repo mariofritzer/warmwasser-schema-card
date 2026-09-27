@@ -1,0 +1,6 @@
+{
+  "name": "Warmwasser Schema Card",
+  "filename": "warmwasser-schema-card.js",
+  "render_readme": true,
+  "homeassistant": "2023.9.0"
+}

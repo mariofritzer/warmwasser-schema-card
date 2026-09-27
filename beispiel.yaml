@@ -1,0 +1,128 @@
+type: custom:warmwasser-schema-card
+grid_options:
+  columns: full
+
+# ─────────────────────────────────────────────────────────────
+# Jedes Gerät und jeder Wert erscheint nur, wenn eine Entität
+# angegeben ist. Nicht vorhandenes weglassen/auskommentieren.
+# Alles lässt sich auch im grafischen Editor einstellen.
+# ─────────────────────────────────────────────────────────────
+
+titel: Warmwasser
+hersteller: HOVAL
+name_wp: WP
+name_fm: FM
+# sprache: auto        # auto, de oder en
+
+# Speicherfühler von oben nach unten (hoehe optional, 0–100 %)
+fuehler:
+  - { name: SF1, entity: sensor.hoval_warmwasser_ist_sf }
+  - { name: SF2, entity: sensor.hoval_warmwasser_ist_sf2 }
+  - { name: PF1, entity: sensor.hoval_warmwasser_pufferfuhler }
+  - { name: PF2, entity: sensor.hoval_warmwasser_pufferfuhler_2 }
+
+# typ: trennblech, schicht, kombi, hygiene, getrennt
+speicher:
+  typ: trennblech
+  volumen: 800
+  trennung: 50
+t_min: 40
+t_max: 55
+
+# aussen: sensor.aussentemperatur
+# pv: sensor.pv_leistung
+
+# Wärmepumpe – typ: luft, sole, wasser
+wp:
+  typ: luft
+  leistung: sensor.hoval_elektr_leistungsaufnahme
+  schwelle: 100
+  # betrieb: binary_sensor.wp_verdichter
+  # vorlauf: sensor.wp_vorlauf
+  # ruecklauf: sensor.wp_ruecklauf
+  # waerme: sensor.wp_waermeleistung
+  # wmz: sensor.wp_waermemenge          # Wärmemengenzähler (kWh)
+  # cop: sensor.wp_cop
+  # ventil: sensor.wp_betriebsstatus    # Umschaltventil: on/off, 0–100 oder Text (Warmwasser/Heizung)
+  # kuehlen: binary_sensor.wp_kuehlen
+  # sperre: binary_sensor.evu_sperre
+  # abtauen: binary_sensor.wp_abtauen
+  # sg_ready: sensor.sg_ready_status
+  # quelle_ein: sensor.wp_quelle_ein    # Luft/Sole/Wasser in die WP
+  # quelle_aus: sensor.wp_quelle_aus
+  # quelle_pumpe: switch.solepumpe
+
+heizstab_oben:
+  name: Heizstab oben
+  stufe: number.askoheat_b0_a7_32_ff_b0_ec_set_heater_step
+  temp: sensor.askoheat_b0_a7_32_ff_b0_ec_internal_temp_sensor
+  leistung: sensor.asko_heizstab_oben_power
+heizstab_unten:
+  name: Heizstab unten
+  stufe: number.askoheat_b0_a7_32_fd_dd_58_set_heater_step
+  temp: sensor.askoheat_b0_a7_32_fd_dd_58_internal_temp_sensor
+  leistung: sensor.asko_heizstab_unten_power
+hs_stufen: 7
+
+# Zusatzwärme – typ: kamin, holzvergaser, pellet, gas, oel, fernwaerme, bhkw
+kamin:
+  typ: kamin
+  name: Kamin
+  temp: sensor.temperatur_kaminofen
+  trend: sensor.kaminofen_trend
+  modus: input_select.kamin_pumpenmodus
+  pumpe: switch.knx_interface_kaminpumpe
+  warm: 30
+  feuer: 35
+  # brenner: binary_sensor.brenner       # statt Temperatur-Schwellen
+  # abgas: sensor.kamin_abgas
+  # zuluft: sensor.kamin_zuluftklappe
+  # wmz: sensor.kamin_waermemenge
+  # leistung: sensor.kessel_leistung
+  # leistung_el: sensor.bhkw_el_leistung # nur BHKW
+
+# solar:
+#   kollektor: sensor.kollektor_temperatur
+#   pumpe: switch.solarpumpe
+#   leistung: sensor.solar_leistung
+#   wmz: sensor.solar_waermemenge
+
+# Frischwassermodul – "fm: true" zeigt es auch ohne Sensoren
+# fm:
+#   temp: sensor.fm_warmwasser_temperatur
+#   durchfluss: sensor.fm_durchfluss
+#   pumpe: binary_sensor.fm_primaerpumpe
+zirkulationspumpe: switch.knx_interface_zirkulationspumpe
+
+# trinkwasser:
+#   temp: sensor.kaltwasser_temperatur
+#   zaehler: sensor.wasserzaehler
+#   enthaertung: sensor.enthaertung_salz
+
+# Hydraulische Weiche – "weiche: true" oder mit Temperatur
+# weiche:
+#   temp: sensor.weiche_temperatur
+
+# Heizkreise (1–6), Mischer: -100 = nur Rücklauf, 100 = nur Puffer
+# typ: fussboden oder heizkoerper
+heizkreise:
+  - name: HK 1
+    pumpe: sensor.hoval_hk1_pumpe
+    mischer: sensor.hoval_mischer_hk1
+    # vorlauf: sensor.hk1_vorlauf
+    # vorlauf_soll: sensor.hk1_vorlauf_soll
+    # raum: sensor.wohnzimmer_temperatur
+    # wmz: sensor.hk1_waermemenge
+    # typ: fussboden
+  - name: HK 2
+    pumpe: sensor.hoval_hk2_pumpe
+    mischer: sensor.hoval_mischer_hk2
+
+# legionellen:
+#   letzte: sensor.legionellen_letzte_aufheizung
+#   aktiv: binary_sensor.legionellenschutz_aktiv
+#   tage: 7
+
+# energie:
+#   - { name: Wärmepumpe, entity: sensor.wp_energie_heute, icon: mdi:heat-pump }
+#   - { name: Heizstäbe, entity: sensor.heizstab_energie_heute, icon: mdi:heating-coil }
