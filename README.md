@@ -1,10 +1,57 @@
 # Warmwasser Schema Card
 
-🇬🇧 English · [🇩🇪 Deutsch](README.de.md)
-
 An animated hydraulic diagram for Home Assistant: storage tank, fresh water module with circulation, heat pump, immersion heaters, solar thermal, an additional heat source (stove, wood boiler, pellets, gas, oil, district heating, CHP), hydraulic separator and up to six mixed heating circuits.
 
-![Screenshot](images/screenshot.png)
+> ℹ️ **Made in Austria 🇦🇹** – this card was developed in German. The card itself is fully translated and displays everything in English (it follows your Home Assistant language). Only the **configuration keys** are German, e.g. `fuehler` (sensors), `speicher` (tank), `heizkreise` (heating circuits). The easiest way is the **visual editor** – all fields there are labelled in English. The tables below explain every key.
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/screenshot.png" width="260"><br>
+      <b>Light theme</b><br>
+      <sub>Brine heat pump, diverter valve, stove, hydraulic separator</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/screenshot-dark.png" width="260"><br>
+      <b>Dark theme</b><br>
+      <sub>Same system in dark mode</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/example-en.png" width="260"><br>
+      <b>Cooling mode</b><br>
+      <sub>Water heat pump, district heating, 5 circuits</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/ex-minimal.png" width="260"><br>
+      <b>Minimal</b><br>
+      <sub>Stratified buffer tank with one floor heating circuit</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/ex-kombi-pellet-solar.png" width="260"><br>
+      <b>Combi tank</b><br>
+      <sub>Tank-in-tank, pellet boiler, solar thermal</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/ex-hygiene-gas.png" width="260"><br>
+      <b>Hygienic tank</b><br>
+      <sub>Stainless coil, gas boiler, legionella status</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/ex-getrennt-bhkw.png" width="260"><br>
+      <b>Separate tanks</b><br>
+      <sub>Hot water + buffer, CHP, heat pump</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://raw.githubusercontent.com/mariofritzer/warmwasser-schema-card/main/ex-energie-dark.png" width="260"><br>
+      <b>Daily energy</b><br>
+      <sub>Heat pump details, heater, energy bars</sub>
+    </td>
+  </tr>
+</table>
 
 - **Everything is optional:** every device and every single value only appears when you configure an entity for it
 - **Visual editor:** set everything up in the dashboard editor – no YAML required
@@ -46,7 +93,7 @@ fuehler:
   - { name: Bottom, entity: sensor.tank_bottom }
 ```
 
-A complete, commented example is in [`examples/beispiel.yaml`](examples/beispiel.yaml).
+A complete, commented example is in [`beispiel.yaml`](https://github.com/mariofritzer/warmwasser-schema-card/blob/main/beispiel.yaml).
 
 ### General
 
@@ -126,4 +173,6 @@ A complete, commented example is in [`examples/beispiel.yaml`](examples/beispiel
 
 ## License
 
-MIT – see [LICENSE](LICENSE).
+MIT – see [LICENSE](https://github.com/mariofritzer/warmwasser-schema-card/blob/main/LICENSE).
+
+🇩🇪 Questions in German are welcome too – Fragen gerne auch auf Deutsch.
