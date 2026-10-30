@@ -192,6 +192,10 @@ cards retain their existing paths. See [routing scope and geometry contracts](do
 for supported cases, explicit failures and follow-up work; this adds no layout
 configuration or layout editor.
 
+The [heat-pump/FWM follow-up](docs/complex-pipe-routing.md) routes all seven
+external primary connections together, including crossing bridges. Activation
+still requires internal geometry probes; ordinary cards retain their fixed paths.
+
 Development checks (Node.js 22 or newer; no packages to install):
 
 ```sh

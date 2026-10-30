@@ -68,7 +68,8 @@ test('the connection reference selects both the pipe endpoint and its stub', () 
 
 
 test('valve and separator moved origins remain connected to the routes', () => {
-  const x = card({ ...config(), weiche: true });
+  // Isolate legacy valve/separator geometry; moving WP with FM and a heating circuit is unsupported.
+  const x = card({ ...config(), fm: undefined, weiche: true });
   x._model.components.valve.origin.x += 10;
   x._model.components.separator.origin.y += 10;
   const svg = x._render();
@@ -79,7 +80,8 @@ test('valve and separator moved origins remain connected to the routes', () => {
 });
 
 test('legacy solar and additional heat use buffer tank ports and stubs', () => {
-  const x = card({ ...config(), solar: { pumpe: 'switch.solar' }, zusatzwaerme: { pumpe: 'switch.fire' } });
+  // Solar/additional heat with a moved tank and FM is outside the routing scope.
+  const x = card({ ...config(), fm: undefined, solar: { pumpe: 'switch.solar' }, zusatzwaerme: { pumpe: 'switch.fire' } });
   const b = x._model.components['buffer-tank'];
   assert.ok(b.ports['solar-supply']); assert.ok(b.ports['additional-return']);
   b.origin.x += 10;
@@ -93,7 +95,7 @@ test('legacy solar and additional heat use buffer tank ports and stubs', () => {
 test('tee y coordinates remain on both continuous trunk paths', () => {
   const x = card(); x._model.junctions['supply-tee'].y += 10; x._model.junctions['return-tee'].y += 10;
   const svg = x._render();
-  assert.ok(svg.includes('M326 227V237H270'));
+  assert.ok(svg.includes('M326 227V237H268'));
   assert.ok(svg.includes('M206 340V350H252'));
   assert.ok(svg.includes('M295 237V'));
   assert.ok(svg.includes('V350'));
@@ -212,7 +214,7 @@ test('separate tank FM return uses its left port and rounded connection', () => 
     assert.equal(port.direction, 'left'); assert.equal(f.origin.x + port.x, 336); assert.equal(f.origin.y + port.y, 90);
     assert.deepEqual([f.origin.x + port.stub.x, f.origin.y + port.stub.y, port.stub.width, port.stub.height], [332, 84, 10, 12]);
     const y = m.geometry.bo - 14, radius = Math.min(8, Math.max(0, (y - 90) / 2));
-    assert.ok(x._render().includes(`M336 90H${315 + radius}Q315 90 315 ${90 + radius}V${y - radius}Q315 ${y} ${315 - radius} ${y}H206`));
+    assert.ok(x._render().includes(`M336 90H${(y > 128 ? 322 : 315) + radius}Q${y > 128 ? 322 : 315} 90 ${y > 128 ? 322 : 315} ${90 + radius}V${y - radius}Q${y > 128 ? 322 : 315} ${y} ${(y > 128 ? 322 : 315) - radius} ${y}H206`));
   }
   const shared = card(config('schicht'))._model.components.fm;
   assert.equal(shared.ports.return.direction, 'right');
@@ -239,7 +241,7 @@ test('upper heater and WP port use config-only crowded geometry', () => {
     }
   }
   const x = card({ ...config('getrennt', 35), heizstab_oben: { leistung: 'sensor.heater' } });
-  assert.ok(x._render().includes('V106.5A4 4 0 0 1 300 98.5'));
+  assert.ok(x._render().includes('V108.5A6 6 0 0 1 300 96.5'));
 });
 
 test('moving the FM moves its separate-tank return port, stub and rounded route', () => {
@@ -258,4 +260,28 @@ test('circulation alone activates the same upper heater clearance', () => {
   assert.equal(x._model.geometry.ro, 62.5);
   assert.equal(x._model.geometry.heaterY, 82.5);
   assert.ok(x._render().includes('M202 82.5h-10l-3-4'));
+});
+
+test('moving the heat source moves its own endpoints and temperature arrows together', () => {
+  for (const typ of ['wasser','sole']) {
+    const x=card({speicher:{typ:'schicht'},wp:{typ,quelle_ein:'sensor.in',quelle_aus:'sensor.out'}});
+    x._hass.states['sensor.in']={state:'10'}; x._hass.states['sensor.out']={state:'5'};
+    x._model.components['heat-source'].origin.x+=20; x._model.components['heat-source'].origin.y+=10;
+    const svg=x._render();
+    assert.ok(svg.includes('<g transform="translate(20 10)"><rect x="382" y="404"'),`${typ}: device`);
+    assert.ok(svg.includes('<g transform="translate(20 10)"><text x="444" y="426" font-size="8.5" class="wt wv wx" data-more="sensor.in">↑ 10.0°</text><text x="444" y="440" font-size="8.5" class="wt wv wx" data-more="sensor.out">↓ 5.0°</text></g>'),`${typ}: arrows and labels`);
+    if (typ==='wasser') {
+      assert.ok(svg.includes('d="M420 545V399'), 'inlet starts at moved source port');
+      assert.ok(svg.includes('V545H450" class="w0"'), 'outlet ends at moved source port');
+    } else assert.ok(svg.includes('V550H420Q420 562 435 562Q450 562 450 550'), 'ground loop follows both moved ports');
+  }
+});
+
+test('moving a heating circuit moves its open arrows, name and pipe endpoints', () => {
+  const x=card({speicher:{typ:'schicht'},heizkreise:[{name:'Test',pumpe:'switch.hk'}]});
+  const branch=x._model.components['heating-circuit-0']; branch.origin.x+=20; branch.origin.y+=10;
+  const svg=x._render();
+  assert.ok(svg.includes('<g transform="translate(20 10)"><path d="M150 539l4 4 4-4M182 543l4-4 4 4" class="wa"/><text x="170" y="564" font-size="10" class="wc wt wv"'), 'arrows and name move with branch');
+  assert.ok(svg.includes('d="M206 558V448H186" class="w0"'), 'return begins at moved branch port');
+  assert.ok(svg.includes('V174V558" class="w0"') || svg.includes('H174V558" class="w0"'), 'supply ends at moved branch port');
 });

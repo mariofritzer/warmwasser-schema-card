@@ -6,9 +6,7 @@
 
 Dieser Schritt baut auf dem Komponentenmodell aus [PR #3](https://github.com/mariofritzer/warmwasser-schema-card/pull/3)
 auf, konkret Commit `d993115e35798809e6643186ce4e3fa356500527`.
-Solange #3 offen ist, hängt der Routing-PR davon ab. Nach dessen Merge ist der
-Routing-Branch auf Upstream umzuhängen. Die Referenzausgaben aus v3.0.1 bleiben
-unverändert; die neuen Routertests prüfen zusätzlich veränderte interne Geometrie.
+PR #3 und PR #4 sind inzwischen gemergt. Die WP/FM-Erweiterung ändert gezielt kanonische Primärpfade und deren Referenzausgaben.
 
 Der PR ergänzt einen zentralen Routing-Kern und verwendet ihn tatsächlich für
 Vorlauf und Rücklauf des Frischwassermoduls. Es gibt keine neue Nutzerkonfiguration,
@@ -17,8 +15,7 @@ keine öffentliche Layout-API und keinen visuellen Editor.
 ### Erste unterstützte Darstellung
 
 Automatisches Routing wird aktiv, sobald der Ursprung des FM oder seines
-zugehörigen Speichers intern von `baseOrigin` abweicht. Bei kanonischen Positionen
-verwendet die Karte weiterhin ihre bisherigen SVG-Zeichenrezepte.
+zugehörigen Speichers intern von `baseOrigin` abweicht. Bei kanonischen Positionen gelten feste SVG-Zeichenrezepte; die WP/FM-Erweiterung ändert diese gezielt für getrennte Speicher mit FM und WP.
 
 Die erste Freigabe gilt für `trennblech`, `schicht` und `getrennt` mit FM, ohne
 WP, Heizkreise, Solar, Zusatzwärme, Zirkulation, Trinkwasseroptionen, Heizstäbe oder
@@ -91,7 +88,7 @@ node --check warmwasser-schema-card.js
 node --test tests/*.test.cjs
 ```
 
-Die bestehenden 459 Golden-Szenarien werden unverändert weitergeprüft. Neue Tests
+Golden-Szenarien werden weitergeprüft; betroffene Ausgaben wurden gezielt aktualisiert. Neue Tests
 untersuchen unter anderem Tangenten, Owner-Escapes, Pflichtpunkt-Reihenfolge,
 Abzweigidentität, Hüllenkollisionen, deterministische Kreuzungen, Statusmeldungen
 und die tatsächliche Verwendung desselben Pfads in Rohrlagen und Animation.
@@ -102,12 +99,11 @@ Ein HTTP-Server muss das Repository-Verzeichnis ausliefern; dann kann die Datei
 über `/tests/helpers/routing-harness.html` geöffnet werden. Geometrieproben in
 diesem Harness sind Entwicklerwerkzeuge und kein Produkt-Layouteditor.
 
-Abschlussprüfung: **515 Tests bestanden**, davon 459 unveränderte Golden-Fälle.
-Syntaxprüfung und `git diff --check` waren erfolgreich. Der GPT-6-Astra-Review
-hat keine offenen blockierenden Befunde im beschriebenen Scope. Im Browser wurden
-alle drei freigegebenen Speichertypen mit verschobenem FM geprüft; Rohrlagen und
-Animation verwenden identische `d`-Attribute, Abschalten der Pumpe entfernt die
-Strömungsanimation und ein blockierter Anschluss zeigt `blocked-port`.
+Der vollständige Testlauf `node --test tests/*.test.cjs` besteht mit 535 Tests. Grenzen zu Brücken und offenen Enden beschreibt die WP/FM-Erweiterung.
+
+Die [folgende WP/FM-Erweiterung](complex-pipe-routing.md) nimmt alle sieben
+äußeren Primärleitungen gemeinsam auf. Die nachstehende Abgrenzung beschreibt
+den ursprünglichen Umfang von PR #4.
 
 Für WP/FM-Kombinationen muss mindestens die obere WP-Ladeleitung mit in denselben
 Kreuzungsdurchlauf aufgenommen werden; ihre heutigen festen Brücken dürfen nicht
@@ -121,10 +117,7 @@ und freie Anordnung aller Anlagenvarianten sind hier nicht zugesichert.
 ### Goal and base
 
 This step builds on the component model in [PR #3](https://github.com/mariofritzer/warmwasser-schema-card/pull/3),
-specifically `d993115e35798809e6643186ce4e3fa356500527`. While #3 remains open,
-the routing PR depends on it. Rebase onto upstream after it merges. The v3.0.1
-reference output stays unchanged; new routing tests additionally exercise altered
-internal geometry.
+specifically `d993115e35798809e6643186ce4e3fa356500527`. PRs #3 and #4 have merged. The heat-pump/FWM extension changes selected canonical primary paths and their reference output.
 
 The PR adds a shared routing core and actually consumes it for the FWM supply and
 return. It adds no user configuration, public layout API or visual editor.
@@ -132,7 +125,7 @@ return. It adds no user configuration, public layout API or visual editor.
 ### Initial supported rendering
 
 Automatic routing activates when the FWM or its associated tank origin differs
-internally from `baseOrigin`. Canonical positions retain the existing SVG recipes.
+internally from `baseOrigin`. Canonical positions use fixed SVG recipes; the heat-pump/FWM extension changes these for separate tanks with an FWM and heat pump.
 
 Initial support covers `trennblech`, `schicht` and `getrennt` with an FWM, without
 a heat pump, heating circuits, solar, additional heat, circulation, domestic-water
@@ -201,7 +194,7 @@ node --check warmwasser-schema-card.js
 node --test tests/*.test.cjs
 ```
 
-The existing 459 golden scenarios remain unchanged. New tests cover tangents,
+Golden scenarios remain checked; affected outputs have targeted updates. New tests cover tangents,
 owner escapes, mandatory-point order, junction identity, envelope collisions,
 deterministic crossings, result statuses and actual reuse of compiled paths
 across pipe layers and animation.
@@ -211,12 +204,11 @@ moved FWM configurations, plus a blocked port. Serve the repository through an
 HTTP server and open `/tests/helpers/routing-harness.html`. Geometry probes are
 development tools, not a product layout editor.
 
-Final verification: **515 tests passed**, including 459 unchanged golden cases.
-Syntax validation and `git diff --check` passed. GPT-6-Astra found no outstanding
-blocking issues within the documented scope. Browser checks covered all three
-supported tank types with a moved FWM: pipe layers and animation had identical
-`d` attributes, switching the pump off removed the flow animation, and a blocked
-port reported `blocked-port`.
+The complete run `node --test tests/*.test.cjs` passes with 535 tests. The heat-pump/FWM extension documents bridge and endpoint limitations.
+
+The [heat-pump/FWM follow-up](complex-pipe-routing.md) includes all seven external
+primary connections together. The following boundary describes the original
+scope of PR #4.
 
 Heat-pump/FWM configurations must include at least the upper heat-pump charging
 pipe in the same crossing pass; its existing fixed bridges cannot remain

@@ -1,16 +1,20 @@
-<!doctype html><html lang="de"><meta charset="utf-8"><title>FM routing inspection</title>
+<!doctype html><html lang="de"><meta charset="utf-8"><title>WP/FM routing inspection</title>
 <style>body{font:14px system-ui;background:#20252b;color:#eee;margin:20px}label{margin-right:1em}input[type=number]{width:5em}button,select,input{font:inherit}main{display:grid;grid-template-columns:1fr 1fr;gap:16px}section{background:#303840;padding:12px;min-width:0}pre{white-space:pre-wrap;color:#ffb5a6}</style>
-<h1>FM routing inspection</h1>
+<h1>WP/FM routing inspection</h1>
 <label>Speicher <select id="type"><option>getrennt</option><option>trennblech</option><option>schicht</option></select></label>
-<label>FM Δx <input id="x" type="number" value="30"></label><label>FM Δy <input id="y" type="number" value="15"></label>
-<label><input id="pump" type="checkbox" checked> Pumpe aktiv</label><label><input id="blocked" type="checkbox"> Port blockieren</label>
+<label>Komponente <select id="component"><option value="fm">FM</option><option value="tank">Speicher</option><option value="wp">Wärmepumpe</option><option value="valve">Ventil</option></select></label>
+<label>Δx <input id="x" type="number" value="60"></label><label>Δy <input id="y" type="number" value="15"></label>
+<label><input id="wp" type="checkbox" checked> Luft-WP</label><label><input id="pump" type="checkbox" checked> FM-Pumpe aktiv</label><label><input id="blocked" type="checkbox"> FM-Port blockieren</label>
 <button id="update">Aktualisieren</button><pre id="error"></pre>
-<main><section><h2>Kanonisch</h2><div id="original"></div></section><section><h2>Verschobenes FM</h2><div id="moved"></div></section></main>
+<main><section><h2>Kanonisch</h2><div id="original"></div></section><section><h2>Verschoben</h2><div id="moved"></div></section></main>
 <script src="../../warmwasser-schema-card.js"></script><script>
 function make(moved) {
- const c=document.createElement('warmwasser-schema-card'); c.setConfig({speicher:{typ:document.querySelector('#type').value},fm:{pumpe:'sensor.pump'}});
- const hass={language:'de',states:{'sensor.pump':{state:document.querySelector('#pump').checked?'on':'off',attributes:{}}}};
- if(moved){c._model.components.fm.origin.x+=Number(document.querySelector('#x').value);c._model.components.fm.origin.y+=Number(document.querySelector('#y').value);
+ const type=document.querySelector('#type').value, withWp=document.querySelector('#wp').checked;
+ const c=document.createElement('warmwasser-schema-card'); c.setConfig({speicher:{typ:type},fm:{pumpe:'sensor.pump'},...(withWp?{wp:{typ:'luft',betrieb:'sensor.wp',ventil:'sensor.valve'}}:{})});
+ const hass={language:'de',states:{'sensor.pump':{state:document.querySelector('#pump').checked?'on':'off',attributes:{}},'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:'on',attributes:{}}}};
+ if(moved){const choice=document.querySelector('#component').value, ids={fm:'fm',tank:type==='getrennt'?'hot-tank':'tank',wp:'wp',valve:'valve'}; const component=c._model.components[ids[choice]];
+ if(!component) throw new Error('Komponente nicht vorhanden: '+ids[choice]);
+ component.origin.x+=Number(document.querySelector('#x').value);component.origin.y+=Number(document.querySelector('#y').value);
  if(document.querySelector('#blocked').checked)c._model.components.blocker={origin:{x:0,y:0},baseOrigin:{x:0,y:0},bounds:{x:0,y:0,width:0,height:0},ports:{},routingAreas:[{x:205,y:35,width:40,height:22}]};}
  c.hass=hass; return c;
 }

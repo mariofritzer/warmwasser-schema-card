@@ -149,6 +149,11 @@ Komponenten. Standardkarten behalten ihre bisherigen Rohrwege. Der
 Fälle, ausdrückliche Fehler und Folgeschritte. Es entstehen keine neue
 Layout-Konfiguration und kein Layout-Editor.
 
+Der [Folgeschritt für WP/FM-Kombinationen](docs/complex-pipe-routing.md) berechnet
+alle sieben äußeren Primärleitungen gemeinsam, einschließlich Kreuzungsbrücken.
+Auch diese Erweiterung wird bisher ausschließlich durch interne Geometrieproben
+aktiviert; normale Karten behalten ihre festen Pfade.
+
 Entwicklungsprüfungen (Node.js ab Version 22; keine Pakete zu installieren):
 
 ```sh
