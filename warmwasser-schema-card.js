@@ -98,6 +98,13 @@ const isEnt = (v) => typeof v === 'string' && ENT.test(v);
 const hasEnt = (o) => !!o && typeof o === 'object' && Object.values(o).some(isEnt);
 const zeigen = (o) => o === true || (!!o && typeof o === 'object' && (o.anzeigen === true || hasEnt(o)));
 const isNum = (v) => v !== null && v !== undefined && v !== '' && typeof v !== 'boolean' && Number.isFinite(Number(v));
+const sensorReader = (h) => {
+  const S = (e) => (e && h.states[e] ? h.states[e].state : 'unknown');
+  const U = (e, d) => (e && h.states[e]?.attributes?.unit_of_measurement) || d;
+  const ON = (e) => { const s = S(e); return s === 'on' || (isNum(s) && Number(s) > 0); };
+  const NUM = (e) => (e && isNum(S(e)) ? Number(S(e)) : 0);
+  return { S, U, ON, NUM };
+};
 const r1 = (n) => Math.round(n * 10) / 10;
 const r2 = (n) => Math.round(n * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -840,10 +847,7 @@ class WarmwasserSchemaCard extends HTMLElement {
 
   _render() {
     const c = this._cfg, h = this._hass, F = c.farben, L = T[sprache(c, h)];
-    const S = (e) => (e && h.states[e] ? h.states[e].state : 'unknown');
-    const U = (e, d) => (e && h.states[e]?.attributes?.unit_of_measurement) || d;
-    const ON = (e) => { const s = S(e); return s === 'on' || (isNum(s) && Number(s) > 0); };
-    const NUM = (e) => (e && isNum(S(e)) ? Number(S(e)) : 0);
+    const { S, U, ON, NUM } = sensorReader(h);
     const more = (e) => (e ? ` data-more="${esc(e)}" class="wx"` : '');
     const titel = c.titel ?? L.titel;
 
