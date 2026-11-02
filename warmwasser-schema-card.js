@@ -814,7 +814,12 @@ function heatPumpState(c, L, F, S, ON, NUM) {
   let vb = null;
   if (W && W.ventil) {
     const s = S(W.ventil), sl = String(s).toLowerCase();
-    if (isNum(s)) vb = clamp(Number(s) > 1 ? Number(s) / 100 : Number(s), 0, 1);
+    // Eigene Ventilwerte (kommagetrennt, ohne Groß-/Kleinschreibung) haben Vorrang
+    // Own valve values (comma-separated, case-insensitive) take precedence
+    const eigen = (v) => v !== undefined && v !== null && String(v).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).includes(sl.trim());
+    if (eigen(W.ventil_oben)) vb = 1;
+    else if (eigen(W.ventil_unten)) vb = 0;
+    else if (isNum(s)) vb = clamp(Number(s) > 1 ? Number(s) / 100 : Number(s), 0, 1);
     else if (sl === 'on' || /warm|ww|dhw|trink|oben|upper|hot/.test(sl)) vb = 1;
     else if (sl === 'off' || /heiz|puffer|unten|lower|heat|buffer|hz/.test(sl)) vb = 0;
     // Optional: Ventile, die umgekehrt melden (z. B. "on" = Heizung) / valves reporting the other way round
@@ -1741,7 +1746,7 @@ const LBL = {
     zirkulationspumpe: 'Zirkulationspumpe', speicher: 'Speicher', typ: 'Typ', volumen: 'Volumen (l)', volumen_ww: 'Volumen Warmwasser (l)',
     trennung: 'Trennung / Boilerhöhe (%)', wp: 'Wärmepumpe', leistung: 'Leistung', schwelle: 'Schwelle (W)', betrieb: 'Betrieb',
     vorlauf: 'Vorlauf', ruecklauf: 'Rücklauf', waerme: 'Wärmeleistung', cop: 'COP', sperre: 'EVU-Sperre', abtauen: 'Abtauen',
-    kuehlen: 'Kühlbetrieb', sg_ready: 'SG-Ready', ventil: 'Umschaltventil', ventil_invertieren: 'Umschaltventil umkehren (oben ↔ unten)', quelle_ein: 'Quelle ein', quelle_aus: 'Quelle aus',
+    kuehlen: 'Kühlbetrieb', sg_ready: 'SG-Ready', ventil: 'Umschaltventil', ventil_oben: 'Ventilwert für Warmwasser (oben)', ventil_unten: 'Ventilwert für Heizung (unten)', ventil_invertieren: 'Umschaltventil umkehren (oben ↔ unten)', quelle_ein: 'Quelle ein', quelle_aus: 'Quelle aus',
     quelle_pumpe: 'Quellenpumpe', wmz: 'Wärmemengenzähler (kWh)', heizstab_oben: 'Heizstab oben', heizstab_unten: 'Heizstab unten',
     name: 'Name', stufe: 'Stufe', temp: 'Temperatur', kamin: 'Zusatzwärme', pumpe: 'Pumpe', modus: 'Pumpenmodus (input_select)',
     brenner: 'Brenner / Betrieb', warm: 'Glut ab (°C)', feuer: 'Feuer ab (°C)', trend: 'Trend', abgas: 'Abgastemperatur',
@@ -1758,7 +1763,7 @@ const LBL = {
     zirkulationspumpe: 'Circulation pump', speicher: 'Storage tank', typ: 'Type', volumen: 'Volume (l)', volumen_ww: 'Hot water volume (l)',
     trennung: 'Separation / boiler height (%)', wp: 'Heat pump', leistung: 'Power', schwelle: 'Threshold (W)', betrieb: 'Running',
     vorlauf: 'Flow', ruecklauf: 'Return', waerme: 'Heat output', cop: 'COP', sperre: 'Grid lock', abtauen: 'Defrost',
-    kuehlen: 'Cooling', sg_ready: 'SG Ready', ventil: 'Diverter valve', ventil_invertieren: 'Invert diverter valve (upper ↔ lower)', quelle_ein: 'Source in', quelle_aus: 'Source out',
+    kuehlen: 'Cooling', sg_ready: 'SG Ready', ventil: 'Diverter valve', ventil_oben: 'Valve value for hot water (upper)', ventil_unten: 'Valve value for heating (lower)', ventil_invertieren: 'Invert diverter valve (upper ↔ lower)', quelle_ein: 'Source in', quelle_aus: 'Source out',
     quelle_pumpe: 'Source pump', wmz: 'Heat meter (kWh)', heizstab_oben: 'Heater top', heizstab_unten: 'Heater bottom',
     name: 'Name', stufe: 'Step', temp: 'Temperature', kamin: 'Additional heat source', pumpe: 'Pump', modus: 'Pump mode (input_select)',
     brenner: 'Burner / running', warm: 'Embers from (°C)', feuer: 'Fire from (°C)', trend: 'Trend', abgas: 'Flue gas temperature',
@@ -1818,7 +1823,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     }
     const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',');
     this._config = c;
-    if (this._forms && struktur === this._struktur) this._sync();
+    if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
   }
 
@@ -1830,6 +1835,12 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _L() { return LBL[sprache(this._config, this._hass)]; }
+  _hatVentil() { return !!(this._config && this._config.wp && this._config.wp.ventil); }
+  // Ventilfelder ein-/ausblenden, ohne den Editor neu aufzubauen (aufgeklappte Bereiche bleiben offen)
+  _ventilFelder() {
+    const hat = this._hatVentil();
+    if (this._mainForm && hat !== this._ventilSichtbar) { this._ventilSichtbar = hat; this._mainForm.schema = this._mainSchema(); }
+  }
   _O() { return OPT[sprache(this._config, this._hass)]; }
 
   _mainSchema() {
@@ -1838,7 +1849,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       { type: 'grid', name: '', schema: [F_('titel', sel.txt), F_('hersteller', sel.txt), F_('name_wp', sel.txt), F_('name_fm', sel.txt), F_('sprache', sel.opt(O.sprache)), F_('hs_stufen', sel.num(1, 12)), F_('t_min', sel.num(0, 90)), F_('t_max', sel.num(0, 95))] },
       ...E_('aussen', 'pv', 'zirkulationspumpe'),
       { type: 'expandable', name: 'speicher', title: L.speicher, icon: 'mdi:water-boiler', schema: [F_('typ', sel.opt(O.speicher)), { type: 'grid', name: '', schema: [F_('volumen', sel.num(0, 100000)), F_('volumen_ww', sel.num(0, 100000)), F_('trennung', sel.num(35, 70))] }] },
-      { type: 'expandable', name: 'wp', title: L.wp, icon: 'mdi:heat-pump', schema: [F_('typ', sel.opt(O.wp)), ...E_('leistung'), F_('schwelle', sel.num(0, 10000)), ...E_('betrieb', 'vorlauf', 'ruecklauf', 'waerme', 'wmz', 'cop', 'ventil', 'kuehlen', 'sperre', 'abtauen', 'sg_ready', 'quelle_ein', 'quelle_aus', 'quelle_pumpe'), F_('ventil_invertieren', sel.bool)] },
+      { type: 'expandable', name: 'wp', title: L.wp, icon: 'mdi:heat-pump', schema: [F_('typ', sel.opt(O.wp)), ...E_('leistung'), F_('schwelle', sel.num(0, 10000)), ...E_('betrieb', 'vorlauf', 'ruecklauf', 'waerme', 'wmz', 'cop', 'ventil'), ...(this._hatVentil() ? [{ type: 'grid', name: '', schema: [F_('ventil_oben', sel.txt), F_('ventil_unten', sel.txt)] }, F_('ventil_invertieren', sel.bool)] : []), ...E_('kuehlen', 'sperre', 'abtauen', 'sg_ready', 'quelle_ein', 'quelle_aus', 'quelle_pumpe')] },
       { type: 'expandable', name: 'heizstab_oben', title: L.heizstab_oben, icon: 'mdi:heating-coil', schema: [F_('name', sel.txt), ...E_('stufe', 'leistung', 'temp')] },
       { type: 'expandable', name: 'heizstab_unten', title: L.heizstab_unten, icon: 'mdi:heating-coil', schema: [F_('name', sel.txt), ...E_('stufe', 'leistung', 'temp')] },
       { type: 'expandable', name: 'kamin', title: L.kamin, icon: 'mdi:fireplace', schema: [F_('typ', sel.opt(O.kamin)), F_('name', sel.txt), ...E_('temp', 'trend', 'pumpe', 'modus', 'brenner', 'leistung', 'leistung_el', 'wmz', 'abgas', 'zuluft'), { type: 'grid', name: '', schema: [F_('warm', sel.num(0, 100)), F_('feuer', sel.num(0, 100))] }] },
@@ -1902,7 +1913,9 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
     this._forms = [];
-    w.appendChild(this._form(this._mainSchema(), () => this._config, (v) => { this._config = { ...this._config, ...v }; this._fire(); }));
+    this._ventilSichtbar = this._hatVentil();
+    this._mainForm = this._form(this._mainSchema(), () => this._config, (v) => { this._config = { ...this._config, ...v }; this._ventilFelder(); this._fire(); });
+    w.appendChild(this._mainForm);
     for (const li of this._listen()) {
       const sec = document.createElement('div');
       sec.className = 'sec';

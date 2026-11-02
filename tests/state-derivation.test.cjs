@@ -65,6 +65,20 @@ test('inverted valve swaps upper and lower zones and keeps unknown values neutra
   }
 });
 
+test('own valve values take precedence, accept comma lists and combine with inversion', () => {
+  const extra = { ventil: 'sensor.valve', ventil_oben: 'Ladung A, WW-Ladung', ventil_unten: 'ladung b' };
+  for (const [value, fraction] of [['Ladung A', 1], ['ww-ladung', 1], [' LADUNG B ', 0], ['Warmwasser', 1], ['heizung', 0], ['35', 0.35], ['Ladung C', null]]) {
+    assert.equal(pump({ power: '500', valve: value }, extra).p.vb, fraction, value);
+  }
+  // own values win over number and keyword detection
+  assert.equal(pump({ power: '500', valve: '1' }, { ventil: 'sensor.valve', ventil_unten: '1', ventil_oben: '2' }).p.vb, 0);
+  assert.equal(pump({ power: '500', valve: 'off' }, { ventil: 'sensor.valve', ventil_oben: 'off' }).p.vb, 1);
+  // inversion is applied after the mapping
+  assert.equal(pump({ power: '500', valve: 'Ladung A' }, { ...extra, ventil_invertieren: true }).p.vb, 0);
+  // empty or missing values change nothing
+  assert.equal(pump({ power: '500', valve: 'on' }, { ventil: 'sensor.valve', ventil_oben: '', ventil_unten: ' , ' }).p.vb, 1);
+});
+
 test('heater step overrides power, truncates, and power threshold is strict', () => {
   for (const [step, power, expected] of [['0', '500', false], ['0.9', '500', false], ['1.9', '0', true], ['unknown', '500', false]]) {
     const r = reader({ step, power });
