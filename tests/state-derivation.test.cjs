@@ -51,6 +51,20 @@ test('valve values determine upper and lower flows including strict boundaries',
   }
 });
 
+test('inverted valve swaps upper and lower zones and keeps unknown values neutral', () => {
+  for (const [value, fraction, upper, lower] of [
+    ['on', 0, false, true], ['off', 1, true, false], ['Warmwasser', 0, false, true], ['heizung', 1, true, false],
+    ['25', 0.75, true, true], ['100', 0, false, true], ['0', 1, true, false], ['unknown', null, true, true],
+  ]) {
+    const { p } = pump({ power: '500', valve: value }, { ventil: 'sensor.valve', ventil_invertieren: true });
+    assert.equal(p.vb, fraction, value); assert.equal(p.wpO, upper, value); assert.equal(p.wpU, lower, value);
+  }
+  for (const flag of [false, undefined, 'true']) {
+    const { p } = pump({ power: '500', valve: 'on' }, { ventil: 'sensor.valve', ventil_invertieren: flag });
+    assert.equal(p.vb, 1, String(flag));
+  }
+});
+
 test('heater step overrides power, truncates, and power threshold is strict', () => {
   for (const [step, power, expected] of [['0', '500', false], ['0.9', '500', false], ['1.9', '0', true], ['unknown', '500', false]]) {
     const r = reader({ step, power });

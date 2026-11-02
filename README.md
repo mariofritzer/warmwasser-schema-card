@@ -130,6 +130,7 @@ A complete, commented example is in [`beispiel.yaml`](https://github.com/mariofr
 | `vorlauf`, `ruecklauf` | Flow / return temperature |
 | `waerme`, `wmz`, `cop` | Heat output, heat meter (kWh), COP |
 | `ventil` | Diverter valve: `on`/`off`, 0–100, or text containing e.g. “Warmwasser/DHW” or “Heizung/heating”. Without it, both zones are shown as charging. |
+| `ventil_invertieren` | `true` inverts how `ventil` is read, e.g. if the valve reports `on` while charging heating instead of hot water. Default: `false` |
 | `kuehlen` | Cooling mode – heating circuit colours are swapped |
 | `sperre`, `abtauen`, `sg_ready` | Grid lock, defrost, SG Ready |
 | `quelle_ein`, `quelle_aus`, `quelle_pumpe` | Source temperatures and source pump |
