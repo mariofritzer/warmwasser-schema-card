@@ -98,6 +98,13 @@ const isEnt = (v) => typeof v === 'string' && ENT.test(v);
 const hasEnt = (o) => !!o && typeof o === 'object' && Object.values(o).some(isEnt);
 const zeigen = (o) => o === true || (!!o && typeof o === 'object' && (o.anzeigen === true || hasEnt(o)));
 const isNum = (v) => v !== null && v !== undefined && v !== '' && typeof v !== 'boolean' && Number.isFinite(Number(v));
+const sensorReader = (h) => {
+  const S = (e) => (e && h.states[e] ? h.states[e].state : 'unknown');
+  const U = (e, d) => (e && h.states[e]?.attributes?.unit_of_measurement) || d;
+  const ON = (e) => { const s = S(e); return s === 'on' || (isNum(s) && Number(s) > 0); };
+  const NUM = (e) => (e && isNum(S(e)) ? Number(S(e)) : 0);
+  return { S, U, ON, NUM };
+};
 const r1 = (n) => Math.round(n * 10) / 10;
 const r2 = (n) => Math.round(n * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -758,6 +765,185 @@ function routeDiagramConnections(model, ids, options = {}) {
   return result;
 }
 
+function tankState(c, S, y_t) {
+  const fl = c.fuehler.map((f, i) => {
+    const pos = isNum(f.hoehe) ? Number(f.hoehe) : ((i + 0.5) * 100) / c.fuehler.length;
+    return { name: f.name, entity: f.entity, index: i, wert: S(f.entity), y: 40 + (310 * clamp(pos, 0, 100)) / 100 };
+  }).sort((a, b) => a.y - b.y);
+  const TG = c.typ === 'trennblech', SPLIT = c.typ === 'getrennt';
+  const ueber = fl.filter((f) => f.y < y_t), unter = fl.filter((f) => f.y > y_t);
+  const w_ueber = ueber.length ? ueber[ueber.length - 1].wert : unter.length ? unter[0].wert : 'x';
+  const w_unter = unter.length ? unter[0].wert : w_ueber;
+  const stops = (TG || SPLIT || !fl.length ? [...fl, { y: y_t - 2, wert: w_ueber }, { y: y_t + 2, wert: w_unter }] : [...fl]).sort((a, b) => a.y - b.y);
+  const temps = fl.map((f) => f.wert).filter(isNum).map(Number);
+  const avg = temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : null;
+  const col = (t) => {
+    if (!isNum(t)) return 'rgb(138,144,153)';
+    const x = clamp((Number(t) - c.t_min) / (c.t_max - c.t_min), 0, 1);
+    if (x < 0.5) { const k = x * 2; return `rgb(${Math.trunc(47 + 119 * k)},${Math.trunc(107 - 37 * k)},${Math.trunc(255 - 15 * k)})`; }
+    const k = (x - 0.5) * 2; return `rgb(${Math.trunc(166 + 89 * k)},${Math.trunc(70 - 11 * k)},${Math.trunc(240 - 192 * k)})`;
+  };
+
+  return { fl, stops, avg, col };
+}
+
+function heaterState(c, L, S, NUM) {
+  const heiz = (x, n) => {
+    if (!x) return null;
+    const step = x.stufe && isNum(S(x.stufe)) ? Math.trunc(Number(S(x.stufe))) : 0;
+    const p = NUM(x.leistung);
+    return { ...x, name: x.name || n, step, p, on: x.stufe ? step > 0 : p > 5 };
+  };
+  const hso = heiz(c.heizstab_oben, L.hsO), hsu = heiz(c.heizstab_unten, L.hsU);
+  const HS = !!(hso || hsu), hs_on = (hso && hso.on) || (hsu && hsu.on);
+  const hs_p = (hso ? hso.p : 0) + (hsu ? hsu.p : 0), hs_hatP = (hso && hso.leistung) || (hsu && hsu.leistung);
+
+  return { hso, hsu, HS, hs_on, hs_p, hs_hatP };
+}
+
+function heatPumpState(c, L, F, S, ON, NUM) {
+  const W = c.wp, WP = !!W;
+  const wp = W ? NUM(W.leistung) : 0;
+  const wp_sperre = W && W.sperre ? ON(W.sperre) : false;
+  const wp_abtau = W && W.abtauen ? ON(W.abtauen) : false;
+  const kuehl = W && W.kuehlen ? ON(W.kuehlen) : false;
+  const wp_on = WP && !wp_sperre && (W.betrieb ? ON(W.betrieb) : wp > W.schwelle);
+  const CW = kuehl ? F.kalt : F.warm, CK = kuehl ? F.warm : F.kalt;
+  const QT = W ? (['sole', 'wasser'].includes(W.typ) ? W.typ : 'luft') : null;
+  /* Umschaltventil: vb = Anteil obere Zone (Warmwasser), null = unbekannt */
+  let vb = null;
+  if (W && W.ventil) {
+    const s = S(W.ventil), sl = String(s).toLowerCase();
+    if (isNum(s)) vb = clamp(Number(s) > 1 ? Number(s) / 100 : Number(s), 0, 1);
+    else if (sl === 'on' || /warm|ww|dhw|trink|oben|upper|hot/.test(sl)) vb = 1;
+    else if (sl === 'off' || /heiz|puffer|unten|lower|heat|buffer|hz/.test(sl)) vb = 0;
+  }
+  const wpO = wp_on && (vb === null || vb > 0.04), wpU = wp_on && (vb === null || vb < 0.96);
+  const tO = vb === null ? 1 : 1 / Math.max(vb, 0.04), tU = vb === null ? 1 : 1 / Math.max(1 - vb, 0.04);
+
+  return { W, WP, wp, wp_sperre, wp_abtau, kuehl, wp_on, CW, CK, QT, vb, wpO, wpU, tO, tU };
+}
+
+function freshWaterState(c, FMx, ZK, S, ON, NUM) {
+  const zirk_on = ZK && ON(c.zirkulationspumpe);
+  const zapf = FMx && FMx.durchfluss ? NUM(FMx.durchfluss) > 0.1 : false;
+  const fm_on = FMx && FMx.pumpe ? ON(FMx.pumpe) : zapf || zirk_on;
+  // Keep validation and paint text identical. These strings do not affect route geometry.
+  const fmTempText = FMx && FMx.temp ? fmt(S(FMx.temp)) : '';
+  const fmFlowText = FMx && FMx.durchfluss ? `${r1(NUM(FMx.durchfluss))} l/min` : '';
+  return { zirk_on, zapf, fm_on, fmTempText, fmFlowText };
+}
+
+function heatPumpDisplay(c, state, L, F, S, NUM) {
+  const { W, WP, wp, wp_sperre, wp_abtau, kuehl, wp_on } = state;
+  const wpPowerText = W && W.leistung ? watt(wp) : '';
+  const wpCopText = W && W.cop ? `COP ${isNum(S(W.cop)) ? Number(S(W.cop)).toFixed(1) : '–'}` : '';
+  const wpStatus = WP ? (wp_sperre ? [L.sperre, F.warm] : wp_abtau ? [L.abtauen, F.kalt] : kuehl && wp_on ? [L.kuehlen, F.kalt]
+    : wp_on ? [W.waerme ? L.waerme + ' ' + watt(NUM(W.waerme)) : c.text_wp_an ?? L.wpAn, '#9aa0a6'] : [c.text_wp_aus ?? L.wpAus, '#9aa0a6']) : null;
+  const wpTemperatures = W ? [W.vorlauf ? 'VL ' + fmt(S(W.vorlauf)) : '', W.ruecklauf ? 'RL ' + fmt(S(W.ruecklauf)) : ''].filter(Boolean).join(' · ') : '';
+  return { wpPowerText, wpCopText, wpStatus, wpTemperatures };
+}
+
+function additionalHeatState(c, L, F, S, ON) {
+  const K = c.kamin;
+  const kTyp = K ? K.typ : null, kName = K ? K.name || L.typ[kTyp] : '';
+  const kFeuerTyp = !!K && ['kamin', 'holzvergaser', 'pellet', 'gas', 'oel'].includes(kTyp);
+  let t_k = 'x', k_tr = 'flat', k_warm = false, k_feuer = false, k_glut = false, k_pumpe = false, k_mod = ['', '#8a9099'];
+  if (K) {
+    t_k = K.temp ? S(K.temp) : 'x';
+    const tkf = isNum(t_k) ? Number(t_k) : 0;
+    if (K.trend) {
+      const tr = S(K.trend).toLowerCase();
+      k_tr = /steig|ris|up/.test(tr) ? 'up' : /fall|sink|down/.test(tr) ? 'down' : 'flat';
+    }
+    k_pumpe = K.pumpe ? ON(K.pumpe) : false;
+    k_warm = isNum(t_k) && tkf >= K.warm;
+    k_feuer = K.brenner ? ON(K.brenner) : !kFeuerTyp && K.pumpe ? k_pumpe : isNum(t_k) && tkf >= K.feuer;
+    k_glut = kFeuerTyp && !k_feuer && k_warm;
+    if (K.modus) {
+      const km = S(K.modus).toLowerCase();
+      k_mod = km.includes('auto') ? [L.auto, F.led] : km.includes('hand') || km.includes('manu') ? [L.hand, F.aktiv]
+        : [['0', 'aus', 'off'].includes(km) ? L.modusAus : km.slice(0, 6).toUpperCase(), '#8a9099'];
+    }
+  }
+  const kHell = !!K && ['pellet', 'gas', 'oel', 'fernwaerme', 'bhkw'].includes(kTyp);
+
+  return { K, kTyp, kName, kFeuerTyp, t_k, k_tr, k_warm, k_feuer, k_glut, k_pumpe, k_mod, kHell };
+}
+
+function solarState(c, ON, NUM) {
+  const SO = c.solar;
+  const so_on = SO && SO.pumpe ? ON(SO.pumpe) : SO && SO.leistung ? NUM(SO.leistung) > 10 : false;
+  return { SO, so_on };
+}
+
+function heatingCircuitState(c, hkPos, L, S, U, ON, NUM, CW, CK) {
+  const hks = c.heizkreise.map((hk, i) => {
+    const MIX = !!hk.mischer, m = MIX ? S(hk.mischer) : 'x';
+    const a = MIX && isNum(m) ? (clamp(Number(m), -100, 100) + 100) / 200 : 1;
+    const zeilen = [];
+    if (hk.vorlauf || hk.vorlauf_soll)
+      zeilen.push({ t: 'VL ' + [hk.vorlauf ? fmt(S(hk.vorlauf)) : '', hk.vorlauf_soll ? '→ ' + fmt(S(hk.vorlauf_soll)) : ''].filter(Boolean).join(' '), e: hk.vorlauf || hk.vorlauf_soll });
+    if (hk.raum) zeilen.push({ t: L.raum + ' ' + fmt(S(hk.raum)), e: hk.raum });
+    if (hk.wmz) zeilen.push({ t: r1(NUM(hk.wmz)) + ' ' + U(hk.wmz, 'kWh'), e: hk.wmz });
+    return {
+      ...hk, name: hk.name || `${L.hk} ${i + 1}`, MIX, m, a, x: hkPos[i], zeilen,
+      on: !!hk.pumpe && ON(hk.pumpe),
+      c: MIX ? `color-mix(in srgb,${CW} ${Math.round(a * 100)}%,${CK})` : CW,
+    };
+  });
+  const HK = hks.length > 0;
+  const hk_fl = hks.filter((x) => x.on).reduce((s, x) => s + x.a, 0);
+  const akt = hks.map((x, i) => x.on && x.a > 0.04 ? i : -1).filter((i) => i >= 0);
+  return { hks, HK, hk_fl, akt };
+}
+
+function energyState(c, NUM) {
+  const vals = c.energie.map((e) => NUM(e.entity));
+  return { vals, max: Math.max(...vals, 0.001) };
+}
+
+function legionellaState(LG, L, F, S, ON) {
+    const lAkt = LG.aktiv ? ON(LG.aktiv) : false;
+    let t = '', lc = '#8a9099';
+    if (lAkt) { t = L.legLaeuft; lc = F.aktiv; }
+    else if (LG.letzte) {
+      const s = S(LG.letzte);
+      const tage = isNum(s) ? Number(s) : Number.isFinite(Date.parse(s)) ? Math.floor((Date.now() - Date.parse(s)) / 86400000) : null;
+      if (tage !== null) {
+        t = tage <= 0 ? L.legHeute : L.legVor(Math.round(tage));
+        lc = tage <= LG.tage ? F.led : F.warm;
+      }
+    }
+    return { lAkt, t, lc };
+}
+
+function sourcePumpState(W, wp_on, ON) {
+  return wp_on || (W.quelle_pumpe ? ON(W.quelle_pumpe) : false);
+}
+
+function softenerState(entity, L, S, U, ON) {
+  const ev = S(entity);
+  return isNum(ev) ? r1(Number(ev)) + ' ' + esc(U(entity, '%')) : ON(entity) ? L.an : L.aus;
+}
+
+function additionalHeatDisplay(K, kTyp, L, S, NUM) {
+    const lade = K.zuluft ? `${L.luft} ${isNum(S(K.zuluft)) ? Math.round(Number(S(K.zuluft))) + ' %' : S(K.zuluft)}`
+      : kTyp === 'bhkw' && K.leistung_el ? `${watt(NUM(K.leistung_el))} el` : K.leistung ? watt(NUM(K.leistung)) : '';
+    return lade;
+}
+
+function photovoltaicState(entity, NUM) {
+  return { text: watt(NUM(entity)), on: NUM(entity) > 10 };
+}
+
+function additionalHeatStatus(kTyp, kFeuerTyp, k_feuer, k_glut, L) {
+  const st = kTyp === 'kamin' ? (k_feuer ? L.brennt : k_glut ? L.glut : L.aus)
+    : kFeuerTyp ? (k_feuer ? L.brennerAn : k_glut ? L.warmK : L.aus)
+    : k_feuer ? (kTyp === 'bhkw' ? L.laeuft : L.aktiv) : L.aus;
+  return st;
+}
+
 /* ---------- Zustandsfreie SVG-Bausteine / Stateless SVG primitives ---------- */
 const rohr = (d, cl, f = false, t = 1) =>
   `<path d="${d}" class="w0"/><path d="${d}" class="w1" style="stroke:${cl}"/><path d="${d}" class="w2"/>` +
@@ -850,18 +1036,11 @@ class WarmwasserSchemaCard extends HTMLElement {
 
   _render() {
     const c = this._cfg, h = this._hass, F = c.farben, L = T[sprache(c, h)];
-    const S = (e) => (e && h.states[e] ? h.states[e].state : 'unknown');
-    const U = (e, d) => (e && h.states[e]?.attributes?.unit_of_measurement) || d;
-    const ON = (e) => { const s = S(e); return s === 'on' || (isNum(s) && Number(s) > 0); };
-    const NUM = (e) => (e && isNum(S(e)) ? Number(S(e)) : 0);
+    const { S, U, ON, NUM } = sensorReader(h);
     const more = (e) => (e ? ` data-more="${esc(e)}" class="wx"` : '');
     const titel = c.titel ?? L.titel;
 
     /* ---------- Speicher ---------- */
-    const fl = c.fuehler.map((f, i) => {
-      const pos = isNum(f.hoehe) ? Number(f.hoehe) : ((i + 0.5) * 100) / c.fuehler.length;
-      return { name: f.name, entity: f.entity, index: i, wert: S(f.entity), y: 40 + (310 * clamp(pos, 0, 100)) / 100 };
-    }).sort((a, b) => a.y - b.y);
     const TYP = c.typ, TG = TYP === 'trennblech', SPLIT = TYP === 'getrennt', TT = TYP === 'kombi' || TYP === 'hygiene';
     const model = this._model, geo = model.geometry;
     const y_t = geo.yt, y_ro = geo.ro, y_bo = geo.bo, y_ru = geo.ru, y_bu = geo.bu, y_m = geo.ym;
@@ -877,49 +1056,13 @@ class WarmwasserSchemaCard extends HTMLElement {
     };
     const portStub = (ref) => stub(...diagramStub(model, ref));
     const tankId = SPLIT ? 'hot-tank' : 'tank', bufferId = SPLIT ? 'buffer-tank' : 'tank';
-    const ueber = fl.filter((f) => f.y < y_t), unter = fl.filter((f) => f.y > y_t);
-    const w_ueber = ueber.length ? ueber[ueber.length - 1].wert : unter.length ? unter[0].wert : 'x';
-    const w_unter = unter.length ? unter[0].wert : w_ueber;
-    const stops = (TG || SPLIT || !fl.length ? [...fl, { y: y_t - 2, wert: w_ueber }, { y: y_t + 2, wert: w_unter }] : [...fl]).sort((a, b) => a.y - b.y);
-    const temps = fl.map((f) => f.wert).filter(isNum).map(Number);
-    const avg = temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : null;
-    const col = (t) => {
-      if (!isNum(t)) return 'rgb(138,144,153)';
-      const x = clamp((Number(t) - c.t_min) / (c.t_max - c.t_min), 0, 1);
-      if (x < 0.5) { const k = x * 2; return `rgb(${Math.trunc(47 + 119 * k)},${Math.trunc(107 - 37 * k)},${Math.trunc(255 - 15 * k)})`; }
-      const k = (x - 0.5) * 2; return `rgb(${Math.trunc(166 + 89 * k)},${Math.trunc(70 - 11 * k)},${Math.trunc(240 - 192 * k)})`;
-    };
+    const { fl, stops, avg, col } = tankState(c, S, y_t);
 
     /* ---------- Heizstäbe ---------- */
-    const heiz = (x, n) => {
-      if (!x) return null;
-      const step = x.stufe && isNum(S(x.stufe)) ? Math.trunc(Number(S(x.stufe))) : 0;
-      const p = NUM(x.leistung);
-      return { ...x, name: x.name || n, step, p, on: x.stufe ? step > 0 : p > 5 };
-    };
-    const hso = heiz(c.heizstab_oben, L.hsO), hsu = heiz(c.heizstab_unten, L.hsU);
-    const HS = !!(hso || hsu), hs_on = (hso && hso.on) || (hsu && hsu.on);
-    const hs_p = (hso ? hso.p : 0) + (hsu ? hsu.p : 0), hs_hatP = (hso && hso.leistung) || (hsu && hsu.leistung);
+    const { hso, hsu, HS, hs_on, hs_p, hs_hatP } = heaterState(c, L, S, NUM);
 
     /* ---------- Wärmepumpe ---------- */
-    const W = c.wp, WP = !!W;
-    const wp = W ? NUM(W.leistung) : 0;
-    const wp_sperre = W && W.sperre ? ON(W.sperre) : false;
-    const wp_abtau = W && W.abtauen ? ON(W.abtauen) : false;
-    const kuehl = W && W.kuehlen ? ON(W.kuehlen) : false;
-    const wp_on = WP && !wp_sperre && (W.betrieb ? ON(W.betrieb) : wp > W.schwelle);
-    const CW = kuehl ? F.kalt : F.warm, CK = kuehl ? F.warm : F.kalt;
-    const QT = W ? (['sole', 'wasser'].includes(W.typ) ? W.typ : 'luft') : null;
-    /* Umschaltventil: vb = Anteil obere Zone (Warmwasser), null = unbekannt */
-    let vb = null;
-    if (W && W.ventil) {
-      const s = S(W.ventil), sl = String(s).toLowerCase();
-      if (isNum(s)) vb = clamp(Number(s) > 1 ? Number(s) / 100 : Number(s), 0, 1);
-      else if (sl === 'on' || /warm|ww|dhw|trink|oben|upper|hot/.test(sl)) vb = 1;
-      else if (sl === 'off' || /heiz|puffer|unten|lower|heat|buffer|hz/.test(sl)) vb = 0;
-    }
-    const wpO = wp_on && (vb === null || vb > 0.04), wpU = wp_on && (vb === null || vb < 0.96);
-    const tO = vb === null ? 1 : 1 / Math.max(vb, 0.04), tU = vb === null ? 1 : 1 / Math.max(1 - vb, 0.04);
+    const { W, WP, wp, wp_sperre, wp_abtau, kuehl, wp_on, CW, CK, QT, vb, wpO, wpU, tO, tU } = heatPumpState(c, L, F, S, ON, NUM);
 
     /* ---------- Frischwassermodul / Trinkwasser ---------- */
     const ZK = !!c.zirkulationspumpe, FMx = c.fm, FM = !TT && !!(FMx || ZK);
@@ -927,67 +1070,22 @@ class WarmwasserSchemaCard extends HTMLElement {
     const dc = TW ? point(model.connections['domestic-cold'].from) : null, de = TW ? point(model.connections['domestic-cold'].to) : null;
     const dh = TW ? point(model.connections['domestic-hot'].from) : null, dw = TW ? point(model.connections['domestic-hot'].to) : null;
     const tk = TW ? dc.x : 0, tw = TW ? dw.x : 0, tyb = TW ? de.y : 0, tm = (tk + tw) / 2;
-    const zirk_on = ZK && ON(c.zirkulationspumpe);
-    const zapf = FMx && FMx.durchfluss ? NUM(FMx.durchfluss) > 0.1 : false;
-    const fm_on = FMx && FMx.pumpe ? ON(FMx.pumpe) : zapf || zirk_on;
-    // Keep validation and paint text identical. These strings do not affect route geometry.
-    const fmTempText = FMx && FMx.temp ? fmt(S(FMx.temp)) : '';
-    const fmFlowText = FMx && FMx.durchfluss ? `${r1(NUM(FMx.durchfluss))} l/min` : '';
-    const wpPowerText = W && W.leistung ? watt(wp) : '';
-    const wpCopText = W && W.cop ? `COP ${isNum(S(W.cop)) ? Number(S(W.cop)).toFixed(1) : '–'}` : '';
-    const wpStatus = WP ? (wp_sperre ? [L.sperre, F.warm] : wp_abtau ? [L.abtauen, F.kalt] : kuehl && wp_on ? [L.kuehlen, F.kalt]
-      : wp_on ? [W.waerme ? L.waerme + ' ' + watt(NUM(W.waerme)) : c.text_wp_an ?? L.wpAn, '#9aa0a6'] : [c.text_wp_aus ?? L.wpAus, '#9aa0a6']) : null;
-    const wpTemperatures = W ? [W.vorlauf ? 'VL ' + fmt(S(W.vorlauf)) : '', W.ruecklauf ? 'RL ' + fmt(S(W.ruecklauf)) : ''].filter(Boolean).join(' · ') : '';
+    const { zirk_on, zapf, fm_on, fmTempText, fmFlowText } = freshWaterState(c, FMx, ZK, S, ON, NUM);
+    const { wpPowerText, wpCopText, wpStatus, wpTemperatures } = heatPumpDisplay(c, { W, WP, wp, wp_sperre, wp_abtau, kuehl, wp_on }, L, F, S, NUM);
 
     /* ---------- Zusatzwärme ---------- */
-    const K = c.kamin;
-    const kTyp = K ? K.typ : null, kName = K ? K.name || L.typ[kTyp] : '';
-    const kFeuerTyp = !!K && ['kamin', 'holzvergaser', 'pellet', 'gas', 'oel'].includes(kTyp);
-    let t_k = 'x', k_tr = 'flat', k_warm = false, k_feuer = false, k_glut = false, k_pumpe = false, k_mod = ['', '#8a9099'];
-    if (K) {
-      t_k = K.temp ? S(K.temp) : 'x';
-      const tkf = isNum(t_k) ? Number(t_k) : 0;
-      if (K.trend) {
-        const tr = S(K.trend).toLowerCase();
-        k_tr = /steig|ris|up/.test(tr) ? 'up' : /fall|sink|down/.test(tr) ? 'down' : 'flat';
-      }
-      k_pumpe = K.pumpe ? ON(K.pumpe) : false;
-      k_warm = isNum(t_k) && tkf >= K.warm;
-      k_feuer = K.brenner ? ON(K.brenner) : !kFeuerTyp && K.pumpe ? k_pumpe : isNum(t_k) && tkf >= K.feuer;
-      k_glut = kFeuerTyp && !k_feuer && k_warm;
-      if (K.modus) {
-        const km = S(K.modus).toLowerCase();
-        k_mod = km.includes('auto') ? [L.auto, F.led] : km.includes('hand') || km.includes('manu') ? [L.hand, F.aktiv]
-          : [['0', 'aus', 'off'].includes(km) ? L.modusAus : km.slice(0, 6).toUpperCase(), '#8a9099'];
-      }
-    }
-    const kHell = !!K && ['pellet', 'gas', 'oel', 'fernwaerme', 'bhkw'].includes(kTyp);
+    const { K, kTyp, kName, kFeuerTyp, t_k, k_tr, k_warm, k_feuer, k_glut, k_pumpe, k_mod, kHell } = additionalHeatState(c, L, F, S, ON);
 
     /* ---------- Solar ---------- */
-    const SO = c.solar;
-    const so_on = SO && SO.pumpe ? ON(SO.pumpe) : SO && SO.leistung ? NUM(SO.leistung) > 10 : false;
+    const { SO, so_on } = solarState(c, ON, NUM);
+
     const x0 = K ? -240 : -85;
 
     /* ---------- Heizkreise ---------- */
     const W8 = !!c.weiche, dyw = W8 ? 70 : 0;
     const hkPos = c.heizkreise.map((_, i) => model.components[`heating-circuit-${i}`].origin.x + 22);
-    const hks = c.heizkreise.map((hk, i) => {
-      const MIX = !!hk.mischer, m = MIX ? S(hk.mischer) : 'x';
-      const a = MIX && isNum(m) ? (clamp(Number(m), -100, 100) + 100) / 200 : 1;
-      const zeilen = [];
-      if (hk.vorlauf || hk.vorlauf_soll)
-        zeilen.push({ t: 'VL ' + [hk.vorlauf ? fmt(S(hk.vorlauf)) : '', hk.vorlauf_soll ? '→ ' + fmt(S(hk.vorlauf_soll)) : ''].filter(Boolean).join(' '), e: hk.vorlauf || hk.vorlauf_soll });
-      if (hk.raum) zeilen.push({ t: L.raum + ' ' + fmt(S(hk.raum)), e: hk.raum });
-      if (hk.wmz) zeilen.push({ t: r1(NUM(hk.wmz)) + ' ' + U(hk.wmz, 'kWh'), e: hk.wmz });
-      return {
-        ...hk, name: hk.name || `${L.hk} ${i + 1}`, MIX, m, a, x: hkPos[i], zeilen,
-        on: !!hk.pumpe && ON(hk.pumpe),
-        c: MIX ? `color-mix(in srgb,${CW} ${Math.round(a * 100)}%,${CK})` : CW,
-      };
-    });
-    const HK = hks.length > 0;
-    const hk_fl = hks.filter((x) => x.on).reduce((s, x) => s + x.a, 0);
-    const akt = hks.map((x, i) => x.on && x.a > 0.04 ? i : -1).filter((i) => i >= 0);
+    const { hks, HK, hk_fl, akt } = heatingCircuitState(c, hkPos, L, S, U, ON, NUM, CW, CK);
+
     const aktSupply = akt.map((i) => model.junctions[`manifold-supply-${i}`].x);
     const aktReturn = akt.map((i) => model.junctions[`manifold-return-${i}`].x);
     const td = `animation-duration:${r2(1 / Math.max(hk_fl, 0.04))}s`;
@@ -1046,7 +1144,10 @@ class WarmwasserSchemaCard extends HTMLElement {
     let o = `<div class="kopf"><div class="l"><div class="ic"><ha-icon icon="mdi:water-boiler" style="--mdc-icon-size:22px;color:${avg !== null ? col(avg) : 'var(--secondary-text-color)'}"></ha-icon></div>`;
     o += `<div><div class="t1">${esc(titel)}</div>${avg !== null ? `<div class="t2">${L.speicherAvg} ${r1(avg)} °C</div>` : ''}</div></div><div class="chips">`;
     if (c.aussen) o += chip('mdi:thermometer', fmt(S(c.aussen)), false, c.aussen);
-    if (c.pv) o += chip('mdi:solar-power', watt(NUM(c.pv)), NUM(c.pv) > 10, c.pv);
+    if (c.pv) {
+      const { text, on } = photovoltaicState(c.pv, NUM);
+      o += chip('mdi:solar-power', text, on, c.pv);
+    }
     if (SO && SO.kollektor) o += chip('mdi:solar-panel', fmt(S(SO.kollektor)), so_on, SO.kollektor);
     if (K && (K.temp || K.brenner || K.pumpe)) o += chip(ZUSATZ_ICON[kTyp], K.temp ? fmt(t_k) : k_feuer ? L.an : L.aus, k_feuer, K.temp || K.brenner || K.pumpe);
     if (WP && W.leistung) o += chip(kuehl ? 'mdi:snowflake' : 'mdi:heat-pump', watt(wp), wp_on, W.leistung);
@@ -1165,7 +1266,7 @@ class WarmwasserSchemaCard extends HTMLElement {
       const lowerBridge = FM && SPLIT ? 'H268A6 6 0 0 0 256' : 'H270A8 8 0 0 0 254';
       o += primaryPipe('wp-lower-supply', `M${wl.x} ${wl.y}${sj && sj.y !== wl.y ? `V${sj.y}` : ''}${lowerBridge} ${sj ? sj.y : y_ru}H${wlt.x}${wlt.y !== (sj ? sj.y : y_ru) ? `V${wlt.y}` : ''}`, CW, wpU, tU);
       if (QS) {
-        const qon = wp_on || (W.quelle_pumpe ? ON(W.quelle_pumpe) : false);
+        const qon = sourcePumpState(W, wp_on, ON);
         const ia = point(model.connections['source-in'].from), ib = point(model.connections['source-in'].to);
         const oa = point(model.connections['source-out'].from), ob = point(model.connections['source-out'].to);
         if (QT === 'sole') {
@@ -1215,8 +1316,8 @@ class WarmwasserSchemaCard extends HTMLElement {
         const z1 = [TWc.temp ? fmt(S(TWc.temp)) : '', TWc.zaehler ? `${r1(NUM(TWc.zaehler))} ${U(TWc.zaehler, 'm³')}` : ''].filter(Boolean).join(' · ');
         if (z1) o += `<text x="${tk - 8}" y="${-3 + domesticOffset}" font-size="8" class="we wv wx" data-more="${esc(TWc.temp || TWc.zaehler)}">${esc(z1)}</text>`;
         if (TWc.enthaertung) {
-          const ev = S(TWc.enthaertung);
-          o += `<text x="${tk - 8}" y="${8 + domesticOffset}" font-size="8" class="we ws wx" data-more="${esc(TWc.enthaertung)}">${L.enth} ${isNum(ev) ? r1(Number(ev)) + ' ' + esc(U(TWc.enthaertung, '%')) : ON(TWc.enthaertung) ? L.an : L.aus}</text>`;
+          const softener = softenerState(TWc.enthaertung, L, S, U, ON);
+          o += `<text x="${tk - 8}" y="${8 + domesticOffset}" font-size="8" class="we ws wx" data-more="${esc(TWc.enthaertung)}">${L.enth} ${softener}</text>`;
         }
       }
     }
@@ -1456,13 +1557,10 @@ class WarmwasserSchemaCard extends HTMLElement {
       }
       o += `<path d="M-136 292H-74" stroke="#2b2f35" stroke-width="3"/><path d="M-132 222H-118L-134 262Z" fill="#fff" opacity=".06"/></g>`;
       o += `<rect x="-142" y="308" width="74" height="20" rx="3" fill="#2b2f35" stroke="#555b63"/>`;
-      const lade = K.zuluft ? `${L.luft} ${isNum(S(K.zuluft)) ? Math.round(Number(S(K.zuluft))) + ' %' : S(K.zuluft)}`
-        : kTyp === 'bhkw' && K.leistung_el ? `${watt(NUM(K.leistung_el))} el` : K.leistung ? watt(NUM(K.leistung)) : '';
+      const lade = additionalHeatDisplay(K, kTyp, L, S, NUM);
       o += lade ? `<text x="-105" y="321" font-size="8" class="wc wt wx" data-more="${esc(K.zuluft || K.leistung_el || K.leistung)}" fill="#cfd4da">${esc(lade)}</text>` : `<path d="M-118 318H-92" stroke="#15171b" stroke-width="3" stroke-linecap="round"/>`;
       if (K.temp || K.brenner || K.pumpe) {
-        const st = kTyp === 'kamin' ? (k_feuer ? L.brennt : k_glut ? L.glut : L.aus)
-          : kFeuerTyp ? (k_feuer ? L.brennerAn : k_glut ? L.warmK : L.aus)
-          : k_feuer ? (kTyp === 'bhkw' ? L.laeuft : L.aktiv) : L.aus;
+        const st = additionalHeatStatus(kTyp, kFeuerTyp, k_feuer, k_glut, L);
         o += `<text x="-105" y="349" font-size="9" class="wc" font-weight="600" fill="${k_feuer ? (kHell ? '#c2410c' : F.aktiv) : k_glut ? '#ff8c2a' : kHell ? '#4b5058' : '#9aa0a6'}">${st}</text>`;
       }
       o += closeComponent('additional-heat');
@@ -1547,17 +1645,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     /* Legionellenschutz */
     const LG = c.legionellen;
     if (LG) {
-      const lAkt = LG.aktiv ? ON(LG.aktiv) : false;
-      let t = '', lc = '#8a9099';
-      if (lAkt) { t = L.legLaeuft; lc = F.aktiv; }
-      else if (LG.letzte) {
-        const s = S(LG.letzte);
-        const tage = isNum(s) ? Number(s) : Number.isFinite(Date.parse(s)) ? Math.floor((Date.now() - Date.parse(s)) / 86400000) : null;
-        if (tage !== null) {
-          t = tage <= 0 ? L.legHeute : L.legVor(Math.round(tage));
-          lc = tage <= LG.tage ? F.led : F.warm;
-        }
-      }
+      const { lAkt, t, lc } = legionellaState(LG, L, F, S, ON);
       const bx = TT ? 226 : 80;
       if (t) o += openComponent(tankId) + `<g data-more="${esc(LG.letzte || LG.aktiv)}" class="wx${lAkt ? ' wb' : ''}"><rect x="${bx}" y="-26" width="120" height="16" rx="8" fill="${lc}" fill-opacity=".16" stroke="${lc}"/><text x="${bx + 60}" y="-15" font-size="8" class="wc wt" fill="${lc}">${t}</text></g>` + closeComponent(tankId);
     }
@@ -1632,8 +1720,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     /* ---------- Tagesenergie ---------- */
     if (c.energie.length) {
       const pal = [F.aktiv, F.warm, F.kalt, F.solar, F.led, '#a855f7'];
-      const vals = c.energie.map((e) => NUM(e.entity));
-      const max = Math.max(...vals, 0.001);
+      const { vals, max } = energyState(c, NUM);
       o += '<div class="en">' + c.energie.map((e, i) =>
         `<div class="er" data-more="${esc(e.entity)}"><ha-icon icon="${esc(e.icon || 'mdi:lightning-bolt')}" style="--mdc-icon-size:16px"></ha-icon><span>${esc(e.name || e.entity)}</span>` +
         `<div class="b"><i style="width:${r1((vals[i] / max) * 100)}%;background:${e.farbe || pal[i % pal.length]}"></i></div><span class="v">${r1(vals[i])} ${esc(U(e.entity, 'kWh'))}</span></div>`).join('') + '</div>';
