@@ -82,6 +82,8 @@ Ein vollständiges, kommentiertes Beispiel liegt in [`examples/beispiel.yaml`](e
 | `vorlauf`, `ruecklauf` | Temperaturen |
 | `waerme`, `wmz`, `cop` | Wärmeleistung, Wärmemengenzähler (kWh), COP |
 | `ventil` | Umschaltventil: `on`/`off`, 0–100 oder Text mit z. B. „Warmwasser“ bzw. „Heizung“. Ohne Angabe werden beide Zonen als geladen gezeigt. |
+| `ventil_oben`, `ventil_unten` | Eigene Werte von `ventil` für Warmwasser (oben) bzw. Heizung (unten), z. B. `Ladung A` / `Ladung B`. Mehrere Werte mit Komma trennen, Groß-/Kleinschreibung egal. Haben Vorrang vor der automatischen Erkennung. |
+| `ventil_invertieren` | `true` kehrt die Auswertung von `ventil` um, z. B. wenn das Ventil bei `on` die Heizung statt das Warmwasser lädt. Standard: `false` |
 | `kuehlen` | Kühlbetrieb – die Farben der Heizkreise werden getauscht |
 | `sperre`, `abtauen`, `sg_ready` | EVU-Sperre, Abtauen, SG-Ready |
 | `quelle_ein`, `quelle_aus`, `quelle_pumpe` | Quellentemperaturen und Quellenpumpe |

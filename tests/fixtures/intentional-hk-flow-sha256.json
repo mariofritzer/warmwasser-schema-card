@@ -1,0 +1,20 @@
+{
+  "full-system-getrennt": "fa87e33d90f86495d5d386be046ab964444253b81b6eaec7cbd21f46dea2c416",
+  "full-system-hygiene": "57faba73e718bc88f39ec6e2a60055d6a34fb2649c42afc387c5d5950977ed44",
+  "full-system-schicht": "6912675c7db647419150e68d9274911147091de32d397230e1927c844d78593e",
+  "getrennt/split-35/case-01": "89b56e8ae8f0e13caf14f62a7f2273476136c6fba1271cc10f596491243c9deb",
+  "getrennt/split-50/case-01": "96b63109bc27def7bdd7bb644973717cdf2c6423ff09248b9c40b7bba4a1e6f5",
+  "getrennt/split-70/case-01": "b7bee39a3a25fac4871ff68bf0b13aba5492a3cd3e2a638f6f0964c80b11e5c0",
+  "hygiene/split-35/case-01": "19ada140a4b278236a084fdcff4ee2fed6e3efee9450cf1f1101818f6af4650b",
+  "hygiene/split-50/case-01": "b5a1895898523aeb358a0e1a90d2c40d34080800348c75a89b067b56cc9ada90",
+  "hygiene/split-70/case-01": "4b9b22964e06a91989f8a718befd86082008d9d29004cd5f249031f64d4ee544",
+  "kombi/split-35/case-01": "91de68de2fb0c28f7a3cdb2c7c3878d5f2c27597b3660b41b893bf872c0a0efb",
+  "kombi/split-50/case-01": "5ea5c7e1f7a2c84c1542272549f70504383acc7ecc367192330e49ca2c726032",
+  "kombi/split-70/case-01": "eae24d41fc7ac0d3619f7bf666ed92984fe0e88e469e60408b9e7c6d418a95be",
+  "schicht/split-35/case-01": "d058b18af51723b742fe3e97d45ea11e514e2e2e05be3cf3b61831c5e129ea8a",
+  "schicht/split-50/case-01": "c842ed95957a6be97d02604e4045b3f5bd1a1ce0edf4eb892f595110e90069c7",
+  "schicht/split-70/case-01": "62afc3c57c505033e4c5e592fa8a3fcd45eebe41e121c475666e7f410ec727be",
+  "trennblech/split-35/case-01": "08bc01a8625d9eb59f9a40106b1beba6e3204d3c865818395c86a937c889392a",
+  "trennblech/split-50/case-01": "1c855cef896840b6ab002825be4052dddf027af61e465e628b49ba195ec488f7",
+  "trennblech/split-70/case-01": "e8290b25d31dc6af303785a87e23afc87e96a844d7d8bd6af17edc5cb3bc64fb"
+}
