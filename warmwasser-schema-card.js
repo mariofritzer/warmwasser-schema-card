@@ -1351,7 +1351,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     const y_vv = HK ? point(model.connections['manifold-supply'].from).y : 420 + dyw, y_rv = HK ? point(model.connections['manifold-return'].from).y : 448 + dyw;
     const y_hm = 482 + dyw, y_he = 548 + dyw;
     if (HK) {
-      if (WP && akt.length && !wp_on) {
+      if (WP && akt.length && !wpU) {
         const supply = model.connections['wp-lower-supply'], ret = model.connections['wp-lower-return'];
         const a = point(supply.to), b = point(ret.from), sj = model.junctions[supply.via[0]], rj = model.junctions[ret.via[0]];
         o += `<path d="M${a.x} ${a.y}H254A8 8 0 0 1 270 ${sj.y}H${sj.x}M${rj.x} ${rj.y}H${b.x}${b.y !== rj.y ? `V${b.y}` : ''}" class="w3" style="${td}"/>`;
