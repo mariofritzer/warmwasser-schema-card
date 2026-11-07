@@ -1003,6 +1003,25 @@ const zaehlerSym = (x, y) => `<rect x="${x - 6}" y="${y - 6}" width="12" height=
 const flamme = (w, hh) =>
   `M${-w} 0C${-w - 2} ${r1(-hh * 0.45)} ${r1(-w * 0.15)} ${r1(-hh * 0.6)} ${r1(w * 0.1)} ${-hh}C${r1(w * 0.5)} ${r1(-hh * 0.6)} ${r1(w + 2)} ${r1(-hh * 0.4)} ${w} 0Z`;
 
+function renderFreshWaterModule({ FM, FMx, model, portStub, openComponent, closeComponent, c, more, zapf, F, fmTempText, fmFlowText }) {
+  if (!FM) return '';
+  let o = '';
+  const b = model.components.fm, { x, y } = b.origin, { width, height } = b.bounds;
+  o += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="12" fill="url(#wwRed)" filter="url(#wwShadow)"/><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="12" fill="url(#wwBox)"/>`;
+  o += portStub(model.connections['fm-supply'].to) + portStub(model.connections['fm-return'].from) + portStub('fm.cold-water') + portStub('fm.hot-water');
+  o += openComponent('fm');
+  o += `<text x="352" y="32" font-size="8" class="wt" letter-spacing="2" fill="#fff" opacity=".85">${esc(c.hersteller)}</text><text x="352" y="92" font-size="22" font-weight="800" fill="#fff">${esc(c.name_fm)}</text>`;
+  if (FMx && (FMx.temp || FMx.durchfluss)) {
+    o += `<g${more(FMx.temp || FMx.durchfluss)}><rect x="392" y="62" width="52" height="34" rx="5" fill="#0f1114" fill-opacity=".85" stroke="#fff" stroke-opacity=".08"/>`;
+    if (FMx.temp) o += `<text x="418" y="${FMx.durchfluss ? 77 : 84}" font-size="11" class="wc wt" fill="${zapf ? F.aktiv : '#e0e3e7'}">${fmTempText}</text>`;
+    if (FMx.durchfluss) o += `<text x="418" y="${FMx.temp ? 90 : 84}" font-size="8.5" class="wc" fill="${zapf ? F.aktiv : '#9aa0a6'}">${fmFlowText}</text>`;
+    o += '</g>';
+    o += `<path d="M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z" fill="#fff" opacity=".85"/>`;
+  } else o += `<path d="M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z" fill="#fff" opacity=".85"/>`;
+  o += closeComponent('fm');
+  return o;
+}
+
 function renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent }) {
   let o = '';
   if (kTyp !== 'fernwaerme') o += openComponent('additional-heat') + `<rect x="-114" y="-30" width="18" height="180" fill="url(#wwFlue)"/><rect x="-118" y="2" width="26" height="8" rx="2" fill="#2b2f35"/><rect x="-117" y="128" width="24" height="5" rx="1.5" fill="#2b2f35"/>` + closeComponent('additional-heat');
@@ -1689,21 +1708,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
 
     /* ---------- Frischwassermodul ---------- */
-    if (FM) {
-      const b = model.components.fm, { x, y } = b.origin, { width, height } = b.bounds;
-      o += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="12" fill="url(#wwRed)" filter="url(#wwShadow)"/><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="12" fill="url(#wwBox)"/>`;
-      o += portStub(model.connections['fm-supply'].to) + portStub(model.connections['fm-return'].from) + portStub('fm.cold-water') + portStub('fm.hot-water');
-      o += openComponent('fm');
-      o += `<text x="352" y="32" font-size="8" class="wt" letter-spacing="2" fill="#fff" opacity=".85">${esc(c.hersteller)}</text><text x="352" y="92" font-size="22" font-weight="800" fill="#fff">${esc(c.name_fm)}</text>`;
-      if (FMx && (FMx.temp || FMx.durchfluss)) {
-        o += `<g${more(FMx.temp || FMx.durchfluss)}><rect x="392" y="62" width="52" height="34" rx="5" fill="#0f1114" fill-opacity=".85" stroke="#fff" stroke-opacity=".08"/>`;
-        if (FMx.temp) o += `<text x="418" y="${FMx.durchfluss ? 77 : 84}" font-size="11" class="wc wt" fill="${zapf ? F.aktiv : '#e0e3e7'}">${fmTempText}</text>`;
-        if (FMx.durchfluss) o += `<text x="418" y="${FMx.temp ? 90 : 84}" font-size="8.5" class="wc" fill="${zapf ? F.aktiv : '#9aa0a6'}">${fmFlowText}</text>`;
-        o += '</g>';
-        o += `<path d="M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z" fill="#fff" opacity=".85"/>`;
-      } else o += `<path d="M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z" fill="#fff" opacity=".85"/>`;
-      o += closeComponent('fm');
-    }
+    o += renderFreshWaterModule({ FM, FMx, model, portStub, openComponent, closeComponent, c, more, zapf, F, fmTempText, fmFlowText });
 
     /* ---------- Wärmequelle Sole / Wasser ---------- */
     if (QS) {
