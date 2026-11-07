@@ -765,6 +765,24 @@ function routeDiagramConnections(model, ids, options = {}) {
   return result;
 }
 
+// Select and validate the complete routed batch before drawing any pipe.
+function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
+  const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  const movedRouting = FM && [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; });
+  const routes = movedRouting ? routeDiagramConnections(model, routingIds) : null;
+  if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
+    const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
+    error.code = route.code || route.reason; throw error;
+  }
+  if (movedRouting && ([fmTempText.length > 7, fmFlowText.length > 10,
+    wpPowerText.length > 10, wpCopText.length > 12, wpTemperatures.length > 20,
+    wpStatus && ![L.wpAn, L.wpAus, L.sperre, L.abtauen, L.kuehlen].includes(wpStatus[0]) && String(wpStatus[0]).length > 14].some(Boolean))) {
+    const error = new Error('Pipe routing unsupported: display label overflow');
+    error.code = 'label-overflow'; throw error;
+  }
+  return routes;
+}
+
 function renderTank({ model, SPLIT, tankId, bufferId, L, c, TYP, y_t, point, col, fl, zapf, zirk_on, TT, TG, portStub, openComponent, closeComponent }) {
   let o = '';
   o += openComponent('tank-feet') + `<rect x="93" y="362" width="11" height="22" rx="2" fill="#3a3f46"/><rect x="170" y="362" width="11" height="22" rx="2" fill="#3a3f46"/>` + closeComponent('tank-feet');
@@ -1579,19 +1597,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     o += `<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter></defs>`;
 
     /* ---------- Rohre ---------- */
-    const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
-    const movedRouting = FM && [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; });
-    const routes = movedRouting ? routeDiagramConnections(model, routingIds) : null;
-    if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
-      const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
-      error.code = route.code || route.reason; throw error;
-    }
-    if (movedRouting && ([fmTempText.length > 7, fmFlowText.length > 10,
-      wpPowerText.length > 10, wpCopText.length > 12, wpTemperatures.length > 20,
-      wpStatus && ![L.wpAn, L.wpAus, L.sperre, L.abtauen, L.kuehlen].includes(wpStatus[0]) && String(wpStatus[0]).length > 14].some(Boolean))) {
-      const error = new Error('Pipe routing unsupported: display label overflow');
-      error.code = 'label-overflow'; throw error;
-    }
+    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
     const primaryPipes = {};
     const primaryPipe = (id, legacyPath, color, on, duration) => {
       const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration);
