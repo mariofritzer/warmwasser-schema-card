@@ -1204,6 +1204,45 @@ const zaehlerSym = (x, y) => `<rect x="${x - 6}" y="${y - 6}" width="12" height=
 const flamme = (w, hh) =>
   `M${-w} 0C${-w - 2} ${r1(-hh * 0.45)} ${r1(-w * 0.15)} ${r1(-hh * 0.6)} ${r1(w * 0.1)} ${-hh}C${r1(w * 0.5)} ${r1(-hh * 0.6)} ${r1(w + 2)} ${r1(-hh * 0.4)} ${w} 0Z`;
 
+function renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComponent, hks, mischer, CW, L, y_hm, pumpe, y_he, F }) {
+  let o = '';
+  if (W8) {
+    const WX = c.weiche;
+    const b = model.components.separator, { x, y } = b.origin, { width, height } = b.bounds;
+    o += `<g${more(WX.temp)}><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="10" fill="url(#wwW8)" stroke="#fff" stroke-opacity=".5" stroke-width="1.2"/>`;
+    o += openComponent('separator');
+    o += `<rect x="326" y="406" width="4" height="60" rx="2" fill="#fff" opacity=".25"/>`;
+    if (WX.temp) o += `<text x="332" y="436" font-size="7.5" class="wc wt wo" fill="#fff" transform="rotate(-90 332 436)">${fmt(S(WX.temp))}</text>`;
+    o += closeComponent('separator');
+    o += '</g>';
+  }
+  for (const [i, x] of hks.entries()) {
+    const branch = model.components[`heating-circuit-${i}`], drawX = branch.baseOrigin.x + 22, sx = drawX - 16;
+    if (x.MIX) {
+      const m = model.components[`heating-mixer-${i}`], j = model.junctions[`heating-return-tee-${i}`];
+      o += mischer(m.origin.x + 34, m.origin.y + 14, CW, isNum(x.m) ? x.a : null) + tee(j.x, j.y);
+      if (isNum(x.m)) o += openComponent(`heating-mixer-${i}`) + `<text x="${sx - 26}" y="${y_hm + 19}" font-size="7.5" class="wc wt wx" data-more="${esc(x.mischer)}" style="fill:${x.c}"><title>${L.mischerTitle(esc(x.m))}</title>${Math.round(x.a * 100)}%</text>` + closeComponent(`heating-mixer-${i}`);
+    }
+    if (x.pumpe) {
+      const b = model.components[`heating-pump-${i}`];
+      o += `<g${more(x.pumpe)}>${pumpe(b.origin.x + 10, b.origin.y + 10, 'd', x.on)}</g>`;
+    }
+    o += openComponent(`heating-circuit-${i}`);
+    o += `<path d="M${sx - 4} ${y_he - 9}l4 4 4-4M${drawX + 12} ${y_he - 5}l4-4 4 4" class="wa"/>`;
+    o += `<text x="${drawX}" y="${y_he + 16}" font-size="10" class="wc wt${x.on ? '' : ' wv'}"${x.on ? ` fill="${F.aktiv}"` : ''}>${esc(x.name)}</text>`;
+    let y = y_he + 28;
+    for (const z of x.zeilen) { o += `<text x="${drawX}" y="${y}" font-size="8.5" class="wc ws wx" data-more="${esc(z.e)}">${esc(z.t)}</text>`; y += 12; }
+    const hc = x.on ? x.c : '#8a9099';
+    if (x.typ === 'fussboden' || x.typ === 'fussbodenheizung' || x.typ === 'floor')
+      o += `<path d="M${drawX - 22} ${y}h40a3 3 0 0 1 0 6h-40a3 3 0 0 0 0 6h40a3 3 0 0 1 0 6h-40" fill="none" stroke="${hc}" stroke-width="2" stroke-linecap="round"/>`;
+    else if (x.typ === 'heizkoerper' || x.typ === 'radiator')
+      o += `<rect x="${drawX - 20}" y="${y - 2}" width="40" height="20" rx="3" fill="#2b2f35" stroke="${hc}" stroke-width="1.5"/>` +
+        [0, 1, 2, 3, 4].map((k) => `<path d="M${drawX - 14 + k * 7} ${y + 2}v12" stroke="${hc}" stroke-width="2" stroke-linecap="round"/>`).join('');
+    o += closeComponent(`heating-circuit-${i}`);
+  }
+  return o;
+}
+
 function renderValve({ WP, W, model, more, mischer, CK, CW, vb }) {
   if (!WP) return '';
   const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + v.bounds.height / 2;
@@ -1740,40 +1779,7 @@ class WarmwasserSchemaCard extends HTMLElement {
         o += `<path d="${railAnimation(from, to, model.connections['manifold-supply'], y_vv)}" class="w3" style="${td}"/>`;
       }
       o += `<text x="${bx1 - 8}" y="${y_vv + 3}" font-size="7.5" class="we ws" font-weight="600">VL</text><text x="${bx1 - 8}" y="${y_rv + 3}" font-size="7.5" class="we ws" font-weight="600">RL</text>`;
-      if (W8) {
-        const WX = c.weiche;
-        const b = model.components.separator, { x, y } = b.origin, { width, height } = b.bounds;
-        o += `<g${more(WX.temp)}><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="10" fill="url(#wwW8)" stroke="#fff" stroke-opacity=".5" stroke-width="1.2"/>`;
-        o += openComponent('separator');
-        o += `<rect x="326" y="406" width="4" height="60" rx="2" fill="#fff" opacity=".25"/>`;
-        if (WX.temp) o += `<text x="332" y="436" font-size="7.5" class="wc wt wo" fill="#fff" transform="rotate(-90 332 436)">${fmt(S(WX.temp))}</text>`;
-        o += closeComponent('separator');
-        o += '</g>';
-      }
-      for (const [i, x] of hks.entries()) {
-        const branch = model.components[`heating-circuit-${i}`], drawX = branch.baseOrigin.x + 22, sx = drawX - 16;
-        if (x.MIX) {
-          const m = model.components[`heating-mixer-${i}`], j = model.junctions[`heating-return-tee-${i}`];
-          o += mischer(m.origin.x + 34, m.origin.y + 14, CW, isNum(x.m) ? x.a : null) + tee(j.x, j.y);
-          if (isNum(x.m)) o += openComponent(`heating-mixer-${i}`) + `<text x="${sx - 26}" y="${y_hm + 19}" font-size="7.5" class="wc wt wx" data-more="${esc(x.mischer)}" style="fill:${x.c}"><title>${L.mischerTitle(esc(x.m))}</title>${Math.round(x.a * 100)}%</text>` + closeComponent(`heating-mixer-${i}`);
-        }
-        if (x.pumpe) {
-          const b = model.components[`heating-pump-${i}`];
-          o += `<g${more(x.pumpe)}>${pumpe(b.origin.x + 10, b.origin.y + 10, 'd', x.on)}</g>`;
-        }
-        o += openComponent(`heating-circuit-${i}`);
-        o += `<path d="M${sx - 4} ${y_he - 9}l4 4 4-4M${drawX + 12} ${y_he - 5}l4-4 4 4" class="wa"/>`;
-        o += `<text x="${drawX}" y="${y_he + 16}" font-size="10" class="wc wt${x.on ? '' : ' wv'}"${x.on ? ` fill="${F.aktiv}"` : ''}>${esc(x.name)}</text>`;
-        let y = y_he + 28;
-        for (const z of x.zeilen) { o += `<text x="${drawX}" y="${y}" font-size="8.5" class="wc ws wx" data-more="${esc(z.e)}">${esc(z.t)}</text>`; y += 12; }
-        const hc = x.on ? x.c : '#8a9099';
-        if (x.typ === 'fussboden' || x.typ === 'fussbodenheizung' || x.typ === 'floor')
-          o += `<path d="M${drawX - 22} ${y}h40a3 3 0 0 1 0 6h-40a3 3 0 0 0 0 6h40a3 3 0 0 1 0 6h-40" fill="none" stroke="${hc}" stroke-width="2" stroke-linecap="round"/>`;
-        else if (x.typ === 'heizkoerper' || x.typ === 'radiator')
-          o += `<rect x="${drawX - 20}" y="${y - 2}" width="40" height="20" rx="3" fill="#2b2f35" stroke="${hc}" stroke-width="1.5"/>` +
-            [0, 1, 2, 3, 4].map((k) => `<path d="M${drawX - 14 + k * 7} ${y + 2}v12" stroke="${hc}" stroke-width="2" stroke-linecap="round"/>`).join('');
-        o += closeComponent(`heating-circuit-${i}`);
-      }
+      o += renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComponent, hks, mischer, CW, L, y_hm, pumpe, y_he, F });
     }
 
     /* Umschaltventil WP + T-Stücke */
