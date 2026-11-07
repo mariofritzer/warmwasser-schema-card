@@ -947,6 +947,196 @@ function heatPumpState(c, L, F, S, ON, NUM) {
   return { W, WP, wp, wp_sperre, wp_abtau, kuehl, wp_on, CW, CK, QT, vb, wpO, wpU, tO, tU };
 }
 
+function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT }) {
+  let o = '';
+  if (FM) {
+    const fs = point(model.connections['fm-supply'].from), fe = point(model.connections['fm-supply'].to);
+    const fr = point(model.connections['fm-return'].from), ft = point(model.connections['fm-return'].to);
+    o += primaryPipe('fm-supply', `M${fs.x} ${fs.y}H${fe.x}${fe.y !== fs.y ? `V${fe.y}` : ''}`, F.warm, fm_on);
+    // Separate tanks need the fresh-water return on the hot-water tank,
+    // while shared tanks retain the bottom connection.
+    const radius = Math.min(8, Math.max(0, (ft.y - fr.y) / 2));
+    const simpleReturn = WP && ft.y > 108 && ft.y <= 147 && !c.wp.wmz;
+    const returnX = simpleReturn ? 280 : WP && (ft.y > 108 || c.wp.wmz) ? 322 : 315;
+    // Near the charging-pipe corner, cross its straight leg instead. With a
+    // meter on that leg, carry the return below the crossing and back up.
+    const returnDetour = WP && ft.y <= 147 && !!c.wp.wmz;
+    const detourY = Math.max(155, ft.y + 32);
+    const fmRuecklauf = SPLIT
+      ? returnDetour
+        ? `M${fr.x} ${fr.y}H330Q322 ${fr.y} 322 ${fr.y + 8}V${detourY - 8}Q322 ${detourY} 314 ${detourY}H288Q280 ${detourY} 280 ${detourY - 8}V${ft.y + 8}Q280 ${ft.y} 272 ${ft.y}H${ft.x}`
+        : `M${fr.x} ${fr.y}H${returnX + radius}Q${returnX} ${fr.y} ${returnX} ${fr.y + radius}V${ft.y - radius}Q${returnX} ${ft.y} ${returnX - radius} ${ft.y}H${ft.x}`
+      : `M${fr.x} ${fr.y}H458Q466 90 466 98V382Q466 390 458 390H${ft.x + 8}Q${ft.x} 390 ${ft.x} 382V${ft.y}`;
+    o += primaryPipe('fm-return', fmRuecklauf, F.kalt, fm_on);
+  }
+  if (WP) {
+    const returnTee = HK ? model.junctions[model.connections['wp-lower-return'].via[0]] : null;
+    const wo = point(model.connections['wp-upper-return'].from), wv = point(model.connections['wp-upper-return'].to);
+    const wu = point(model.connections['wp-lower-return'].from), wvu = point(model.connections['wp-lower-return'].to);
+    const wvp = point(model.connections['wp-valve-return'].from), wr = point(model.connections['wp-valve-return'].to);
+    const ws = point(model.connections['wp-upper-supply'].from), wst = point(model.connections['wp-upper-supply'].to);
+    const wl = point(model.connections['wp-lower-supply'].from), wlt = point(model.connections['wp-lower-supply'].to);
+    o += primaryPipe('wp-upper-return', `M${wo.x} ${wo.y}H252Q262 ${y_bo} 262 ${y_bo + 10}V${wv.y}${wv.x !== 262 ? `H${wv.x}` : ''}`, CK, wpO, tO);
+    o += primaryPipe('wp-lower-return', `M${wu.x} ${wu.y}${returnTee && returnTee.y !== wu.y ? `V${returnTee.y}` : ''}H252Q262 ${returnTee ? returnTee.y : y_bu} 262 ${(returnTee ? returnTee.y : y_bu) - 10}V${wvu.y}${wvu.x !== 262 ? `H${wvu.x}` : ''}`, CK, wpU, tU);
+    o += primaryPipe('wp-valve-return', `M${wvp.x} ${wvp.y}H${wr.x}${wr.y !== wvp.y ? `V${wr.y}` : ''}`, CK, wp_on);
+    // Bridge the fresh-water return where it crosses the hot-water charging pipe.
+    const simpleReturn = FM && SPLIT && y_bo - 14 > 108 && y_bo - 14 <= 147 && !c.wp.wmz;
+    const wwLadung = FM && SPLIT && (y_bo - 14 > 108 || c.wp.wmz) && !simpleReturn
+      ? 'H328A6 6 0 0 1 316 128H308'
+      : 'H308';
+    const fmY = FM && SPLIT ? point(model.connections['fm-return'].to).y : y_bo - 14;
+    const bridgeY = simpleReturn ? 90 : fmY;
+    const verticalBridge = FM && SPLIT && (simpleReturn || (!c.wp.wmz && fmY >= y_ro + 20 && fmY <= 108))
+      ? `V${bridgeY + 6}A6 6 0 0 1 300 ${bridgeY - 6}` : '';
+    const meter = model.connections['wp-upper-supply'].via.length ? model.junctions[model.connections['wp-upper-supply'].via[0]] : null;
+    const meterDetour = meter && (meter.x !== 300 || meter.y > 120 || meter.y < y_ro + 8) ? `V${meter.y}H${meter.x}H300` : '';
+    o += primaryPipe('wp-upper-supply', `M${ws.x} ${ws.y}V136Q350 128 342 128${wwLadung}Q300 128 300 120${verticalBridge}${meterDetour}V${y_ro + 8}Q300 ${y_ro} 292 ${y_ro}H${wst.x}${wst.y !== y_ro ? `V${wst.y}` : ''}`, CW, wpO, tO);
+    const sj = HK ? model.junctions[model.connections['wp-lower-supply'].via[0]] : null;
+    // The tees lie on these continuous paths; their explicit via references
+    // record incidence without changing the legacy SVG paint order.
+    const lowerBridge = FM && SPLIT ? 'H268A6 6 0 0 0 256' : 'H270A8 8 0 0 0 254';
+    o += primaryPipe('wp-lower-supply', `M${wl.x} ${wl.y}${sj && sj.y !== wl.y ? `V${sj.y}` : ''}${lowerBridge} ${sj ? sj.y : y_ru}H${wlt.x}${wlt.y !== (sj ? sj.y : y_ru) ? `V${wlt.y}` : ''}`, CW, wpU, tU);
+    if (QS) {
+      const qon = sourcePumpState(W, wp_on, ON);
+      const ia = point(model.connections['source-in'].from), ib = point(model.connections['source-in'].to);
+      const oa = point(model.connections['source-out'].from), ob = point(model.connections['source-out'].to);
+      if (QT === 'sole') {
+        const ground = model.connections['source-ground-loop'], gs = point(ground.from), ge = point(ground.to);
+        const toGround = gs.x !== ib.x || gs.y !== ib.y ? `H${gs.x}V${gs.y}` : '';
+        const fromGround = ge.x !== oa.x || ge.y !== oa.y ? `H${oa.x}V${oa.y}` : '';
+        o += rohr(`M${ia.x} ${ia.y}V381A9 9 0 0 1 400 399V${ib.y}${ib.x !== 400 ? `H${ib.x}` : ''}${toGround}Q${gs.x} ${gs.y + 12} ${(gs.x + ge.x) / 2} ${gs.y + 12}Q${ge.x} ${ge.y + 12} ${ge.x} ${ge.y}${fromGround}V399A9 9 0 0 1 430 381V${ob.y}${ob.x !== 430 ? `H${ob.x}` : ''}`, F.quelle, qon);
+      }
+      else o += rohr(`M${ib.x} ${ib.y}V399A9 9 0 0 0 400 381V${ia.y}${ia.x !== 400 ? `H${ia.x}` : ''}`, F.quelle, qon) + rohr(`M${ob.x} ${ob.y}V381A9 9 0 0 1 430 399V${oa.y}${oa.x !== 430 ? `H${oa.x}` : ''}`, F.quelle, qon);
+    }
+  }
+  return o;
+}
+
+function renderAdditionalAndSolarPipes({ K, SO, model, point, F, k_pumpe, so_on }) {
+  let o = '';
+  if (K) {
+    const returnFirst = model.connections[K.pumpe ? 'additional-return-tank' : 'additional-return'];
+    const returnLast = model.connections[K.pumpe ? 'additional-return-device' : 'additional-return'];
+    const supply = model.connections['additional-supply'];
+    const a = point(returnFirst.from), d = point(returnLast.to), e = point(supply.from), b = point(supply.to);
+    const middle = K.pumpe ? model.connections['additional-pump-through'] : null;
+    const pin = K.pumpe ? point(returnFirst.to) : null, m1 = middle ? point(middle.from) : null, m2 = middle ? point(middle.to) : null, pout = K.pumpe ? point(returnLast.from) : null;
+    const through = pin && (pin.y !== a.y || pout.y !== a.y || pin.x <= pout.x || m1.x !== pin.x || m1.y !== pin.y || m2.x !== pout.x || m2.y !== pout.y) ? `H${pin.x}V${pin.y}H${m1.x}V${m1.y}H${m2.x}V${m2.y}H${pout.x}V${pout.y}V${d.y}` : '';
+    const meter = supply.via.length ? model.junctions[supply.via[0]] : null;
+    const detour = meter && (meter.y !== e.y || meter.x < Math.min(e.x, b.x) || meter.x > Math.max(e.x, b.x)) ? `H${meter.x}V${meter.y}` : '';
+    o += rohr(`M${a.x} ${a.y}${through}H${d.x}${!through && d.y !== a.y ? `V${d.y}` : ''}`, F.kalt, k_pumpe) + rohr(`M${e.x} ${e.y}${detour}H${b.x}${(detour ? meter.y : e.y) !== b.y ? `V${b.y}` : ''}`, F.warm, k_pumpe);
+  }
+  if (SO) {
+    const supply = model.connections['solar-supply'], a = point(supply.to), cs = point(supply.from);
+    const first = model.connections[SO.pumpe ? 'solar-return-tank' : 'solar-return'];
+    const last = model.connections[SO.pumpe ? 'solar-return-collector' : 'solar-return'];
+    const b = point(first.from), cr = point(last.to);
+    o += rohr(`M${cs.x} ${cs.y}V387Q${cs.x} 395 ${cs.x + 8} 395H${a.x - 8}Q${a.x} 395 ${a.x} 387V${a.y}`, F.warm, so_on);
+    const middle = SO.pumpe ? model.connections['solar-pump-through'] : null;
+    const pin = SO.pumpe ? point(first.to) : null, m1 = middle ? point(middle.from) : null, m2 = middle ? point(middle.to) : null, pout = SO.pumpe ? point(last.from) : null;
+    const through = pin && (pin.x !== cr.x || pout.x !== cr.x || pin.y <= pout.y || m1.x !== pin.x || m1.y !== pin.y || m2.x !== pout.x || m2.y !== pout.y) ? `V${pin.y}H${pin.x}V${m1.y}H${m1.x}V${m2.y}H${m2.x}V${pout.y}H${pout.x}H${cr.x}` : '';
+    o += rohr(`M${b.x} ${b.y}V397Q${b.x} 405 ${b.x - 8} 405H${cr.x + 8}Q${cr.x} 405 ${cr.x} 397${through}V${cr.y}`, F.kalt, so_on);
+  }
+
+  return o;
+}
+
+function renderHeatingPipes({ WP, akt, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv }) {
+  let o = '';
+  const verteiler = (edge, cl) => {
+    const from = point(edge.from), to = point(edge.to);
+    const points = edge.via.map((id) => model.junctions[id]);
+    const route = (offset) => {
+      if (to.y === from.y && points.every((j) => j.y === from.y && j.x >= Math.min(from.x, to.x) && j.x <= Math.max(from.x, to.x))) return `M${from.x} ${from.y + offset}H${to.x}`;
+      return `M${from.x} ${from.y + offset}` + points.map((j) => `H${j.x}V${j.y + offset}`).join('') + `H${to.x}V${to.y + offset}`;
+    };
+    return `<path d="${route(0)}" stroke="#000" stroke-opacity=".35" stroke-width="18"/><path d="${route(0)}" stroke="${cl}" stroke-width="14"/>` +
+      `<path d="${route(-3)}" stroke="#fff" stroke-opacity=".25" stroke-width="3"/>` +
+      `<rect x="${from.x - 5}" y="${from.y - 10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${to.x}" y="${to.y - 10}" width="5" height="20" rx="1.5" class="wk"/>`;
+  };
+  if (WP && akt.length && !wpU) {
+    const supply = model.connections['wp-lower-supply'], ret = model.connections['wp-lower-return'];
+    const a = point(supply.to), b = point(ret.from), sj = model.junctions[supply.via[0]], rj = model.junctions[ret.via[0]];
+    o += `<path d="M${a.x} ${a.y}H254A8 8 0 0 1 270 ${sj.y}H${sj.x}M${rj.x} ${rj.y}H${b.x}${b.y !== rj.y ? `V${b.y}` : ''}" class="w3" style="${td}"/>`;
+  }
+  const hs = model.connections['hk-supply'], hr = model.connections['hk-return'];
+  const source = point(hs.from), sink = point(hs.to);
+  const back = point(hr.from), backEnd = point(hr.to);
+  const tf = 1 / Math.max(hk_fl, 0.04), fl1 = hk_fl > 0.04;
+  const jmp = (x) => (FM ? `399A9 9 0 0 0 ${x} 381` : '381');
+  const rl1 = W8 ? `M${back.x} ${back.y}H320Q312 462 312 454V${jmp(312)}` : `M${back.x} ${back.y}V${jmp(312)}`;
+  o += rohr(WP ? `${rl1}V368Q312 360 304 360H${backEnd.x + 8}Q${backEnd.x} 360 ${backEnd.x} ${backEnd.y + 12}V${backEnd.y}` : `${rl1}V${y_bu + 8}Q312 ${y_bu} 304 ${y_bu}H${backEnd.x}${backEnd.y !== y_bu ? `V${backEnd.y}` : ''}`, CK, fl1, tf);
+  o += rohr((WP ? `M${source.x} ${source.y}V${y_m - 9}A9 9 0 0 0 295 ${y_m + 9}V351A9 9 0 0 0 295 369`
+    : `M${source.x} ${source.y}H287Q295 ${y_ru} 295 ${y_ru + 8}V${y_bu - 9}A9 9 0 0 0 295 ${y_bu + 9}`) +
+    `V${FM ? '381A9 9 0 0 0 295 399' : '399'}` + (W8 ? `V402Q295 410 303 410H304A8 8 0 0 1 320 410H${sink.x}${sink.y !== 410 ? `V${sink.y}` : ''}` : `V${sink.y}${sink.x !== 295 ? `H${sink.x}` : ''}`), CW, fl1, tf);
+  if (W8) {
+    const ss = model.connections['separator-supply'], sr = model.connections['separator-return'];
+    const a = point(ss.from), b = point(ss.to), d = point(sr.from), e = point(sr.to);
+    o += rohr(`M${a.x} ${a.y}H348Q356 410 356 418V${b.y}${b.x !== 356 ? `H${b.x}` : ''}`, CW, fl1, tf);
+    o += rohr(`M${d.x} ${d.y}V470Q372 462 364 462A8 8 0 0 0 348 462H${e.x}${e.y !== 462 ? `V${e.y}` : ''}`, CK, fl1, tf);
+  }
+  for (const [i, x] of hks.entries()) {
+    const edge = model.connections[`heating-return-${i}`], a = point(edge.from), b = point(edge.to);
+    const rx = a.x;
+    if (x.MIX) {
+      const j = model.junctions[edge.via[0]], bypassEdge = model.connections[`heating-bypass-${i}`];
+      const bypassStart = point(bypassEdge.from), bypass = point(bypassEdge.to);
+      o += rohr(`M${rx} ${a.y}V${j.y}${j.x !== rx ? `H${j.x}` : ''}`, CK, x.on);
+      o += rohr(`M${j.x} ${j.y}V${b.y}${b.x !== j.x ? `H${b.x}` : ''}`, CK, x.on && x.a > 0.04, 1 / Math.max(x.a, 0.04));
+      o += rohr(`M${bypassStart.x} ${bypassStart.y}H${bypass.x}${bypass.y !== bypassStart.y ? `V${bypass.y}` : ''}`, CK, x.on && x.a < 0.96, 1 / Math.max(1 - x.a, 0.04));
+    } else o += rohr(`M${rx} ${a.y}V${b.y}${b.x !== rx ? `H${b.x}` : ''}`, CK, x.on);
+  }
+  const railAnimation = (from, to, edge, y) => {
+    const nodes = [point(edge.from), ...edge.via.map((id) => model.junctions[id]), point(edge.to)];
+    const vertices = [nodes[0]];
+    for (const node of nodes.slice(1)) {
+      const previous = vertices[vertices.length - 1];
+      if (previous.x !== node.x) vertices.push({ x: node.x, y: previous.y });
+      if (vertices[vertices.length - 1].y !== node.y) vertices.push(node);
+    }
+    const index = (p) => vertices.findIndex((v) => v.x === p.x && v.y === p.y);
+    const first = index(from), last = index(to);
+    if (first < 0 || last < 0) return `M${from.x} ${from.y}H${to.x}${to.y !== from.y ? `V${to.y}` : ''}`;
+    const section = first <= last ? vertices.slice(first, last + 1) : vertices.slice(last, first + 1).reverse();
+    if (section.every((v) => v.y === y)) return `M${from.x} ${from.y}H${to.x}`;
+    return `M${from.x} ${from.y}` + section.slice(1).map((v, i) => v.x === section[i].x ? `V${v.y}` : `H${v.x}`).join('');
+  };
+  o += verteiler(model.connections['manifold-return'], CK);
+  if (akt.length) {
+    const i = akt[aktReturn.indexOf(Math.min(...aktReturn))], from = model.junctions[`manifold-return-${i}`], to = model.junctions['manifold-primary-return'];
+    o += `<path d="${railAnimation(from, to, model.connections['manifold-return'], y_rv)}" class="w3" style="${td}"/>`;
+  }
+  for (const [i, x] of hks.entries()) {
+    const edge = model.connections[`heating-supply-${i}`], a = point(edge.from);
+    const b = point(!x.MIX && x.pumpe ? model.connections[`heating-pump-out-${i}`].to : edge.to);
+    const sx = a.x, jump = `M${sx} ${a.y}V${y_rv - 11}A11 11 0 0 1 ${sx} ${y_rv + 11}`;
+    const throughPump = (start, target, inlet) => {
+      if (!x.pumpe) return `V${target.y}${target.x !== start.x ? `H${target.x}` : ''}`;
+      const outlet = point(model.connections[`heating-pump-out-${i}`].from), pump = model.components[`heating-pump-${i}`];
+      const middle = model.connections[`heating-pump-through-${i}`], m1 = point(middle.from), m2 = point(middle.to);
+      const standard = inlet.x === start.x && outlet.x === start.x && inlet.y === pump.baseOrigin.y && outlet.y === pump.baseOrigin.y + 20 && m1.x === inlet.x && m1.y === inlet.y && m2.x === outlet.x && m2.y === outlet.y;
+      return standard ? `V${target.y}${target.x !== start.x ? `H${target.x}` : ''}` : `V${inlet.y}H${inlet.x}V${m1.y}H${m1.x}V${m2.y}H${m2.x}V${outlet.y}H${outlet.x}V${target.y}${target.x !== outlet.x ? `H${target.x}` : ''}`;
+    };
+    if (x.MIX) {
+      const mixed = model.connections[`heating-mixed-${i}`], d = point(mixed.from), e = point(x.pumpe ? model.connections[`heating-pump-out-${i}`].to : mixed.to);
+      o += rohr(`${jump}V${b.y}${b.x !== sx ? `H${b.x}` : ''}`, CW, x.on && x.a > 0.04, 1 / Math.max(x.a, 0.04));
+      o += rohr(`M${d.x} ${d.y}${throughPump(d, e, point(mixed.to))}`, x.c, x.on);
+    } else o += rohr(`${jump}${throughPump(a, b, point(edge.to))}`, CW, x.on);
+  }
+  o += verteiler(model.connections['manifold-supply'], CW);
+  if (akt.length) {
+    const i = akt[aktSupply.indexOf(Math.min(...aktSupply))], from = model.junctions['manifold-primary-supply'], to = model.junctions[`manifold-supply-${i}`];
+    o += `<path d="${railAnimation(from, to, model.connections['manifold-supply'], y_vv)}" class="w3" style="${td}"/>`;
+  }
+  return o;
+}
+
+function renderDistrictPipes({ model, point, F, k_feuer }) {
+  const a = point(model.connections['district-supply'].from), b = point(model.connections['district-supply'].to);
+  const d = point(model.connections['district-return'].from), e = point(model.connections['district-return'].to);
+  return rohr(`M${a.x} ${a.y}V${b.y}${b.x !== a.x ? `H${b.x}` : ''}`, F.warm, k_feuer) + rohr(`M${d.x} ${d.y}V${e.y}${e.x !== d.x ? `H${e.x}` : ''}`, F.kalt, k_feuer);
+}
+
 function renderFreshWaterModule({ FM, FMx, model, portStub, openComponent, closeComponent, c, more, zapf, F, fmTempText, fmFlowText }) {
   if (!FM) return '';
   let o = '';
@@ -1517,17 +1707,6 @@ class WarmwasserSchemaCard extends HTMLElement {
     /* ---------- Bausteine ---------- */
     const pumpe = (x, y, d, on) => renderPumpe(x, y, d, on, F.aktiv);
     const mischer = (x, y, cl, a = null, cw = CW, ck = CK) => renderMischer(x, y, cl, a, cw, ck);
-    const verteiler = (edge, cl) => {
-      const from = point(edge.from), to = point(edge.to);
-      const points = edge.via.map((id) => model.junctions[id]);
-      const route = (offset) => {
-        if (to.y === from.y && points.every((j) => j.y === from.y && j.x >= Math.min(from.x, to.x) && j.x <= Math.max(from.x, to.x))) return `M${from.x} ${from.y + offset}H${to.x}`;
-        return `M${from.x} ${from.y + offset}` + points.map((j) => `H${j.x}V${j.y + offset}`).join('') + `H${to.x}V${to.y + offset}`;
-      };
-      return `<path d="${route(0)}" stroke="#000" stroke-opacity=".35" stroke-width="18"/><path d="${route(0)}" stroke="${cl}" stroke-width="14"/>` +
-        `<path d="${route(-3)}" stroke="#fff" stroke-opacity=".25" stroke-width="3"/>` +
-        `<rect x="${from.x - 5}" y="${from.y - 10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${to.x}" y="${to.y - 10}" width="5" height="20" rx="1.5" class="wk"/>`;
-    };
     const chip = (icon, text, on, e) =>
       renderChip(icon, text, on, e, F.aktiv);
 
@@ -1598,66 +1777,7 @@ class WarmwasserSchemaCard extends HTMLElement {
       if (routes) { primaryPipes[id] = svg; return ''; }
       return svg;
     };
-    if (FM) {
-      const fs = point(model.connections['fm-supply'].from), fe = point(model.connections['fm-supply'].to);
-      const fr = point(model.connections['fm-return'].from), ft = point(model.connections['fm-return'].to);
-      o += primaryPipe('fm-supply', `M${fs.x} ${fs.y}H${fe.x}${fe.y !== fs.y ? `V${fe.y}` : ''}`, F.warm, fm_on);
-      // Separate tanks need the fresh-water return on the hot-water tank,
-      // while shared tanks retain the bottom connection.
-      const radius = Math.min(8, Math.max(0, (ft.y - fr.y) / 2));
-      const simpleReturn = WP && ft.y > 108 && ft.y <= 147 && !c.wp.wmz;
-      const returnX = simpleReturn ? 280 : WP && (ft.y > 108 || c.wp.wmz) ? 322 : 315;
-      // Near the charging-pipe corner, cross its straight leg instead. With a
-      // meter on that leg, carry the return below the crossing and back up.
-      const returnDetour = WP && ft.y <= 147 && !!c.wp.wmz;
-      const detourY = Math.max(155, ft.y + 32);
-      const fmRuecklauf = SPLIT
-        ? returnDetour
-          ? `M${fr.x} ${fr.y}H330Q322 ${fr.y} 322 ${fr.y + 8}V${detourY - 8}Q322 ${detourY} 314 ${detourY}H288Q280 ${detourY} 280 ${detourY - 8}V${ft.y + 8}Q280 ${ft.y} 272 ${ft.y}H${ft.x}`
-          : `M${fr.x} ${fr.y}H${returnX + radius}Q${returnX} ${fr.y} ${returnX} ${fr.y + radius}V${ft.y - radius}Q${returnX} ${ft.y} ${returnX - radius} ${ft.y}H${ft.x}`
-        : `M${fr.x} ${fr.y}H458Q466 90 466 98V382Q466 390 458 390H${ft.x + 8}Q${ft.x} 390 ${ft.x} 382V${ft.y}`;
-      o += primaryPipe('fm-return', fmRuecklauf, F.kalt, fm_on);
-    }
-    if (WP) {
-      const returnTee = HK ? model.junctions[model.connections['wp-lower-return'].via[0]] : null;
-      const wo = point(model.connections['wp-upper-return'].from), wv = point(model.connections['wp-upper-return'].to);
-      const wu = point(model.connections['wp-lower-return'].from), wvu = point(model.connections['wp-lower-return'].to);
-      const wvp = point(model.connections['wp-valve-return'].from), wr = point(model.connections['wp-valve-return'].to);
-      const ws = point(model.connections['wp-upper-supply'].from), wst = point(model.connections['wp-upper-supply'].to);
-      const wl = point(model.connections['wp-lower-supply'].from), wlt = point(model.connections['wp-lower-supply'].to);
-      o += primaryPipe('wp-upper-return', `M${wo.x} ${wo.y}H252Q262 ${y_bo} 262 ${y_bo + 10}V${wv.y}${wv.x !== 262 ? `H${wv.x}` : ''}`, CK, wpO, tO);
-      o += primaryPipe('wp-lower-return', `M${wu.x} ${wu.y}${returnTee && returnTee.y !== wu.y ? `V${returnTee.y}` : ''}H252Q262 ${returnTee ? returnTee.y : y_bu} 262 ${(returnTee ? returnTee.y : y_bu) - 10}V${wvu.y}${wvu.x !== 262 ? `H${wvu.x}` : ''}`, CK, wpU, tU);
-      o += primaryPipe('wp-valve-return', `M${wvp.x} ${wvp.y}H${wr.x}${wr.y !== wvp.y ? `V${wr.y}` : ''}`, CK, wp_on);
-      // Bridge the fresh-water return where it crosses the hot-water charging pipe.
-      const simpleReturn = FM && SPLIT && y_bo - 14 > 108 && y_bo - 14 <= 147 && !c.wp.wmz;
-      const wwLadung = FM && SPLIT && (y_bo - 14 > 108 || c.wp.wmz) && !simpleReturn
-        ? 'H328A6 6 0 0 1 316 128H308'
-        : 'H308';
-      const fmY = FM && SPLIT ? point(model.connections['fm-return'].to).y : y_bo - 14;
-      const bridgeY = simpleReturn ? 90 : fmY;
-      const verticalBridge = FM && SPLIT && (simpleReturn || (!c.wp.wmz && fmY >= y_ro + 20 && fmY <= 108))
-        ? `V${bridgeY + 6}A6 6 0 0 1 300 ${bridgeY - 6}` : '';
-      const meter = model.connections['wp-upper-supply'].via.length ? model.junctions[model.connections['wp-upper-supply'].via[0]] : null;
-      const meterDetour = meter && (meter.x !== 300 || meter.y > 120 || meter.y < y_ro + 8) ? `V${meter.y}H${meter.x}H300` : '';
-      o += primaryPipe('wp-upper-supply', `M${ws.x} ${ws.y}V136Q350 128 342 128${wwLadung}Q300 128 300 120${verticalBridge}${meterDetour}V${y_ro + 8}Q300 ${y_ro} 292 ${y_ro}H${wst.x}${wst.y !== y_ro ? `V${wst.y}` : ''}`, CW, wpO, tO);
-      const sj = HK ? model.junctions[model.connections['wp-lower-supply'].via[0]] : null;
-      // The tees lie on these continuous paths; their explicit via references
-      // record incidence without changing the legacy SVG paint order.
-      const lowerBridge = FM && SPLIT ? 'H268A6 6 0 0 0 256' : 'H270A8 8 0 0 0 254';
-      o += primaryPipe('wp-lower-supply', `M${wl.x} ${wl.y}${sj && sj.y !== wl.y ? `V${sj.y}` : ''}${lowerBridge} ${sj ? sj.y : y_ru}H${wlt.x}${wlt.y !== (sj ? sj.y : y_ru) ? `V${wlt.y}` : ''}`, CW, wpU, tU);
-      if (QS) {
-        const qon = sourcePumpState(W, wp_on, ON);
-        const ia = point(model.connections['source-in'].from), ib = point(model.connections['source-in'].to);
-        const oa = point(model.connections['source-out'].from), ob = point(model.connections['source-out'].to);
-        if (QT === 'sole') {
-          const ground = model.connections['source-ground-loop'], gs = point(ground.from), ge = point(ground.to);
-          const toGround = gs.x !== ib.x || gs.y !== ib.y ? `H${gs.x}V${gs.y}` : '';
-          const fromGround = ge.x !== oa.x || ge.y !== oa.y ? `H${oa.x}V${oa.y}` : '';
-          o += rohr(`M${ia.x} ${ia.y}V381A9 9 0 0 1 400 399V${ib.y}${ib.x !== 400 ? `H${ib.x}` : ''}${toGround}Q${gs.x} ${gs.y + 12} ${(gs.x + ge.x) / 2} ${gs.y + 12}Q${ge.x} ${ge.y + 12} ${ge.x} ${ge.y}${fromGround}V399A9 9 0 0 1 430 381V${ob.y}${ob.x !== 430 ? `H${ob.x}` : ''}`, F.quelle, qon);
-        }
-        else o += rohr(`M${ib.x} ${ib.y}V399A9 9 0 0 0 400 381V${ia.y}${ia.x !== 400 ? `H${ia.x}` : ''}`, F.quelle, qon) + rohr(`M${ob.x} ${ob.y}V381A9 9 0 0 1 430 399V${oa.y}${oa.x !== 430 ? `H${oa.x}` : ''}`, F.quelle, qon);
-      }
-    }
+    o += renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT });
     // Preserve the compiler's bridge order for whole pipe groups and animation.
     if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => routes[a].paintOrder - routes[b].paintOrder)) o += primaryPipes[id];
     if (TW) {
@@ -1682,108 +1802,12 @@ class WarmwasserSchemaCard extends HTMLElement {
       }
     }
     o += renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON });
-    if (K) {
-      const returnFirst = model.connections[K.pumpe ? 'additional-return-tank' : 'additional-return'];
-      const returnLast = model.connections[K.pumpe ? 'additional-return-device' : 'additional-return'];
-      const supply = model.connections['additional-supply'];
-      const a = point(returnFirst.from), d = point(returnLast.to), e = point(supply.from), b = point(supply.to);
-      const middle = K.pumpe ? model.connections['additional-pump-through'] : null;
-      const pin = K.pumpe ? point(returnFirst.to) : null, m1 = middle ? point(middle.from) : null, m2 = middle ? point(middle.to) : null, pout = K.pumpe ? point(returnLast.from) : null;
-      const through = pin && (pin.y !== a.y || pout.y !== a.y || pin.x <= pout.x || m1.x !== pin.x || m1.y !== pin.y || m2.x !== pout.x || m2.y !== pout.y) ? `H${pin.x}V${pin.y}H${m1.x}V${m1.y}H${m2.x}V${m2.y}H${pout.x}V${pout.y}V${d.y}` : '';
-      const meter = supply.via.length ? model.junctions[supply.via[0]] : null;
-      const detour = meter && (meter.y !== e.y || meter.x < Math.min(e.x, b.x) || meter.x > Math.max(e.x, b.x)) ? `H${meter.x}V${meter.y}` : '';
-      o += rohr(`M${a.x} ${a.y}${through}H${d.x}${!through && d.y !== a.y ? `V${d.y}` : ''}`, F.kalt, k_pumpe) + rohr(`M${e.x} ${e.y}${detour}H${b.x}${(detour ? meter.y : e.y) !== b.y ? `V${b.y}` : ''}`, F.warm, k_pumpe);
-    }
-    if (SO) {
-      const supply = model.connections['solar-supply'], a = point(supply.to), cs = point(supply.from);
-      const first = model.connections[SO.pumpe ? 'solar-return-tank' : 'solar-return'];
-      const last = model.connections[SO.pumpe ? 'solar-return-collector' : 'solar-return'];
-      const b = point(first.from), cr = point(last.to);
-      o += rohr(`M${cs.x} ${cs.y}V387Q${cs.x} 395 ${cs.x + 8} 395H${a.x - 8}Q${a.x} 395 ${a.x} 387V${a.y}`, F.warm, so_on);
-      const middle = SO.pumpe ? model.connections['solar-pump-through'] : null;
-      const pin = SO.pumpe ? point(first.to) : null, m1 = middle ? point(middle.from) : null, m2 = middle ? point(middle.to) : null, pout = SO.pumpe ? point(last.from) : null;
-      const through = pin && (pin.x !== cr.x || pout.x !== cr.x || pin.y <= pout.y || m1.x !== pin.x || m1.y !== pin.y || m2.x !== pout.x || m2.y !== pout.y) ? `V${pin.y}H${pin.x}V${m1.y}H${m1.x}V${m2.y}H${m2.x}V${pout.y}H${pout.x}H${cr.x}` : '';
-      o += rohr(`M${b.x} ${b.y}V397Q${b.x} 405 ${b.x - 8} 405H${cr.x + 8}Q${cr.x} 405 ${cr.x} 397${through}V${cr.y}`, F.kalt, so_on);
-    }
-
+    o += renderAdditionalAndSolarPipes({ K, SO, model, point, F, k_pumpe, so_on });
     /* ---------- Heizkreisverteiler ---------- */
     const y_vv = HK ? point(model.connections['manifold-supply'].from).y : 420 + dyw, y_rv = HK ? point(model.connections['manifold-return'].from).y : 448 + dyw;
     const y_hm = 482 + dyw, y_he = 548 + dyw;
     if (HK) {
-      if (WP && akt.length && !wpU) {
-        const supply = model.connections['wp-lower-supply'], ret = model.connections['wp-lower-return'];
-        const a = point(supply.to), b = point(ret.from), sj = model.junctions[supply.via[0]], rj = model.junctions[ret.via[0]];
-        o += `<path d="M${a.x} ${a.y}H254A8 8 0 0 1 270 ${sj.y}H${sj.x}M${rj.x} ${rj.y}H${b.x}${b.y !== rj.y ? `V${b.y}` : ''}" class="w3" style="${td}"/>`;
-      }
-      const hs = model.connections['hk-supply'], hr = model.connections['hk-return'];
-      const source = point(hs.from), sink = point(hs.to);
-      const back = point(hr.from), backEnd = point(hr.to);
-      const tf = 1 / Math.max(hk_fl, 0.04), fl1 = hk_fl > 0.04;
-      const jmp = (x) => (FM ? `399A9 9 0 0 0 ${x} 381` : '381');
-      const rl1 = W8 ? `M${back.x} ${back.y}H320Q312 462 312 454V${jmp(312)}` : `M${back.x} ${back.y}V${jmp(312)}`;
-      o += rohr(WP ? `${rl1}V368Q312 360 304 360H${backEnd.x + 8}Q${backEnd.x} 360 ${backEnd.x} ${backEnd.y + 12}V${backEnd.y}` : `${rl1}V${y_bu + 8}Q312 ${y_bu} 304 ${y_bu}H${backEnd.x}${backEnd.y !== y_bu ? `V${backEnd.y}` : ''}`, CK, fl1, tf);
-      o += rohr((WP ? `M${source.x} ${source.y}V${y_m - 9}A9 9 0 0 0 295 ${y_m + 9}V351A9 9 0 0 0 295 369`
-        : `M${source.x} ${source.y}H287Q295 ${y_ru} 295 ${y_ru + 8}V${y_bu - 9}A9 9 0 0 0 295 ${y_bu + 9}`) +
-        `V${FM ? '381A9 9 0 0 0 295 399' : '399'}` + (W8 ? `V402Q295 410 303 410H304A8 8 0 0 1 320 410H${sink.x}${sink.y !== 410 ? `V${sink.y}` : ''}` : `V${sink.y}${sink.x !== 295 ? `H${sink.x}` : ''}`), CW, fl1, tf);
-      if (W8) {
-        const ss = model.connections['separator-supply'], sr = model.connections['separator-return'];
-        const a = point(ss.from), b = point(ss.to), d = point(sr.from), e = point(sr.to);
-        o += rohr(`M${a.x} ${a.y}H348Q356 410 356 418V${b.y}${b.x !== 356 ? `H${b.x}` : ''}`, CW, fl1, tf);
-        o += rohr(`M${d.x} ${d.y}V470Q372 462 364 462A8 8 0 0 0 348 462H${e.x}${e.y !== 462 ? `V${e.y}` : ''}`, CK, fl1, tf);
-      }
-      for (const [i, x] of hks.entries()) {
-        const edge = model.connections[`heating-return-${i}`], a = point(edge.from), b = point(edge.to);
-        const rx = a.x;
-        if (x.MIX) {
-          const j = model.junctions[edge.via[0]], bypassEdge = model.connections[`heating-bypass-${i}`];
-          const bypassStart = point(bypassEdge.from), bypass = point(bypassEdge.to);
-          o += rohr(`M${rx} ${a.y}V${j.y}${j.x !== rx ? `H${j.x}` : ''}`, CK, x.on);
-          o += rohr(`M${j.x} ${j.y}V${b.y}${b.x !== j.x ? `H${b.x}` : ''}`, CK, x.on && x.a > 0.04, 1 / Math.max(x.a, 0.04));
-          o += rohr(`M${bypassStart.x} ${bypassStart.y}H${bypass.x}${bypass.y !== bypassStart.y ? `V${bypass.y}` : ''}`, CK, x.on && x.a < 0.96, 1 / Math.max(1 - x.a, 0.04));
-        } else o += rohr(`M${rx} ${a.y}V${b.y}${b.x !== rx ? `H${b.x}` : ''}`, CK, x.on);
-      }
-      const railAnimation = (from, to, edge, y) => {
-        const nodes = [point(edge.from), ...edge.via.map((id) => model.junctions[id]), point(edge.to)];
-        const vertices = [nodes[0]];
-        for (const node of nodes.slice(1)) {
-          const previous = vertices[vertices.length - 1];
-          if (previous.x !== node.x) vertices.push({ x: node.x, y: previous.y });
-          if (vertices[vertices.length - 1].y !== node.y) vertices.push(node);
-        }
-        const index = (p) => vertices.findIndex((v) => v.x === p.x && v.y === p.y);
-        const first = index(from), last = index(to);
-        if (first < 0 || last < 0) return `M${from.x} ${from.y}H${to.x}${to.y !== from.y ? `V${to.y}` : ''}`;
-        const section = first <= last ? vertices.slice(first, last + 1) : vertices.slice(last, first + 1).reverse();
-        if (section.every((v) => v.y === y)) return `M${from.x} ${from.y}H${to.x}`;
-        return `M${from.x} ${from.y}` + section.slice(1).map((v, i) => v.x === section[i].x ? `V${v.y}` : `H${v.x}`).join('');
-      };
-      o += verteiler(model.connections['manifold-return'], CK);
-      if (akt.length) {
-        const i = akt[aktReturn.indexOf(Math.min(...aktReturn))], from = model.junctions[`manifold-return-${i}`], to = model.junctions['manifold-primary-return'];
-        o += `<path d="${railAnimation(from, to, model.connections['manifold-return'], y_rv)}" class="w3" style="${td}"/>`;
-      }
-      for (const [i, x] of hks.entries()) {
-        const edge = model.connections[`heating-supply-${i}`], a = point(edge.from);
-        const b = point(!x.MIX && x.pumpe ? model.connections[`heating-pump-out-${i}`].to : edge.to);
-        const sx = a.x, jump = `M${sx} ${a.y}V${y_rv - 11}A11 11 0 0 1 ${sx} ${y_rv + 11}`;
-        const throughPump = (start, target, inlet) => {
-          if (!x.pumpe) return `V${target.y}${target.x !== start.x ? `H${target.x}` : ''}`;
-          const outlet = point(model.connections[`heating-pump-out-${i}`].from), pump = model.components[`heating-pump-${i}`];
-          const middle = model.connections[`heating-pump-through-${i}`], m1 = point(middle.from), m2 = point(middle.to);
-          const standard = inlet.x === start.x && outlet.x === start.x && inlet.y === pump.baseOrigin.y && outlet.y === pump.baseOrigin.y + 20 && m1.x === inlet.x && m1.y === inlet.y && m2.x === outlet.x && m2.y === outlet.y;
-          return standard ? `V${target.y}${target.x !== start.x ? `H${target.x}` : ''}` : `V${inlet.y}H${inlet.x}V${m1.y}H${m1.x}V${m2.y}H${m2.x}V${outlet.y}H${outlet.x}V${target.y}${target.x !== outlet.x ? `H${target.x}` : ''}`;
-        };
-        if (x.MIX) {
-          const mixed = model.connections[`heating-mixed-${i}`], d = point(mixed.from), e = point(x.pumpe ? model.connections[`heating-pump-out-${i}`].to : mixed.to);
-          o += rohr(`${jump}V${b.y}${b.x !== sx ? `H${b.x}` : ''}`, CW, x.on && x.a > 0.04, 1 / Math.max(x.a, 0.04));
-          o += rohr(`M${d.x} ${d.y}${throughPump(d, e, point(mixed.to))}`, x.c, x.on);
-        } else o += rohr(`${jump}${throughPump(a, b, point(edge.to))}`, CW, x.on);
-      }
-      o += verteiler(model.connections['manifold-supply'], CW);
-      if (akt.length) {
-        const i = akt[aktSupply.indexOf(Math.min(...aktSupply))], from = model.junctions['manifold-primary-supply'], to = model.junctions[`manifold-supply-${i}`];
-        o += `<path d="${railAnimation(from, to, model.connections['manifold-supply'], y_vv)}" class="w3" style="${td}"/>`;
-      }
+      o += renderHeatingPipes({ WP, akt, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
       o += `<text x="${bx1 - 8}" y="${y_vv + 3}" font-size="7.5" class="we ws" font-weight="600">VL</text><text x="${bx1 - 8}" y="${y_rv + 3}" font-size="7.5" class="we ws" font-weight="600">RL</text>`;
       o += renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComponent, hks, mischer, CW, L, y_hm, pumpe, y_he, F });
     }
@@ -1812,9 +1836,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (K) {
       o += renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent });
       if (kTyp === 'fernwaerme') {
-        const a = point(model.connections['district-supply'].from), b = point(model.connections['district-supply'].to);
-        const d = point(model.connections['district-return'].from), e = point(model.connections['district-return'].to);
-        o += rohr(`M${a.x} ${a.y}V${b.y}${b.x !== a.x ? `H${b.x}` : ''}`, F.warm, k_feuer) + rohr(`M${d.x} ${d.y}V${e.y}${e.x !== d.x ? `H${e.x}` : ''}`, F.kalt, k_feuer) + `<text x="-105" y="-18" font-size="7.5" class="wc ws" font-weight="600">${esc(L.typ.fernwaerme.toUpperCase())}</text>`;
+        o += renderDistrictPipes({ model, point, F, k_feuer }) + `<text x="-105" y="-18" font-size="7.5" class="wc ws" font-weight="600">${esc(L.typ.fernwaerme.toUpperCase())}</text>`;
       }
       o += renderAdditionalHeatDevice({ K, kTyp, kName, kFeuerTyp, t_k, k_tr, k_warm, k_feuer, k_glut, kHell, L, F, S, NUM, more, openComponent, closeComponent });
       o += portStub(model.connections['additional-supply'].from) + portStub(c.kamin.pumpe ? model.connections['additional-return-device'].to : model.connections['additional-return'].to);
