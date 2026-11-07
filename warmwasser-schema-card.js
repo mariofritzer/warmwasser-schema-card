@@ -878,6 +878,48 @@ function additionalHeatState(c, L, F, S, ON) {
   return { K, kTyp, kName, kFeuerTyp, t_k, k_tr, k_warm, k_feuer, k_glut, k_pumpe, k_mod, kHell };
 }
 
+function renderSolarCollector({ SO, so_on, x0, model, F, L, S, U, NUM, more, pumpe, openComponent, closeComponent }) {
+  let o = '';
+  if (SO) {
+    o += openComponent('solar-collector');
+    o += `<g${more(SO.kollektor || SO.leistung || SO.pumpe)}>`;
+    o += `<path d="M${x0} 36L${x0 + 14} -22H${x0 + 70}L${x0 + 56} 36Z" fill="url(#wwSol)" stroke="#9aa0a6" stroke-width="1.2" stroke-linejoin="round"/>`;
+    o += [1, 2, 3].map((k) => `<path d="M${x0 + k * 14} 36L${x0 + 14 + k * 14} -22" stroke="#9aa0a6" stroke-opacity=".6" stroke-width=".8"/>`).join('');
+    o += `<path d="M${x0 + 7} 7H${x0 + 63}" stroke="#9aa0a6" stroke-opacity=".6" stroke-width=".8"/>`;
+    const sc = so_on ? '#ffd23f' : '#6b7280';
+    o += `<circle cx="${x0 + 80}" cy="-16" r="5" fill="${sc}"${so_on ? ' class="wb" style="animation-duration:3s"' : ''}/>` +
+      [0, 45, 90, 135, 180, 225, 270, 315].map((a) => `<path d="M${x0 + 80} -24v-3" stroke="${sc}" stroke-width="1.5" stroke-linecap="round" transform="rotate(${a} ${x0 + 80} -16)"/>`).join('');
+    if (SO.kollektor) o += `<text x="${x0 + 30}" y="54" font-size="11" class="wc wt${so_on ? '' : ' wv'}"${so_on ? ` fill="${F.solar}"` : ''}>${fmt(S(SO.kollektor))}</text>`;
+    o += `<text x="${x0 + 30}" y="${SO.kollektor ? 66 : 54}" font-size="7.5" class="wc ws" font-weight="600" letter-spacing="1">${esc(String(SO.name || L.solar).toUpperCase())}</text></g>`;
+    o += closeComponent('solar-collector');
+    if (SO.pumpe) {
+      const b = model.components['solar-pump'];
+      o += `<g${more(SO.pumpe)}>${pumpe(b.origin.x + 10, b.origin.y + 10, 'u', so_on)}</g>`;
+    }
+    o += openComponent('solar-collector');
+    if (SO.leistung) o += `<text x="${x0 + 30}" y="250" font-size="8.5" class="wc wt wx${so_on ? '' : ' ws'}" data-more="${esc(SO.leistung)}"${so_on ? ` fill="${F.solar}"` : ''}>${watt(NUM(SO.leistung))}</text>`;
+    if (SO.wmz) o += `<text x="${x0 + 30}" y="264" font-size="8" class="wc ws wx" data-more="${esc(SO.wmz)}">${r1(NUM(SO.wmz))} ${esc(U(SO.wmz, 'kWh'))}</text>`;
+    o += closeComponent('solar-collector');
+  }
+  return o;
+}
+
+function renderSolarExchanger({ SO, so_on, model, F, point, bufferId, portStub, openComponent, closeComponent }) {
+  let o = '';
+  if (SO) {
+    o += openComponent('solar-exchanger');
+    const edge = model.connections['solar-coil'], a = point(edge.from), b = point(edge.to);
+    const coil = model.components['solar-exchanger'], dx = coil.origin.x - coil.baseOrigin.x, dy = coil.origin.y - coil.baseOrigin.y;
+    const ax = a.x - dx, ay = a.y - dy, bx = b.x - dx, by = b.y - dy;
+    const sp = `M${ax} ${ay}V348H180Q186 348 186 354Q186 360 180 360H128Q122 360 122 366V${by}${bx !== 122 ? `H${bx}` : ''}`;
+    o += `<path d="${sp}" fill="none" stroke="${F.solar}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>`;
+    if (so_on) o += `<path d="${sp}" class="w3" style="stroke-width:1.6px"/>`;
+    o += closeComponent('solar-exchanger');
+    o += portStub(`${bufferId}.solar-supply`) + portStub(`${bufferId}.solar-return`);
+  }
+  return o;
+}
+
 function solarState(c, ON, NUM) {
   const SO = c.solar;
   const so_on = SO && SO.pumpe ? ON(SO.pumpe) : SO && SO.leistung ? NUM(SO.leistung) > 10 : false;
@@ -1495,27 +1537,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
 
     /* ---------- Solar ---------- */
-    if (SO) {
-      o += openComponent('solar-collector');
-      o += `<g${more(SO.kollektor || SO.leistung || SO.pumpe)}>`;
-      o += `<path d="M${x0} 36L${x0 + 14} -22H${x0 + 70}L${x0 + 56} 36Z" fill="url(#wwSol)" stroke="#9aa0a6" stroke-width="1.2" stroke-linejoin="round"/>`;
-      o += [1, 2, 3].map((k) => `<path d="M${x0 + k * 14} 36L${x0 + 14 + k * 14} -22" stroke="#9aa0a6" stroke-opacity=".6" stroke-width=".8"/>`).join('');
-      o += `<path d="M${x0 + 7} 7H${x0 + 63}" stroke="#9aa0a6" stroke-opacity=".6" stroke-width=".8"/>`;
-      const sc = so_on ? '#ffd23f' : '#6b7280';
-      o += `<circle cx="${x0 + 80}" cy="-16" r="5" fill="${sc}"${so_on ? ' class="wb" style="animation-duration:3s"' : ''}/>` +
-        [0, 45, 90, 135, 180, 225, 270, 315].map((a) => `<path d="M${x0 + 80} -24v-3" stroke="${sc}" stroke-width="1.5" stroke-linecap="round" transform="rotate(${a} ${x0 + 80} -16)"/>`).join('');
-      if (SO.kollektor) o += `<text x="${x0 + 30}" y="54" font-size="11" class="wc wt${so_on ? '' : ' wv'}"${so_on ? ` fill="${F.solar}"` : ''}>${fmt(S(SO.kollektor))}</text>`;
-      o += `<text x="${x0 + 30}" y="${SO.kollektor ? 66 : 54}" font-size="7.5" class="wc ws" font-weight="600" letter-spacing="1">${esc(String(SO.name || L.solar).toUpperCase())}</text></g>`;
-      o += closeComponent('solar-collector');
-      if (SO.pumpe) {
-        const b = model.components['solar-pump'];
-        o += `<g${more(SO.pumpe)}>${pumpe(b.origin.x + 10, b.origin.y + 10, 'u', so_on)}</g>`;
-      }
-      o += openComponent('solar-collector');
-      if (SO.leistung) o += `<text x="${x0 + 30}" y="250" font-size="8.5" class="wc wt wx${so_on ? '' : ' ws'}" data-more="${esc(SO.leistung)}"${so_on ? ` fill="${F.solar}"` : ''}>${watt(NUM(SO.leistung))}</text>`;
-      if (SO.wmz) o += `<text x="${x0 + 30}" y="264" font-size="8" class="wc ws wx" data-more="${esc(SO.wmz)}">${r1(NUM(SO.wmz))} ${esc(U(SO.wmz, 'kWh'))}</text>`;
-      o += closeComponent('solar-collector');
-    }
+    o += renderSolarCollector({ SO, so_on, x0, model, F, L, S, U, NUM, more, pumpe, openComponent, closeComponent });
 
     /* ---------- Zusatzwärme ---------- */
     if (K) {
@@ -1629,17 +1651,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
     if (TT) o += portStub(`${tankId}.cold-water`) + portStub(`${tankId}.hot-water`);
     if (TG) o += openComponent(tankId) + `<rect x="73" y="${y_t - 2}" width="128" height="4" fill="url(#wwGrid)"/><path d="M73 ${y_t - 2}H201M73 ${y_t + 2}H201" stroke="#fff" stroke-opacity=".6" stroke-width=".7"/>` + closeComponent(tankId);
-    if (SO) {
-      o += openComponent('solar-exchanger');
-      const edge = model.connections['solar-coil'], a = point(edge.from), b = point(edge.to);
-      const coil = model.components['solar-exchanger'], dx = coil.origin.x - coil.baseOrigin.x, dy = coil.origin.y - coil.baseOrigin.y;
-      const ax = a.x - dx, ay = a.y - dy, bx = b.x - dx, by = b.y - dy;
-      const sp = `M${ax} ${ay}V348H180Q186 348 186 354Q186 360 180 360H128Q122 360 122 366V${by}${bx !== 122 ? `H${bx}` : ''}`;
-      o += `<path d="${sp}" fill="none" stroke="${F.solar}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>`;
-      if (so_on) o += `<path d="${sp}" class="w3" style="stroke-width:1.6px"/>`;
-      o += closeComponent('solar-exchanger');
-      o += portStub(`${bufferId}.solar-supply`) + portStub(`${bufferId}.solar-return`);
-    }
+    o += renderSolarExchanger({ SO, so_on, model, F, point, bufferId, portStub, openComponent, closeComponent });
     if (FM) o += portStub(model.connections['fm-supply'].from);
     if (WP) o += portStub(model.connections['wp-upper-supply'].to) + portStub(model.connections['wp-upper-return'].from);
     if (WP || HK) o += WP ? portStub(model.connections['wp-lower-supply'].to) + portStub(model.connections['wp-lower-return'].from) : portStub(model.connections['hk-supply'].from) + portStub(model.connections['hk-return'].to);
