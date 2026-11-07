@@ -837,6 +837,18 @@ function tankState(c, S, y_t) {
   return { fl, stops, avg, col };
 }
 
+function renderTankSensors({ fl, col, more, openComponent, closeComponent }) {
+  const pille = (f) => {
+    const y = r1(f.y), cl = col(f.wert);
+    return `<g${more(f.entity)}><line x1="60" y1="${y}" x2="72" y2="${y}" stroke="${cl}" stroke-width="1.5"/>` +
+      `<rect x="2" y="${r1(y - 15)}" width="58" height="30" rx="10" style="fill:var(--secondary-background-color,#2a2d33)" stroke="${cl}" stroke-width="1.5"/>` +
+      `<text x="31" y="${r1(y - 3)}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${esc(f.name)}</text>` +
+      `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
+      `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
+  };
+  return fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f) + closeComponent(id); }).join('');
+}
+
 function renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S }) {
   let o = '';
   const stab = (y, hs) => {
@@ -1098,6 +1110,17 @@ function legionellaState(LG, L, F, S, ON) {
       }
     }
     return { lAkt, t, lc };
+}
+
+function renderLegionellaBadge({ c, L, F, S, ON, TT, tankId, openComponent, closeComponent }) {
+  let o = '';
+  const LG = c.legionellen;
+  if (LG) {
+    const { lAkt, t, lc } = legionellaState(LG, L, F, S, ON);
+    const bx = TT ? 226 : 80;
+    if (t) o += openComponent(tankId) + `<g data-more="${esc(LG.letzte || LG.aktiv)}" class="wx${lAkt ? ' wb' : ''}"><rect x="${bx}" y="-26" width="120" height="16" rx="8" fill="${lc}" fill-opacity=".16" stroke="${lc}"/><text x="${bx + 60}" y="-15" font-size="8" class="wc wt" fill="${lc}">${t}</text></g>` + closeComponent(tankId);
+  }
+  return o;
 }
 
 function renderHeatSource({ QS, QT, W, model, portStub, openComponent, closeComponent, S }) {
@@ -1394,14 +1417,6 @@ class WarmwasserSchemaCard extends HTMLElement {
       return `<path d="${route(0)}" stroke="#000" stroke-opacity=".35" stroke-width="18"/><path d="${route(0)}" stroke="${cl}" stroke-width="14"/>` +
         `<path d="${route(-3)}" stroke="#fff" stroke-opacity=".25" stroke-width="3"/>` +
         `<rect x="${from.x - 5}" y="${from.y - 10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${to.x}" y="${to.y - 10}" width="5" height="20" rx="1.5" class="wk"/>`;
-    };
-    const pille = (f) => {
-      const y = r1(f.y), cl = col(f.wert);
-      return `<g${more(f.entity)}><line x1="60" y1="${y}" x2="72" y2="${y}" stroke="${cl}" stroke-width="1.5"/>` +
-        `<rect x="2" y="${r1(y - 15)}" width="58" height="30" rx="10" style="fill:var(--secondary-background-color,#2a2d33)" stroke="${cl}" stroke-width="1.5"/>` +
-        `<text x="31" y="${r1(y - 3)}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${esc(f.name)}</text>` +
-        `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
-        `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
     };
     const chip = (icon, text, on, e) =>
       `<span class="chip${e ? ' wx' : ''}"${e ? ` data-more="${esc(e)}"` : ''}${on ? ` style="background:color-mix(in srgb,${F.aktiv} 16%,transparent);color:${F.aktiv}"` : ''}><ha-icon icon="${icon}" style="--mdc-icon-size:15px"></ha-icon>${text}</span>`;
@@ -1771,15 +1786,10 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (K) o += portStub(`${bufferId}.additional-supply`) + portStub(`${bufferId}.additional-return`);
     if (FM) o += portStub(model.connections['fm-return'].to);
     o += renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S });
-    o += fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f) + closeComponent(id); }).join('');
+    o += renderTankSensors({ fl, col, more, openComponent, closeComponent });
 
     /* Legionellenschutz */
-    const LG = c.legionellen;
-    if (LG) {
-      const { lAkt, t, lc } = legionellaState(LG, L, F, S, ON);
-      const bx = TT ? 226 : 80;
-      if (t) o += openComponent(tankId) + `<g data-more="${esc(LG.letzte || LG.aktiv)}" class="wx${lAkt ? ' wb' : ''}"><rect x="${bx}" y="-26" width="120" height="16" rx="8" fill="${lc}" fill-opacity=".16" stroke="${lc}"/><text x="${bx + 60}" y="-15" font-size="8" class="wc wt" fill="${lc}">${t}</text></g>` + closeComponent(tankId);
-    }
+    o += renderLegionellaBadge({ c, L, F, S, ON, TT, tankId, openComponent, closeComponent });
 
     /* ---------- Frischwassermodul ---------- */
     o += renderFreshWaterModule({ FM, FMx, model, portStub, openComponent, closeComponent, c, more, zapf, F, fmTempText, fmFlowText });
