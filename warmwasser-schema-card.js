@@ -182,16 +182,9 @@ function createDiagramBuilder() {
   return { components, junctions, connections, component, p, junction, connection };
 }
 
-function diagramModel(c) {
-  const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
-  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
-  const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
-  const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
-  const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
-  const ro = fmHeater ? Math.min(70, bo - 54) : 70;
-  const nominalHeaterY = (ro + bo) / 2;
-  const heaterY = fmHeater && Math.abs(nominalHeaterY - (bo - 14)) < 18 ? (ro + bo - 14) / 2 : nominalHeaterY;
-  const { components, junctions, connections, component, p, junction, connection } = createDiagramBuilder();
+function buildTankSection(c, builder, geometry) {
+  const { component, p } = builder;
+  const { split, tt, fm, wp, hk, yt, ro, bo, ru, bu, heaterY } = geometry;
   const hot = component(split ? 'hot-tank' : 'tank', 72, 14, 130, split ? yt - 22 : 360);
   const buffer = split ? component('buffer-tank', 72, yt + 8, 130, 366 - yt) : hot;
   component('tank-feet', 93, 362, 88, 22, buffer);
@@ -215,6 +208,12 @@ function diagramModel(c) {
     tank.lowerSupply = p(buffer, 'lower-supply', 206, ru, 'right', 'supply', [198, ru - 6, 14, 12]);
     tank.lowerReturn = p(buffer, 'lower-return', 206, bu, 'right', 'return', [198, bu - 6, 14, 12]);
   }
+  return { hot, buffer, tank };
+}
+
+function buildAdditionalHeatSection(c, builder, geometry, buffer) {
+  const { component, p, junction, connection, connections } = builder;
+  const { ru, bu } = geometry;
   if (c.kamin) {
     const ts = p(buffer, 'additional-supply', 70, ru, 'left', 'supply', [62, ru - 6, 14, 12]);
     const tr = p(buffer, 'additional-return', 70, bu, 'left', 'return', [62, bu - 6, 14, 12]);
@@ -240,6 +239,10 @@ function diagramModel(c) {
       connection('additional-return-tank', tr, a); connection('additional-pump-through', a, b); connection('additional-return-device', b, dr);
     } else connection('additional-return', tr, dr);
   }
+}
+
+function buildSolarSection(c, builder, buffer) {
+  const { component, p, connection } = builder;
   if (c.solar) {
     const ts = p(buffer, 'solar-supply', 110, 374, 'bottom', 'supply', [104, 368, 12, 8], 'solar-loop');
     const tr = p(buffer, 'solar-return', 122, 374, 'bottom', 'return', [116, 368, 12, 8], 'solar-loop');
@@ -254,6 +257,23 @@ function diagramModel(c) {
       connection('solar-return-tank', tr, a); connection('solar-pump-through', a, b); connection('solar-return-collector', b, cr);
     } else connection('solar-return', tr, cr);
   }
+}
+
+function diagramModel(c) {
+  const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
+  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
+  const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
+  const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
+  const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
+  const ro = fmHeater ? Math.min(70, bo - 54) : 70;
+  const nominalHeaterY = (ro + bo) / 2;
+  const heaterY = fmHeater && Math.abs(nominalHeaterY - (bo - 14)) < 18 ? (ro + bo - 14) / 2 : nominalHeaterY;
+  const { components, junctions, connections, component, p, junction, connection } = createDiagramBuilder();
+  const builder = { components, junctions, connections, component, p, junction, connection };
+  const geometry = { split, tt, fm, wp, hk, yt, ro, bo, ru, bu, heaterY };
+  const { hot, buffer, tank } = buildTankSection(c, builder, geometry);
+  buildAdditionalHeatSection(c, builder, geometry, buffer);
+  buildSolarSection(c, builder, buffer);
   if (fm) {
     tank.fmReturn = split ? p(hot, 'fm-return', 206, bo - 14, 'right', 'return', [198, bo - 20, 12, 12])
       : p(hot, 'fm-return', 137, 376, 'bottom', 'return', [131, 370, 12, 12]);
