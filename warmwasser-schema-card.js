@@ -1002,6 +1002,24 @@ function legionellaState(LG, L, F, S, ON) {
     return { lAkt, t, lc };
 }
 
+function renderHeatSource({ QS, QT, W, model, portStub, openComponent, closeComponent, S }) {
+  if (!QS) return '';
+  let o = '';
+  o += openComponent('heat-source');
+  o += `<rect x="382" y="404" width="100" height="156" rx="4" fill="#6b4f3a" fill-opacity=".35"/><path d="M382 404H482" stroke="#4cb050" stroke-width="3"/>`;
+  if (QT === 'wasser') {
+    o += `<rect x="382" y="478" width="100" height="82" rx="4" fill="#3d8bff" fill-opacity=".25"/><path d="M382 478q6-4 12 0t12 0 12 0 12 0 12 0 12 0 12 0 12 0 4 0" fill="none" stroke="#3d8bff" stroke-opacity=".7" stroke-width="1.2"/>`;
+    o += `<rect x="391" y="408" width="18" height="140" rx="3" fill="none" stroke="#9aa0a6" stroke-opacity=".7"/><rect x="421" y="408" width="18" height="140" rx="3" fill="none" stroke="#9aa0a6" stroke-opacity=".7"/>`;
+  }
+  o += closeComponent('heat-source');
+  o += portStub(model.connections['source-in'].from) + portStub(model.connections['source-out'].to);
+  o += openComponent('heat-source');
+  if (W.quelle_ein) o += `<text x="444" y="426" font-size="8.5" class="wt wv wx" data-more="${esc(W.quelle_ein)}">↑ ${fmt(S(W.quelle_ein))}</text>`;
+  if (W.quelle_aus) o += `<text x="444" y="440" font-size="8.5" class="wt wv wx" data-more="${esc(W.quelle_aus)}">↓ ${fmt(S(W.quelle_aus))}</text>`;
+  o += closeComponent('heat-source');
+  return o;
+}
+
 function sourcePumpState(W, wp_on, ON) {
   return wp_on || (W.quelle_pumpe ? ON(W.quelle_pumpe) : false);
 }
@@ -1744,20 +1762,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
 
     /* ---------- Wärmequelle Sole / Wasser ---------- */
-    if (QS) {
-      o += openComponent('heat-source');
-      o += `<rect x="382" y="404" width="100" height="156" rx="4" fill="#6b4f3a" fill-opacity=".35"/><path d="M382 404H482" stroke="#4cb050" stroke-width="3"/>`;
-      if (QT === 'wasser') {
-        o += `<rect x="382" y="478" width="100" height="82" rx="4" fill="#3d8bff" fill-opacity=".25"/><path d="M382 478q6-4 12 0t12 0 12 0 12 0 12 0 12 0 12 0 12 0 4 0" fill="none" stroke="#3d8bff" stroke-opacity=".7" stroke-width="1.2"/>`;
-        o += `<rect x="391" y="408" width="18" height="140" rx="3" fill="none" stroke="#9aa0a6" stroke-opacity=".7"/><rect x="421" y="408" width="18" height="140" rx="3" fill="none" stroke="#9aa0a6" stroke-opacity=".7"/>`;
-      }
-      o += closeComponent('heat-source');
-      o += portStub(model.connections['source-in'].from) + portStub(model.connections['source-out'].to);
-      o += openComponent('heat-source');
-      if (W.quelle_ein) o += `<text x="444" y="426" font-size="8.5" class="wt wv wx" data-more="${esc(W.quelle_ein)}">↑ ${fmt(S(W.quelle_ein))}</text>`;
-      if (W.quelle_aus) o += `<text x="444" y="440" font-size="8.5" class="wt wv wx" data-more="${esc(W.quelle_aus)}">↓ ${fmt(S(W.quelle_aus))}</text>`;
-      o += closeComponent('heat-source');
-    }
+    o += renderHeatSource({ QS, QT, W, model, portStub, openComponent, closeComponent, S });
 
     /* ---------- Wärmepumpe ---------- */
     o += renderHeatPump({ WP, W, model, portStub, openComponent, closeComponent, c, wpCopText, wp_abtau, F, wp_on, kuehl, QT, more, wpStatus, wpPowerText, wpTemperatures, S, L, wp_sperre });
