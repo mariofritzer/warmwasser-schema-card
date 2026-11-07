@@ -142,15 +142,7 @@ function patch(a, b) {
 /* ======================================================================== */
 // Internal diagram template. Ports use local coordinates; a shared coordinate does
 // not create an edge. Boundary components identify connections outside this diagram.
-function diagramModel(c) {
-  const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
-  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
-  const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
-  const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
-  const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
-  const ro = fmHeater ? Math.min(70, bo - 54) : 70;
-  const nominalHeaterY = (ro + bo) / 2;
-  const heaterY = fmHeater && Math.abs(nominalHeaterY - (bo - 14)) < 18 ? (ro + bo - 14) / 2 : nominalHeaterY;
+function createDiagramBuilder() {
   const components = {}, junctions = {}, connections = {};
   function component(id, x, y, width, height, parent = null) {
     if (components[id]) throw new Error(`Duplicate component: ${id}`);
@@ -186,9 +178,22 @@ function diagramModel(c) {
     if (connections[id]) throw new Error(`Duplicate connection: ${id}`);
     connections[id] = { id, from, to, via };
   }
+  const p = (comp, id, x, y, dir, role, rect, medium = 'heating-water') => port(comp, id, x, y, dir, medium, role, rect);
+  return { components, junctions, connections, component, p, junction, connection };
+}
+
+function diagramModel(c) {
+  const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
+  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
+  const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
+  const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
+  const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
+  const ro = fmHeater ? Math.min(70, bo - 54) : 70;
+  const nominalHeaterY = (ro + bo) / 2;
+  const heaterY = fmHeater && Math.abs(nominalHeaterY - (bo - 14)) < 18 ? (ro + bo - 14) / 2 : nominalHeaterY;
+  const { components, junctions, connections, component, p, junction, connection } = createDiagramBuilder();
   const hot = component(split ? 'hot-tank' : 'tank', 72, 14, 130, split ? yt - 22 : 360);
   const buffer = split ? component('buffer-tank', 72, yt + 8, 130, 366 - yt) : hot;
-  const p = (comp, id, x, y, dir, role, rect, medium = 'heating-water') => port(comp, id, x, y, dir, medium, role, rect);
   component('tank-feet', 93, 362, 88, 22, buffer);
   if (tt) component('domestic-inner', 100, 18, 76, 334, hot);
   if (c.solar) component('solar-exchanger', 110, 348, 76, 26, buffer);
