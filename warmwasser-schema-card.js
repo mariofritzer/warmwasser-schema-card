@@ -954,6 +954,33 @@ function renderFreshWaterModule({ FM, FMx, model, portStub, openComponent, close
   return o;
 }
 
+function renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON }) {
+  let o = '';
+  const TWc = c.trinkwasser;
+  if (TW) {
+    const domesticOffset = model.components['domestic-boundary'].origin.y - model.components['domestic-boundary'].baseOrigin.y;
+    o += TWc && TWc.zaehler ? `<g${more(TWc.zaehler)}>${zaehlerSym(model.components['domestic-meter'].origin.x + 6, model.components['domestic-meter'].origin.y + 6)}</g>` : `<path d="M${tk - 4}${-23 + domesticOffset}l4 4 4-4" class="wa"/>`;
+    o += `<path d="M${tw - 4}${-19 + domesticOffset}l4-4 4 4" class="wa"/>`;
+    if (ZK) {
+      const b = model.components['circulation-pump'], px = b.origin.x + 10, py = b.origin.y + 10;
+      o += `<g data-act="zirk" class="wx"><title>${L.zirkTitle}</title><circle cx="${px}" cy="${py}" r="14" fill="transparent"/>${pumpe(px, py, 'l', zirk_on)}</g>`;
+      o += `<text x="${px}" y="${py - 14}" font-size="7" class="wc ws" font-weight="600">${L.zirk}</text>`;
+    }
+    o += `<text x="${tk - 8}" y="${-14 + domesticOffset}" font-size="7.5" class="we" font-weight="600" fill="${F.tw_kalt}">${esc(c.text_tw_kalt ?? L.kalt)}</text><text x="${tw + 8}" y="${-14 + domesticOffset}" font-size="7.5" font-weight="600" fill="${F.tw_warm}">${esc(c.text_tw_warm ?? L.warm)}</text>`;
+    if (TT && FMx && (FMx.temp || FMx.durchfluss))
+      o += `<text x="${tw + 8}" y="${-3 + domesticOffset}" font-size="8" class="wt"${more(FMx.temp || FMx.durchfluss)} fill="${zapf ? F.aktiv : '#9aa0a6'}">${[FMx.temp ? fmt(S(FMx.temp)) : '', FMx.durchfluss ? r1(NUM(FMx.durchfluss)) + ' l/min' : ''].filter(Boolean).join(' · ')}</text>`;
+    if (TWc) {
+      const z1 = [TWc.temp ? fmt(S(TWc.temp)) : '', TWc.zaehler ? `${r1(NUM(TWc.zaehler))} ${U(TWc.zaehler, 'm³')}` : ''].filter(Boolean).join(' · ');
+      if (z1) o += `<text x="${tk - 8}" y="${-3 + domesticOffset}" font-size="8" class="we wv wx" data-more="${esc(TWc.temp || TWc.zaehler)}">${esc(z1)}</text>`;
+      if (TWc.enthaertung) {
+        const softener = softenerState(TWc.enthaertung, L, S, U, ON);
+        o += `<text x="${tk - 8}" y="${8 + domesticOffset}" font-size="8" class="we ws wx" data-more="${esc(TWc.enthaertung)}">${L.enth} ${softener}</text>`;
+      }
+    }
+  }
+  return o;
+}
+
 function freshWaterState(c, FMx, ZK, S, ON, NUM) {
   const zirk_on = ZK && ON(c.zirkulationspumpe);
   const zapf = FMx && FMx.durchfluss ? NUM(FMx.durchfluss) > 0.1 : false;
@@ -1536,9 +1563,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
     // Preserve the compiler's bridge order for whole pipe groups and animation.
     if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => routes[a].paintOrder - routes[b].paintOrder)) o += primaryPipes[id];
-    const TWc = c.trinkwasser;
     if (TW) {
-      const domesticOffset = model.components['domestic-boundary'].origin.y - model.components['domestic-boundary'].baseOrigin.y;
       if (ZK) {
         const hot = model.connections['circulation-hot'], cold = model.connections['circulation-cold'];
         const middle = model.connections['circulation-pump-through'];
@@ -1558,25 +1583,8 @@ class WarmwasserSchemaCard extends HTMLElement {
         const cj = point(model.connections['circulation-cold'].to), hj = point(model.connections['circulation-hot'].from);
         o += `<path d="M${cj.x} ${cj.y}V${de.y}${de.x !== cj.x ? `H${de.x}` : ''}M${dh.x} ${dh.y}V${hj.y}${hj.x !== dh.x ? `H${hj.x}` : ''}" class="w3"/>`;
       }
-      o += TWc && TWc.zaehler ? `<g${more(TWc.zaehler)}>${zaehlerSym(model.components['domestic-meter'].origin.x + 6, model.components['domestic-meter'].origin.y + 6)}</g>` : `<path d="M${tk - 4}${-23 + domesticOffset}l4 4 4-4" class="wa"/>`;
-      o += `<path d="M${tw - 4}${-19 + domesticOffset}l4-4 4 4" class="wa"/>`;
-      if (ZK) {
-        const b = model.components['circulation-pump'], px = b.origin.x + 10, py = b.origin.y + 10;
-        o += `<g data-act="zirk" class="wx"><title>${L.zirkTitle}</title><circle cx="${px}" cy="${py}" r="14" fill="transparent"/>${pumpe(px, py, 'l', zirk_on)}</g>`;
-        o += `<text x="${px}" y="${py - 14}" font-size="7" class="wc ws" font-weight="600">${L.zirk}</text>`;
-      }
-      o += `<text x="${tk - 8}" y="${-14 + domesticOffset}" font-size="7.5" class="we" font-weight="600" fill="${F.tw_kalt}">${esc(c.text_tw_kalt ?? L.kalt)}</text><text x="${tw + 8}" y="${-14 + domesticOffset}" font-size="7.5" font-weight="600" fill="${F.tw_warm}">${esc(c.text_tw_warm ?? L.warm)}</text>`;
-      if (TT && FMx && (FMx.temp || FMx.durchfluss))
-        o += `<text x="${tw + 8}" y="${-3 + domesticOffset}" font-size="8" class="wt"${more(FMx.temp || FMx.durchfluss)} fill="${zapf ? F.aktiv : '#9aa0a6'}">${[FMx.temp ? fmt(S(FMx.temp)) : '', FMx.durchfluss ? r1(NUM(FMx.durchfluss)) + ' l/min' : ''].filter(Boolean).join(' · ')}</text>`;
-      if (TWc) {
-        const z1 = [TWc.temp ? fmt(S(TWc.temp)) : '', TWc.zaehler ? `${r1(NUM(TWc.zaehler))} ${U(TWc.zaehler, 'm³')}` : ''].filter(Boolean).join(' · ');
-        if (z1) o += `<text x="${tk - 8}" y="${-3 + domesticOffset}" font-size="8" class="we wv wx" data-more="${esc(TWc.temp || TWc.zaehler)}">${esc(z1)}</text>`;
-        if (TWc.enthaertung) {
-          const softener = softenerState(TWc.enthaertung, L, S, U, ON);
-          o += `<text x="${tk - 8}" y="${8 + domesticOffset}" font-size="8" class="we ws wx" data-more="${esc(TWc.enthaertung)}">${L.enth} ${softener}</text>`;
-        }
-      }
     }
+    o += renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON });
     if (K) {
       const returnFirst = model.connections[K.pumpe ? 'additional-return-tank' : 'additional-return'];
       const returnLast = model.connections[K.pumpe ? 'additional-return-device' : 'additional-return'];
