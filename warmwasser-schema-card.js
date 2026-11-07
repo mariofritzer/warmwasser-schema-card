@@ -1013,6 +1013,23 @@ function heatPumpDisplay(c, state, L, F, S, NUM) {
   return { wpPowerText, wpCopText, wpStatus, wpTemperatures };
 }
 
+const renderPumpe = (x, y, d, on, aktiv) => {
+  const dx = { l: -1, r: 1 }[d] || 0, dy = { u: -1, d: 1 }[d] || 0, cl = on ? aktiv : '#8a9099';
+  return (on ? `<circle cx="${x}" cy="${y}" r="10" fill="none" stroke="${cl}" stroke-width="1.5" class="wp"/>` : '') +
+    `<circle cx="${x}" cy="${y}" r="10" fill="#2b2f35" stroke="${cl}" stroke-width="1.6"/>` +
+    `<path d="M${r2(x + 10 * dx)} ${r2(y + 10 * dy)}L${r2(x - 5 * dx + 8.66 * dy)} ${r2(y - 5 * dy + 8.66 * dx)}L${r2(x - 5 * dx - 8.66 * dy)} ${r2(y - 5 * dy - 8.66 * dx)}Z" fill="${on ? aktiv : '#6b7280'}"/>`;
+};
+const renderMischer = (x, y, cl, a, cw, ck) =>
+  `<line x1="${x}" y1="${y}" x2="${x - 18}" y2="${y}" stroke="#8a9099" stroke-width="2"/>` +
+  `<rect x="${x - 34}" y="${y - 9}" width="16" height="18" rx="3" class="wm"/>` +
+  `<text x="${x - 26}" y="${y + 3}" font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
+  `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}ZM${x - 9} ${y + 14}H${x + 9}L${x} ${y}ZM${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="#1f2329" stroke="${cl}" stroke-width="1.6" stroke-linejoin="round"/>` +
+  (a !== null ? `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}Z" fill="${cw}" fill-opacity="${r2(0.1 + 0.8 * a)}"/><path d="M${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="${ck}" fill-opacity="${r2(0.9 - 0.8 * a)}"/>` : '') +
+  `<circle cx="${x}" cy="${y}" r="2.5" fill="${cl}"/>`;
+
+const renderChip = (icon, text, on, e, aktiv) =>
+  `<span class="chip${e ? ' wx' : ''}"${e ? ` data-more="${esc(e)}"` : ''}${on ? ` style="background:color-mix(in srgb,${aktiv} 16%,transparent);color:${aktiv}"` : ''}><ha-icon icon="${icon}" style="--mdc-icon-size:15px"></ha-icon>${text}</span>`;
+
 function additionalHeatState(c, L, F, S, ON) {
   const K = c.kamin;
   const kTyp = K ? K.typ : null, kName = K ? K.name || L.typ[kTyp] : '';
@@ -1498,19 +1515,8 @@ class WarmwasserSchemaCard extends HTMLElement {
     const bx1 = HK ? model.components.manifolds.origin.x : 130;
 
     /* ---------- Bausteine ---------- */
-    const pumpe = (x, y, d, on) => {
-      const dx = { l: -1, r: 1 }[d] || 0, dy = { u: -1, d: 1 }[d] || 0, cl = on ? F.aktiv : '#8a9099';
-      return (on ? `<circle cx="${x}" cy="${y}" r="10" fill="none" stroke="${cl}" stroke-width="1.5" class="wp"/>` : '') +
-        `<circle cx="${x}" cy="${y}" r="10" fill="#2b2f35" stroke="${cl}" stroke-width="1.6"/>` +
-        `<path d="M${r2(x + 10 * dx)} ${r2(y + 10 * dy)}L${r2(x - 5 * dx + 8.66 * dy)} ${r2(y - 5 * dy + 8.66 * dx)}L${r2(x - 5 * dx - 8.66 * dy)} ${r2(y - 5 * dy - 8.66 * dx)}Z" fill="${on ? F.aktiv : '#6b7280'}"/>`;
-    };
-    const mischer = (x, y, cl, a = null, cw = CW, ck = CK) =>
-      `<line x1="${x}" y1="${y}" x2="${x - 18}" y2="${y}" stroke="#8a9099" stroke-width="2"/>` +
-      `<rect x="${x - 34}" y="${y - 9}" width="16" height="18" rx="3" class="wm"/>` +
-      `<text x="${x - 26}" y="${y + 3}" font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
-      `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}ZM${x - 9} ${y + 14}H${x + 9}L${x} ${y}ZM${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="#1f2329" stroke="${cl}" stroke-width="1.6" stroke-linejoin="round"/>` +
-      (a !== null ? `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}Z" fill="${cw}" fill-opacity="${r2(0.1 + 0.8 * a)}"/><path d="M${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="${ck}" fill-opacity="${r2(0.9 - 0.8 * a)}"/>` : '') +
-      `<circle cx="${x}" cy="${y}" r="2.5" fill="${cl}"/>`;
+    const pumpe = (x, y, d, on) => renderPumpe(x, y, d, on, F.aktiv);
+    const mischer = (x, y, cl, a = null, cw = CW, ck = CK) => renderMischer(x, y, cl, a, cw, ck);
     const verteiler = (edge, cl) => {
       const from = point(edge.from), to = point(edge.to);
       const points = edge.via.map((id) => model.junctions[id]);
@@ -1523,7 +1529,7 @@ class WarmwasserSchemaCard extends HTMLElement {
         `<rect x="${from.x - 5}" y="${from.y - 10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${to.x}" y="${to.y - 10}" width="5" height="20" rx="1.5" class="wk"/>`;
     };
     const chip = (icon, text, on, e) =>
-      `<span class="chip${e ? ' wx' : ''}"${e ? ` data-more="${esc(e)}"` : ''}${on ? ` style="background:color-mix(in srgb,${F.aktiv} 16%,transparent);color:${F.aktiv}"` : ''}><ha-icon icon="${icon}" style="--mdc-icon-size:15px"></ha-icon>${text}</span>`;
+      renderChip(icon, text, on, e, F.aktiv);
 
     /* ---------- Kopfzeile ---------- */
     let o = renderCardHeader({ chip, avg, col, titel, L, c, S, NUM, SO, so_on, K, kTyp, t_k, k_feuer, WP, W, kuehl, wp, wp_on, HS, hs_hatP, hs_p, hs_on });
