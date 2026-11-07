@@ -984,6 +984,32 @@ function renderFreshWaterModule({ FM, FMx, model, portStub, openComponent, close
   return o;
 }
 
+function renderDomesticPipes({ TW, ZK, model, point, dc, de, dh, dw, F, zirk_on, zapf }) {
+  let o = '';
+  if (TW) {
+    if (ZK) {
+      const hot = model.connections['circulation-hot'], cold = model.connections['circulation-cold'];
+      const middle = model.connections['circulation-pump-through'];
+      const a = point(hot.from), pin = point(hot.to), m1 = point(middle.from), m2 = point(middle.to), pout = point(cold.from), b = point(cold.to);
+      const through = pin.y !== a.y || pout.y !== a.y || pin.x <= pout.x || m1.x !== pin.x || m1.y !== pin.y || m2.x !== pout.x || m2.y !== pout.y ? `H${pin.x}V${pin.y}H${m1.x}V${m1.y}H${m2.x}V${m2.y}H${pout.x}V${pout.y}V${b.y}` : '';
+      o += rohr(`M${a.x} ${a.y}${through}H${b.x}${!through && b.y !== a.y ? `V${b.y}` : ''}`, F.tw_warm, zirk_on);
+    }
+    const domesticPath = (a, b, edge) => {
+      const points = edge.via.map((id) => model.junctions[id]);
+      if (points.every((j) => j.x === a.x && j.y >= Math.min(a.y, b.y) && j.y <= Math.max(a.y, b.y))) return `M${a.x} ${a.y}V${b.y}${b.x !== a.x ? `H${b.x}` : ''}`;
+      return `M${a.x} ${a.y}` + points.map((j) => `V${j.y}H${j.x}`).join('') + `V${b.y}H${b.x}`;
+    };
+    const coldPath = domesticPath(dc, de, model.connections['domestic-cold']), hotPath = domesticPath(dh, dw, model.connections['domestic-hot']);
+    o += rohr(coldPath, F.tw_kalt) + rohr(hotPath, F.tw_warm);
+    if (zapf) o += `<path d="${coldPath}${hotPath}" class="w3"/>`;
+    else if (zirk_on) {
+      const cj = point(model.connections['circulation-cold'].to), hj = point(model.connections['circulation-hot'].from);
+      o += `<path d="M${cj.x} ${cj.y}V${de.y}${de.x !== cj.x ? `H${de.x}` : ''}M${dh.x} ${dh.y}V${hj.y}${hj.x !== dh.x ? `H${hj.x}` : ''}" class="w3"/>`;
+    }
+  }
+  return o;
+}
+
 function renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON }) {
   let o = '';
   const TWc = c.trinkwasser;
@@ -1666,27 +1692,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
     // Preserve the compiler's bridge order for whole pipe groups and animation.
     if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => routes[a].paintOrder - routes[b].paintOrder)) o += primaryPipes[id];
-    if (TW) {
-      if (ZK) {
-        const hot = model.connections['circulation-hot'], cold = model.connections['circulation-cold'];
-        const middle = model.connections['circulation-pump-through'];
-        const a = point(hot.from), pin = point(hot.to), m1 = point(middle.from), m2 = point(middle.to), pout = point(cold.from), b = point(cold.to);
-        const through = pin.y !== a.y || pout.y !== a.y || pin.x <= pout.x || m1.x !== pin.x || m1.y !== pin.y || m2.x !== pout.x || m2.y !== pout.y ? `H${pin.x}V${pin.y}H${m1.x}V${m1.y}H${m2.x}V${m2.y}H${pout.x}V${pout.y}V${b.y}` : '';
-        o += rohr(`M${a.x} ${a.y}${through}H${b.x}${!through && b.y !== a.y ? `V${b.y}` : ''}`, F.tw_warm, zirk_on);
-      }
-      const domesticPath = (a, b, edge) => {
-        const points = edge.via.map((id) => model.junctions[id]);
-        if (points.every((j) => j.x === a.x && j.y >= Math.min(a.y, b.y) && j.y <= Math.max(a.y, b.y))) return `M${a.x} ${a.y}V${b.y}${b.x !== a.x ? `H${b.x}` : ''}`;
-        return `M${a.x} ${a.y}` + points.map((j) => `V${j.y}H${j.x}`).join('') + `V${b.y}H${b.x}`;
-      };
-      const coldPath = domesticPath(dc, de, model.connections['domestic-cold']), hotPath = domesticPath(dh, dw, model.connections['domestic-hot']);
-      o += rohr(coldPath, F.tw_kalt) + rohr(hotPath, F.tw_warm);
-      if (zapf) o += `<path d="${coldPath}${hotPath}" class="w3"/>`;
-      else if (zirk_on) {
-        const cj = point(model.connections['circulation-cold'].to), hj = point(model.connections['circulation-hot'].from);
-        o += `<path d="M${cj.x} ${cj.y}V${de.y}${de.x !== cj.x ? `H${de.x}` : ''}M${dh.x} ${dh.y}V${hj.y}${hj.x !== dh.x ? `H${hj.x}` : ''}" class="w3"/>`;
-      }
-    }
+    o += renderDomesticPipes({ TW, ZK, model, point, dc, de, dh, dw, F, zirk_on, zapf });
     o += renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON });
     if (K) {
       const returnFirst = model.connections[K.pumpe ? 'additional-return-tank' : 'additional-return'];
