@@ -347,25 +347,9 @@ function buildHeatSourceSection(c, builder, geometry) {
   }
 }
 
-function diagramModel(c) {
-  const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
-  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
-  const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
-  const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
-  const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
-  const ro = fmHeater ? Math.min(70, bo - 54) : 70;
-  const nominalHeaterY = (ro + bo) / 2;
-  const heaterY = fmHeater && Math.abs(nominalHeaterY - (bo - 14)) < 18 ? (ro + bo - 14) / 2 : nominalHeaterY;
-  const { components, junctions, connections, component, p, junction, connection } = createDiagramBuilder();
-  const builder = { components, junctions, connections, component, p, junction, connection };
-  const geometry = { split, tt, fm, wp, hk, yt, ro, bo, ru, bu, ym, heaterY };
-  const { hot, buffer, tank } = buildTankSection(c, builder, geometry);
-  buildAdditionalHeatSection(c, builder, geometry, buffer);
-  buildSolarSection(c, builder, buffer);
-  buildFreshWaterSection(builder, geometry, hot, tank);
-  buildHeatPumpSection(c, builder, geometry, tank);
-  buildDomesticWaterSection(c, builder, geometry, hot);
-  buildHeatSourceSection(c, builder, geometry);
+function buildHeatingCircuitsSection(c, builder, geometry, tank) {
+  const { component, p, junction, connection, connections } = builder;
+  const { hk, weiche, wp } = geometry;
   if (hk) {
     const dy = weiche ? 70 : 0, yy = 420 + dy, yr = 448 + dy, ymix = 482 + dy, ye = 548 + dy;
     const positions = HK_X.slice(0, c.heizkreise.length).sort((a, b) => a - b);
@@ -428,6 +412,11 @@ function diagramModel(c) {
     connection('hk-supply', wp ? 'supply-tee' : tank.lowerSupply, hs);
     connection('hk-return', hr, wp ? 'return-tee' : tank.lowerReturn);
   }
+}
+
+function finishDiagramModel(c, builder, geometry, hot, buffer) {
+  const { components, junctions, connections } = builder;
+  const { fm, wp, hk, yt, ro, bo, ru, bu, ym, heaterY } = geometry;
   const resolve = (ref) => {
     if (junctions[ref]) return junctions[ref];
     const [id, name] = ref.split('.');
@@ -463,6 +452,28 @@ function diagramModel(c) {
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
     routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
 
+}
+
+function diagramModel(c) {
+  const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
+  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
+  const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
+  const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
+  const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
+  const ro = fmHeater ? Math.min(70, bo - 54) : 70;
+  const nominalHeaterY = (ro + bo) / 2;
+  const heaterY = fmHeater && Math.abs(nominalHeaterY - (bo - 14)) < 18 ? (ro + bo - 14) / 2 : nominalHeaterY;
+  const builder = createDiagramBuilder();
+  const geometry = { split, tt, fm, wp, hk, weiche, yt, ro, bo, ru, bu, ym, heaterY };
+  const { hot, buffer, tank } = buildTankSection(c, builder, geometry);
+  buildAdditionalHeatSection(c, builder, geometry, buffer);
+  buildSolarSection(c, builder, buffer);
+  buildFreshWaterSection(builder, geometry, hot, tank);
+  buildHeatPumpSection(c, builder, geometry, tank);
+  buildDomesticWaterSection(c, builder, geometry, hot);
+  buildHeatSourceSection(c, builder, geometry);
+  buildHeatingCircuitsSection(c, builder, geometry, tank);
+  return finishDiagramModel(c, builder, geometry, hot, buffer);
 }
 function diagramPort(model, reference) {
   if (model.junctions[reference]) return model.junctions[reference];
