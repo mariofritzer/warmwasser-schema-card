@@ -1399,7 +1399,8 @@ class WarmwasserSchemaCard extends HTMLElement {
         `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
         `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
     };
-    const chip = (icon, text, on, e) => renderChip(icon, text, on, e, F.aktiv);
+    const chip = (icon, text, on, e) =>
+      renderChip(icon, text, on, e, F.aktiv);
 
     /* ---------- Kopfzeile ---------- */
     let o = `<div class="kopf"><div class="l"><div class="ic"><ha-icon icon="mdi:water-boiler" style="--mdc-icon-size:22px;color:${avg !== null ? col(avg) : 'var(--secondary-text-color)'}"></ha-icon></div>`;
