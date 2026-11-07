@@ -1003,6 +1003,12 @@ const zaehlerSym = (x, y) => `<rect x="${x - 6}" y="${y - 6}" width="12" height=
 const flamme = (w, hh) =>
   `M${-w} 0C${-w - 2} ${r1(-hh * 0.45)} ${r1(-w * 0.15)} ${r1(-hh * 0.6)} ${r1(w * 0.1)} ${-hh}C${r1(w * 0.5)} ${r1(-hh * 0.6)} ${r1(w + 2)} ${r1(-hh * 0.4)} ${w} 0Z`;
 
+function renderValve({ WP, W, model, more, mischer, CK, CW, vb }) {
+  if (!WP) return '';
+  const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + v.bounds.height / 2;
+  return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK)}</g>` : mischer(vx, vy, CK);
+}
+
 function renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent }) {
   let o = '';
   if (kTyp !== 'fernwaerme') o += openComponent('additional-heat') + `<rect x="-114" y="-30" width="18" height="180" fill="url(#wwFlue)"/><rect x="-118" y="2" width="26" height="8" rx="2" fill="#2b2f35"/><rect x="-117" y="128" width="24" height="5" rx="1.5" fill="#2b2f35"/>` + closeComponent('additional-heat');
@@ -1582,10 +1588,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
 
     /* Umschaltventil WP + T-Stücke */
-    if (WP) {
-      const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + v.bounds.height / 2;
-      o += W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK)}</g>` : mischer(vx, vy, CK);
-    }
+    o += renderValve({ WP, W, model, more, mischer, CK, CW, vb });
     if (HK && WP) {
       const a = model.junctions[model.connections['wp-lower-supply'].via[0]], b = model.junctions[model.connections['wp-lower-return'].via[0]];
       o += tee(a.x, a.y) + tee(b.x, b.y);
