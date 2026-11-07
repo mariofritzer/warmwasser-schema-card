@@ -1222,6 +1222,47 @@ function renderAdditionalHeatDevice({ K, kTyp, kName, kFeuerTyp, t_k, k_tr, k_wa
   return o;
 }
 
+function renderCardHeader({ F, avg, col, titel, L, c, S, NUM, SO, so_on, K, kTyp, t_k, k_feuer, WP, W, kuehl, wp, wp_on, HS, hs_hatP, hs_p, hs_on }) {
+  const chip = (icon, text, on, e) =>
+    `<span class="chip${e ? ' wx' : ''}"${e ? ` data-more="${esc(e)}"` : ''}${on ? ` style="background:color-mix(in srgb,${F.aktiv} 16%,transparent);color:${F.aktiv}"` : ''}><ha-icon icon="${icon}" style="--mdc-icon-size:15px"></ha-icon>${text}</span>`;
+
+  let o = `<div class="kopf"><div class="l"><div class="ic"><ha-icon icon="mdi:water-boiler" style="--mdc-icon-size:22px;color:${avg !== null ? col(avg) : 'var(--secondary-text-color)'}"></ha-icon></div>`;
+  o += `<div><div class="t1">${esc(titel)}</div>${avg !== null ? `<div class="t2">${L.speicherAvg} ${r1(avg)} °C</div>` : ''}</div></div><div class="chips">`;
+  if (c.aussen) o += chip('mdi:thermometer', fmt(S(c.aussen)), false, c.aussen);
+  if (c.pv) {
+    const { text, on } = photovoltaicState(c.pv, NUM);
+    o += chip('mdi:solar-power', text, on, c.pv);
+  }
+  if (SO && SO.kollektor) o += chip('mdi:solar-panel', fmt(S(SO.kollektor)), so_on, SO.kollektor);
+  if (K && (K.temp || K.brenner || K.pumpe)) o += chip(ZUSATZ_ICON[kTyp], K.temp ? fmt(t_k) : k_feuer ? L.an : L.aus, k_feuer, K.temp || K.brenner || K.pumpe);
+  if (WP && W.leistung) o += chip(kuehl ? 'mdi:snowflake' : 'mdi:heat-pump', watt(wp), wp_on, W.leistung);
+  if (HS && hs_hatP) o += chip('mdi:heating-coil', watt(hs_p), hs_on);
+  o += '</div></div>';
+
+  return o;
+}
+
+function renderTemperatureLegend({ fl, FM, WP, L, c }) {
+  let o = '';
+  if (fl.length) {
+    const lx = FM || WP ? 405 : 280, ly = FM || WP ? 122 : 30;
+    o += `<text x="${lx}" y="${ly}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${L.speicher}</text><rect x="${lx - 19}" y="${ly + 6}" width="38" height="5" rx="2.5" fill="url(#wwLegend)"/><text x="${lx - 23}" y="${ly + 11}" font-size="8" class="we ws">${c.t_min}°</text><text x="${lx + 23}" y="${ly + 11}" font-size="8" class="ws">${c.t_max}°</text>`;
+  }
+  return o;
+}
+
+function renderDailyEnergy({ c, F, NUM, U }) {
+  let o = '';
+  if (c.energie.length) {
+    const pal = [F.aktiv, F.warm, F.kalt, F.solar, F.led, '#a855f7'];
+    const { vals, max } = energyState(c, NUM);
+    o += '<div class="en">' + c.energie.map((e, i) =>
+      `<div class="er" data-more="${esc(e.entity)}"><ha-icon icon="${esc(e.icon || 'mdi:lightning-bolt')}" style="--mdc-icon-size:16px"></ha-icon><span>${esc(e.name || e.entity)}</span>` +
+      `<div class="b"><i style="width:${r1((vals[i] / max) * 100)}%;background:${e.farbe || pal[i % pal.length]}"></i></div><span class="v">${r1(vals[i])} ${esc(U(e.entity, 'kWh'))}</span></div>`).join('') + '</div>';
+  }
+  return o;
+}
+
 class WarmwasserSchemaCard extends HTMLElement {
   static getConfigElement() { return document.createElement('warmwasser-schema-card-editor'); }
   static getStubConfig() { return { speicher: { typ: 'trennblech' }, fuehler: [] }; }
@@ -1393,22 +1434,8 @@ class WarmwasserSchemaCard extends HTMLElement {
         `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
         `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
     };
-    const chip = (icon, text, on, e) =>
-      `<span class="chip${e ? ' wx' : ''}"${e ? ` data-more="${esc(e)}"` : ''}${on ? ` style="background:color-mix(in srgb,${F.aktiv} 16%,transparent);color:${F.aktiv}"` : ''}><ha-icon icon="${icon}" style="--mdc-icon-size:15px"></ha-icon>${text}</span>`;
-
     /* ---------- Kopfzeile ---------- */
-    let o = `<div class="kopf"><div class="l"><div class="ic"><ha-icon icon="mdi:water-boiler" style="--mdc-icon-size:22px;color:${avg !== null ? col(avg) : 'var(--secondary-text-color)'}"></ha-icon></div>`;
-    o += `<div><div class="t1">${esc(titel)}</div>${avg !== null ? `<div class="t2">${L.speicherAvg} ${r1(avg)} °C</div>` : ''}</div></div><div class="chips">`;
-    if (c.aussen) o += chip('mdi:thermometer', fmt(S(c.aussen)), false, c.aussen);
-    if (c.pv) {
-      const { text, on } = photovoltaicState(c.pv, NUM);
-      o += chip('mdi:solar-power', text, on, c.pv);
-    }
-    if (SO && SO.kollektor) o += chip('mdi:solar-panel', fmt(S(SO.kollektor)), so_on, SO.kollektor);
-    if (K && (K.temp || K.brenner || K.pumpe)) o += chip(ZUSATZ_ICON[kTyp], K.temp ? fmt(t_k) : k_feuer ? L.an : L.aus, k_feuer, K.temp || K.brenner || K.pumpe);
-    if (WP && W.leistung) o += chip(kuehl ? 'mdi:snowflake' : 'mdi:heat-pump', watt(wp), wp_on, W.leistung);
-    if (HS && hs_hatP) o += chip('mdi:heating-coil', watt(hs_p), hs_on);
-    o += '</div></div>';
+    let o = renderCardHeader({ F, avg, col, titel, L, c, S, NUM, SO, so_on, K, kTyp, t_k, k_feuer, WP, W, kuehl, wp, wp_on, HS, hs_hatP, hs_p, hs_on });
 
     /* ---------- Abmessungen ---------- */
     const QS = WP && QT !== 'luft';
@@ -1735,10 +1762,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (K && K.wmz) o += openComponent('additional-meter') + `<g${more(K.wmz)}>${zaehlerSym(-30, y_ru)}<text x="-30" y="${y_ru - 11}" font-size="8" class="wc wt wv">${r1(NUM(K.wmz))} ${esc(U(K.wmz, 'kWh'))}</text></g>` + closeComponent('additional-meter');
 
     /* Legende */
-    if (fl.length) {
-      const lx = FM || WP ? 405 : 280, ly = FM || WP ? 122 : 30;
-      o += `<text x="${lx}" y="${ly}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${L.speicher}</text><rect x="${lx - 19}" y="${ly + 6}" width="38" height="5" rx="2.5" fill="url(#wwLegend)"/><text x="${lx - 23}" y="${ly + 11}" font-size="8" class="we ws">${c.t_min}°</text><text x="${lx + 23}" y="${ly + 11}" font-size="8" class="ws">${c.t_max}°</text>`;
-    }
+    o += renderTemperatureLegend({ fl, FM, WP, L, c });
 
     /* ---------- Solar ---------- */
     o += renderSolarCollector({ SO, so_on, x0, model, F, L, S, U, NUM, more, pumpe, openComponent, closeComponent });
@@ -1786,13 +1810,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     o += '</svg>';
 
     /* ---------- Tagesenergie ---------- */
-    if (c.energie.length) {
-      const pal = [F.aktiv, F.warm, F.kalt, F.solar, F.led, '#a855f7'];
-      const { vals, max } = energyState(c, NUM);
-      o += '<div class="en">' + c.energie.map((e, i) =>
-        `<div class="er" data-more="${esc(e.entity)}"><ha-icon icon="${esc(e.icon || 'mdi:lightning-bolt')}" style="--mdc-icon-size:16px"></ha-icon><span>${esc(e.name || e.entity)}</span>` +
-        `<div class="b"><i style="width:${r1((vals[i] / max) * 100)}%;background:${e.farbe || pal[i % pal.length]}"></i></div><span class="v">${r1(vals[i])} ${esc(U(e.entity, 'kWh'))}</span></div>`).join('') + '</div>';
-    }
+    o += renderDailyEnergy({ c, F, NUM, U });
     return o;
   }
 }
