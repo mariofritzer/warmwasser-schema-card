@@ -787,6 +787,25 @@ function tankState(c, S, y_t) {
   return { fl, stops, avg, col };
 }
 
+function renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S }) {
+  let o = '';
+  const stab = (y, hs) => {
+    const cl = hs.on ? F.aktiv : '#b0b6bd', pitch = 70 / c.hs_stufen;
+    let s = hs.on ? `<ellipse cx="156" cy="${y}" rx="50" ry="13" fill="url(#wwHeat)" class="wb" style="animation-duration:2.4s"/>` : '';
+    s += `<g${more(hs.stufe || hs.leistung || hs.temp)}><path d="M202 ${y}h-10l-3-4${'l-6 8l-6-8'.repeat(6)}l-3 4" fill="none" stroke="${cl}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`;
+    s += `<rect x="198" y="${y - 11}" width="16" height="22" rx="3" fill="#2b2f35" stroke="${cl}" stroke-width="1.5"/>`;
+    s += `<text x="192" y="${y - 13}" font-size="9.5" class="we wo wt" fill="${hs.on ? F.aktiv : '#fff'}">${esc(hs.name)}</text>`;
+    if (hs.stufe) for (let i = 0; i < c.hs_stufen; i++)
+      s += `<rect x="${r2(124 + i * pitch)}" y="${y + 11}" width="${r2(pitch - 2)}" height="4" rx="1.5" fill="${i < hs.step ? F.aktiv : 'rgba(255,255,255,.3)'}"/>`;
+    const info = [hs.leistung ? watt(hs.p) : '', hs.temp ? fmt(S(hs.temp)) : ''].filter(Boolean).join(' · ');
+    if (info) s += `<text x="192" y="${y + (hs.stufe ? 28 : 22)}" font-size="9" class="we wo" fill="#fff">${info}</text>`;
+    return s + '</g>';
+  };
+  if (hso) o += openComponent('upper-heater') + stab(geo.heaterY, hso) + closeComponent('upper-heater');
+  if (hsu) o += openComponent('lower-heater') + stab((y_ru + y_bu) / 2, hsu) + closeComponent('lower-heater');
+  return o;
+}
+
 function heaterState(c, L, S, NUM) {
   const heiz = (x, n) => {
     if (!x) return null;
@@ -1324,18 +1343,6 @@ class WarmwasserSchemaCard extends HTMLElement {
         `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
         `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
     };
-    const stab = (y, hs) => {
-      const cl = hs.on ? F.aktiv : '#b0b6bd', pitch = 70 / c.hs_stufen;
-      let s = hs.on ? `<ellipse cx="156" cy="${y}" rx="50" ry="13" fill="url(#wwHeat)" class="wb" style="animation-duration:2.4s"/>` : '';
-      s += `<g${more(hs.stufe || hs.leistung || hs.temp)}><path d="M202 ${y}h-10l-3-4${'l-6 8l-6-8'.repeat(6)}l-3 4" fill="none" stroke="${cl}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`;
-      s += `<rect x="198" y="${y - 11}" width="16" height="22" rx="3" fill="#2b2f35" stroke="${cl}" stroke-width="1.5"/>`;
-      s += `<text x="192" y="${y - 13}" font-size="9.5" class="we wo wt" fill="${hs.on ? F.aktiv : '#fff'}">${esc(hs.name)}</text>`;
-      if (hs.stufe) for (let i = 0; i < c.hs_stufen; i++)
-        s += `<rect x="${r2(124 + i * pitch)}" y="${y + 11}" width="${r2(pitch - 2)}" height="4" rx="1.5" fill="${i < hs.step ? F.aktiv : 'rgba(255,255,255,.3)'}"/>`;
-      const info = [hs.leistung ? watt(hs.p) : '', hs.temp ? fmt(S(hs.temp)) : ''].filter(Boolean).join(' · ');
-      if (info) s += `<text x="192" y="${y + (hs.stufe ? 28 : 22)}" font-size="9" class="we wo" fill="#fff">${info}</text>`;
-      return s + '</g>';
-    };
     const chip = (icon, text, on, e) =>
       `<span class="chip${e ? ' wx' : ''}"${e ? ` data-more="${esc(e)}"` : ''}${on ? ` style="background:color-mix(in srgb,${F.aktiv} 16%,transparent);color:${F.aktiv}"` : ''}><ha-icon icon="${icon}" style="--mdc-icon-size:15px"></ha-icon>${text}</span>`;
 
@@ -1751,8 +1758,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (WP || HK) o += WP ? portStub(model.connections['wp-lower-supply'].to) + portStub(model.connections['wp-lower-return'].from) : portStub(model.connections['hk-supply'].from) + portStub(model.connections['hk-return'].to);
     if (K) o += portStub(`${bufferId}.additional-supply`) + portStub(`${bufferId}.additional-return`);
     if (FM) o += portStub(model.connections['fm-return'].to);
-    if (hso) o += openComponent('upper-heater') + stab(geo.heaterY, hso) + closeComponent('upper-heater');
-    if (hsu) o += openComponent('lower-heater') + stab((y_ru + y_bu) / 2, hsu) + closeComponent('lower-heater');
+    o += renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S });
     o += fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f) + closeComponent(id); }).join('');
 
     /* Legionellenschutz */
