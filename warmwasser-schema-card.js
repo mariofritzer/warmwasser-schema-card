@@ -1075,6 +1075,16 @@ function energyState(c, NUM) {
   return { vals, max: Math.max(...vals, 0.001) };
 }
 
+function renderHeatMeters({ WP, W, K, FM, SPLIT, model, point, y_ru, more, zaehlerSym, NUM, U, openComponent, closeComponent }) {
+  let o = '';
+  if (WP && W.wmz) {
+    const meterLabelY = FM && SPLIT ? Math.min(103, point(model.connections['fm-return'].to).y - 15) : 103;
+    o += openComponent('wp-meter') + `<g${more(W.wmz)}>${zaehlerSym(300, 100)}<text x="292" y="${meterLabelY}" font-size="8" class="we wt wv">${r1(NUM(W.wmz))} ${esc(U(W.wmz, 'kWh'))}</text></g>` + closeComponent('wp-meter');
+  }
+  if (K && K.wmz) o += openComponent('additional-meter') + `<g${more(K.wmz)}>${zaehlerSym(-30, y_ru)}<text x="-30" y="${y_ru - 11}" font-size="8" class="wc wt wv">${r1(NUM(K.wmz))} ${esc(U(K.wmz, 'kWh'))}</text></g>` + closeComponent('additional-meter');
+  return o;
+}
+
 function legionellaState(LG, L, F, S, ON) {
     const lAkt = LG.aktiv ? ON(LG.aktiv) : false;
     let t = '', lc = '#8a9099';
@@ -1728,11 +1738,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     }
 
     /* Wärmemengenzähler */
-    if (WP && W.wmz) {
-      const meterLabelY = FM && SPLIT ? Math.min(103, point(model.connections['fm-return'].to).y - 15) : 103;
-      o += openComponent('wp-meter') + `<g${more(W.wmz)}>${zaehlerSym(300, 100)}<text x="292" y="${meterLabelY}" font-size="8" class="we wt wv">${r1(NUM(W.wmz))} ${esc(U(W.wmz, 'kWh'))}</text></g>` + closeComponent('wp-meter');
-    }
-    if (K && K.wmz) o += openComponent('additional-meter') + `<g${more(K.wmz)}>${zaehlerSym(-30, y_ru)}<text x="-30" y="${y_ru - 11}" font-size="8" class="wc wt wv">${r1(NUM(K.wmz))} ${esc(U(K.wmz, 'kWh'))}</text></g>` + closeComponent('additional-meter');
+    o += renderHeatMeters({ WP, W, K, FM, SPLIT, model, point, y_ru, more, zaehlerSym, NUM, U, openComponent, closeComponent });
 
     /* Legende */
     if (fl.length) {
