@@ -801,6 +801,41 @@ function heaterState(c, L, S, NUM) {
   return { hso, hsu, HS, hs_on, hs_p, hs_hatP };
 }
 
+function renderHeatPump({ WP, W, model, portStub, openComponent, closeComponent, c, wpCopText, wp_abtau, F, wp_on, kuehl, QT, more, wpStatus, wpPowerText, wpTemperatures, S, L, wp_sperre }) {
+  if (!WP) return '';
+  let o = '';
+  const b = model.components.wp, { x, y } = b.origin, { width, height } = b.bounds;
+  o += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="url(#wwRed)" filter="url(#wwShadow)"/><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="url(#wwBox)"/>`;
+  o += portStub(model.connections['wp-upper-supply'].from) + portStub(model.connections['wp-lower-supply'].from) + portStub(model.connections['wp-valve-return'].to);
+  o += openComponent('wp');
+  o += `<text x="342" y="168" font-size="9" class="wt" letter-spacing="2" fill="#fff" opacity=".9">${esc(c.hersteller)}</text>`;
+  if (W.cop) o += `<text x="438" y="168" font-size="9" class="we wt wx" data-more="${esc(W.cop)}" fill="#fff">${wpCopText}</text>`;
+  o += `<circle cx="390" cy="226" r="42" fill="#15171b" stroke="#0c0d0f" stroke-width="3"/><circle cx="390" cy="226" r="36" fill="#1d2025"/>`;
+  const fan = wp_abtau ? F.kalt : wp_on ? (kuehl ? F.kalt : F.aktiv) : '#6b7280';
+  const dreht = wp_on || wp_abtau;
+  if (QT === 'luft') {
+    o += `<g fill="${fan}"${dreht ? ' class="wr"' : ''}${wp_abtau ? ' style="animation-duration:4s"' : ''}>` +
+      [0, 72, 144, 216, 288].map((a) => `<path d="M390 226Q405 213 397 192Q383 203 390 226Z" transform="rotate(${a} 390 226)"/>`).join('') + '</g>';
+    o += `<circle cx="390" cy="226" r="14" fill="none" stroke="#fff" stroke-opacity=".07"/><circle cx="390" cy="226" r="25" fill="none" stroke="#fff" stroke-opacity=".07"/>`;
+  } else {
+    o += `<g${dreht ? ' class="wr" style="animation-duration:3s"' : ''}><path d="M390 222a4 4 0 1 1-4 4a9 9 0 1 0 9-9a15 15 0 1 1-15 15a22 22 0 1 0 22-22" fill="none" stroke="${fan}" stroke-width="3.5" stroke-linecap="round"/></g>`;
+  }
+  o += `<circle cx="390" cy="226" r="7" fill="#2b2f35" stroke="#555b63" stroke-width="1.5"/>`;
+  const st = wpStatus;
+  o += `<g${more(W.leistung || W.betrieb || W.waerme)}><rect x="342" y="282" width="96" height="46" rx="8" fill="#0f1114" fill-opacity=".85" stroke="#fff" stroke-opacity=".08"/>`;
+  if (W.leistung) o += `<text x="390" y="305" font-size="17" class="wc wt" fill="${wp_on ? (kuehl ? F.kalt : F.aktiv) : '#e0e3e7'}">${wpPowerText}</text>`;
+  o += `<text x="390" y="${W.leistung ? 320 : 309}" font-size="${W.leistung ? 8.5 : 10}" class="wc" fill="${st[1]}">${esc(st[0])}</text></g>`;
+  const vr = wpTemperatures;
+  if (vr) o += `<text x="390" y="341" font-size="8.5" class="wc wx" data-more="${esc(W.vorlauf || W.ruecklauf)}" fill="#fff" opacity=".9">${vr}</text>`;
+  o += `<text x="342" y="364" font-size="20" font-weight="800" fill="#fff">${esc(c.name_wp)}</text>`;
+  if (W.sg_ready) o += `<text x="424" y="356" font-size="8" class="we wt wx" data-more="${esc(W.sg_ready)}" fill="#fff" opacity=".85">SG ${esc(S(W.sg_ready))}</text>`;
+  o += `<circle cx="434" cy="353" r="5" fill="${wp_sperre ? F.warm : wp_on ? F.led : '#4b5058'}" stroke="#fff" stroke-opacity=".35"${wp_on ? ' class="wb"' : ''}/>`;
+  if (QT === 'luft' && (W.quelle_ein || W.quelle_aus))
+    o += `<text x="390" y="382" font-size="8" class="wc wv wx" data-more="${esc(W.quelle_ein || W.quelle_aus)}">${L.luft} ${[W.quelle_ein ? fmt(S(W.quelle_ein)) : '', W.quelle_aus ? fmt(S(W.quelle_aus)) : ''].filter(Boolean).join(' → ')}</text>`;
+  o += closeComponent('wp');
+  return o;
+}
+
 function heatPumpState(c, L, F, S, ON, NUM) {
   const W = c.wp, WP = !!W;
   const wp = W ? NUM(W.leistung) : 0;
@@ -1002,41 +1037,6 @@ const stub = (x, y, w, hh) => `<rect x="${x}" y="${y}" width="${w}" height="${hh
 const zaehlerSym = (x, y) => `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" rx="2" fill="#2b2f35" stroke="#cfd4da"/><circle cx="${x}" cy="${y}" r="2.6" fill="none" stroke="#cfd4da"/>`;
 const flamme = (w, hh) =>
   `M${-w} 0C${-w - 2} ${r1(-hh * 0.45)} ${r1(-w * 0.15)} ${r1(-hh * 0.6)} ${r1(w * 0.1)} ${-hh}C${r1(w * 0.5)} ${r1(-hh * 0.6)} ${r1(w + 2)} ${r1(-hh * 0.4)} ${w} 0Z`;
-
-function renderHeatPump({ WP, W, model, portStub, openComponent, closeComponent, c, wpCopText, wp_abtau, F, wp_on, kuehl, QT, more, wpStatus, wpPowerText, wpTemperatures, S, L, wp_sperre }) {
-  if (!WP) return '';
-  let o = '';
-  const b = model.components.wp, { x, y } = b.origin, { width, height } = b.bounds;
-  o += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="url(#wwRed)" filter="url(#wwShadow)"/><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="url(#wwBox)"/>`;
-  o += portStub(model.connections['wp-upper-supply'].from) + portStub(model.connections['wp-lower-supply'].from) + portStub(model.connections['wp-valve-return'].to);
-  o += openComponent('wp');
-  o += `<text x="342" y="168" font-size="9" class="wt" letter-spacing="2" fill="#fff" opacity=".9">${esc(c.hersteller)}</text>`;
-  if (W.cop) o += `<text x="438" y="168" font-size="9" class="we wt wx" data-more="${esc(W.cop)}" fill="#fff">${wpCopText}</text>`;
-  o += `<circle cx="390" cy="226" r="42" fill="#15171b" stroke="#0c0d0f" stroke-width="3"/><circle cx="390" cy="226" r="36" fill="#1d2025"/>`;
-  const fan = wp_abtau ? F.kalt : wp_on ? (kuehl ? F.kalt : F.aktiv) : '#6b7280';
-  const dreht = wp_on || wp_abtau;
-  if (QT === 'luft') {
-    o += `<g fill="${fan}"${dreht ? ' class="wr"' : ''}${wp_abtau ? ' style="animation-duration:4s"' : ''}>` +
-      [0, 72, 144, 216, 288].map((a) => `<path d="M390 226Q405 213 397 192Q383 203 390 226Z" transform="rotate(${a} 390 226)"/>`).join('') + '</g>';
-    o += `<circle cx="390" cy="226" r="14" fill="none" stroke="#fff" stroke-opacity=".07"/><circle cx="390" cy="226" r="25" fill="none" stroke="#fff" stroke-opacity=".07"/>`;
-  } else {
-    o += `<g${dreht ? ' class="wr" style="animation-duration:3s"' : ''}><path d="M390 222a4 4 0 1 1-4 4a9 9 0 1 0 9-9a15 15 0 1 1-15 15a22 22 0 1 0 22-22" fill="none" stroke="${fan}" stroke-width="3.5" stroke-linecap="round"/></g>`;
-  }
-  o += `<circle cx="390" cy="226" r="7" fill="#2b2f35" stroke="#555b63" stroke-width="1.5"/>`;
-  const st = wpStatus;
-  o += `<g${more(W.leistung || W.betrieb || W.waerme)}><rect x="342" y="282" width="96" height="46" rx="8" fill="#0f1114" fill-opacity=".85" stroke="#fff" stroke-opacity=".08"/>`;
-  if (W.leistung) o += `<text x="390" y="305" font-size="17" class="wc wt" fill="${wp_on ? (kuehl ? F.kalt : F.aktiv) : '#e0e3e7'}">${wpPowerText}</text>`;
-  o += `<text x="390" y="${W.leistung ? 320 : 309}" font-size="${W.leistung ? 8.5 : 10}" class="wc" fill="${st[1]}">${esc(st[0])}</text></g>`;
-  const vr = wpTemperatures;
-  if (vr) o += `<text x="390" y="341" font-size="8.5" class="wc wx" data-more="${esc(W.vorlauf || W.ruecklauf)}" fill="#fff" opacity=".9">${vr}</text>`;
-  o += `<text x="342" y="364" font-size="20" font-weight="800" fill="#fff">${esc(c.name_wp)}</text>`;
-  if (W.sg_ready) o += `<text x="424" y="356" font-size="8" class="we wt wx" data-more="${esc(W.sg_ready)}" fill="#fff" opacity=".85">SG ${esc(S(W.sg_ready))}</text>`;
-  o += `<circle cx="434" cy="353" r="5" fill="${wp_sperre ? F.warm : wp_on ? F.led : '#4b5058'}" stroke="#fff" stroke-opacity=".35"${wp_on ? ' class="wb"' : ''}/>`;
-  if (QT === 'luft' && (W.quelle_ein || W.quelle_aus))
-    o += `<text x="390" y="382" font-size="8" class="wc wv wx" data-more="${esc(W.quelle_ein || W.quelle_aus)}">${L.luft} ${[W.quelle_ein ? fmt(S(W.quelle_ein)) : '', W.quelle_aus ? fmt(S(W.quelle_aus)) : ''].filter(Boolean).join(' → ')}</text>`;
-  o += closeComponent('wp');
-  return o;
-}
 
 function renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent }) {
   let o = '';
