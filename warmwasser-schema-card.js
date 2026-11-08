@@ -418,7 +418,7 @@ function buildHeatingCircuitsSection(c, builder, geometry, tank) {
 // Resolve painted heating symbols and rails without enabling routing. Rectangles
 // conservatively cover the specified SVG paint, not complete router obstacles:
 // heating-circuit arrows, floor/radiator icons, text and connected pipes are not
-// covered. Rail points describe the painted centerline, not graph incidence.
+// covered here. Rail points describe the painted centerline, not graph incidence.
 function resolveHeatingGeometry(model) {
   const bodies = [], rails = [];
   const addBody = (id, rect) => {
@@ -466,6 +466,31 @@ function resolveHeatingGeometry(model) {
     rails.push({ id, owner:'manifolds', points, areas });
   }
   return { bodies, rails };
+}
+
+// Optional paint envelopes for legacy heating-circuit endpoints only. Pass the
+// actual heatingCircuitState hks array to include the configured pictograms at
+// their rendered row-dependent position; without it only arrows are resolved.
+// These rectangles do not cover text, connected pipes, or flexible distributors,
+// and do not indicate that moving or routing any component is supported.
+function resolveHeatingEndpointGeometry(model, hks = []) {
+  const areas = [];
+  for (const [id, branch] of Object.entries(model.components)) {
+    const match = /^heating-circuit-(\d+)$/.exec(id);
+    if (!match) continue;
+    const add = (kind, x, y, width, height) => areas.push({ owner:id, kind, x:branch.origin.x + x, y:branch.origin.y + y, width, height });
+    // Two open chevrons, stroke 1.6 with round joins and caps.
+    add('supply-arrow', 1.2, -0.8, 9.6, 5.6);
+    add('return-arrow', 33.2, -0.8, 9.6, 5.6);
+    const state = hks[Number(match[1])];
+    if (!state || !Array.isArray(state.zeilen)) continue;
+    const y = 12 * state.zeilen.length;
+    if (['fussboden', 'fussbodenheizung', 'floor'].includes(state.typ))
+      add('floor', -4, 36 + y, 48, 20);
+    else if (['heizkoerper', 'radiator'].includes(state.typ))
+      add('radiator', 1.25, 34.25 + y, 41.5, 21.5);
+  }
+  return areas;
 }
 
 function finishDiagramModel(c, builder, geometry, hot, buffer) {
