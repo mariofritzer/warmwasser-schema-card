@@ -24,10 +24,29 @@ test('flexible geometry resolves ordered slots, painted shapes and both directio
       assert.deepEqual(Array.from(own.slice(0, 2), a => a.kind), ['supply-arrow','return-arrow']);
       assert.equal(own[0].y, y + (b.up ? 4.2 : -9.8));
       assert.ok(areas.some(a => a.owner === `distributor-pump-${i}` && a.kind === 'pump'));
-      assert.equal(own.length, i === 13 || types[i % 5] === 'kein' ? 2 : 3);
+      assert.equal(own.length, i !== 13 && types[i % 5] === 'kein' ? 2 : 3);
     }
   }
   assert.deepEqual(plain(model), snapshot);
+});
+
+test('icon viewport follows both directions, overrides symbols and follows its parent', () => {
+  for (const direction of ['oben', 'unten']) {
+    const c = card('schicht', { verteiler:{ anschluesse:[{ typ:'fussboden', richtung:direction, icon:'mdi:radiator' }] } });
+    const model = c._model, slots = c._cfg.verteiler.anschluesse, branch = model.components['distributor-slot-0'];
+    const x = branch.origin.x + 48, y = branch.origin.y + branch.endOffset;
+    const sy = direction === 'oben' ? y - 34 : y + 65;
+    const areas = resolveDistributorGeometry(model, slots);
+    assert.deepEqual(plain(areas.find(a => a.kind === 'icon')), { owner:branch.id, kind:'icon', x:x-12, y:sy, width:24, height:24 });
+    assert.ok(!areas.some(a => a.kind === 'floor'));
+    assert.ok(c._render().includes(`<foreignObject x="${x-12}" y="${sy}" width="24" height="24">`));
+    model.components.manifolds.origin.x += 17; model.components.manifolds.origin.y -= 12;
+    const moved = resolveDistributorGeometry(model, slots).find(a => a.kind === 'icon');
+    assert.equal(moved.x, x - 12 + 17); assert.equal(moved.y, sy - 12);
+    branch.origin.x += 3; branch.origin.y += 4;
+    const childMoved = resolveDistributorGeometry(model, slots).find(a => a.kind === 'icon');
+    assert.equal(childMoved.x, moved.x + 3); assert.equal(childMoved.y, moved.y + 4);
+  }
 });
 
 test('missing, sparse or model-inconsistent slots fail instead of returning partial geometry', () => {

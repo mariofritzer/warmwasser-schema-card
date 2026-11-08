@@ -554,7 +554,7 @@ function resolveHeatingEndpointGeometry(model, hks = []) {
 
 // Optional paint envelopes for the flexible distributor's fixed SVG shapes.
 // Requires the complete normalized anschluesse used to build the model. These areas omit
-// text, foreignObject/HA icons, rails and connected pipes; they are neither a
+// text, rails and connected pipes; they are neither a
 // complete component boundary nor permission to route or move the renderer.
 function resolveDistributorGeometry(model, slots) {
   const areas = [];
@@ -589,9 +589,11 @@ function resolveDistributorGeometry(model, slots) {
     const pumpId = `distributor-pump-${i}`, pump = model.components[pumpId];
     if (slot.pumpe && pump)
       add(pumpId, 'pump', pump.origin.x - 9.35, pump.origin.y - 9.35, 38.7, 38.7);
-    if (slot.icon) continue;
     const sy = branch.up ? y - 34 : y + 65;
-    if (slot.symboltyp === 'heizkoerper') add(id, 'radiator', x - 20.75, sy - 0.75, 41.5, 21.5);
+    // The foreignObject viewport has no SVG stroke; this is its 24px box,
+    // not a claim about arbitrary content painted outside that viewport.
+    if (slot.icon) add(id, 'icon', x - 12, sy, 24, 24);
+    else if (slot.symboltyp === 'heizkoerper') add(id, 'radiator', x - 20.75, sy - 0.75, 41.5, 21.5);
     else if (slot.symboltyp === 'fussboden') add(id, 'floor', x - 26, sy - 1, 48, 20);
     // The closed droplet's pointed join extends beyond a half-stroke.
     else if (slot.symboltyp === 'warmwasser') add(id, 'hot-water', x - 10, sy - 4, 20, 31);

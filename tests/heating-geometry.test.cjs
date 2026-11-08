@@ -4,13 +4,14 @@ const { card, resolveHeatingGeometry } = require('./helpers/routing-harness.cjs'
 
 const plain = value => JSON.parse(JSON.stringify(value));
 const make = (n, weiche) => card('getrennt', {
-  wp: { typ:'luft' }, weiche,
+  wp: { typ:'luft', betrieb:'sensor.wp' }, weiche,
   heizkreise: Array.from({ length:n }, () => ({ mischer:'sensor.mixer', pumpe:'sensor.pump' }))
 })._model;
 
 test('heating geometry follows configured bodies and painted rail order', () => {
   for (let n = 0; n <= 6; n++) for (const weiche of [false, true]) {
     const model = make(n, weiche), result = resolveHeatingGeometry(model);
+    assert.ok(model.components.wp, 'fixture activates the heat pump');
     assert.equal(result.bodies.length, n * 2 + (n && weiche ? 1 : 0));
     assert.deepEqual(Array.from(result.rails, r => r.id), n ? ['manifold-return', 'manifold-supply'] : []);
     if (!n) continue;
