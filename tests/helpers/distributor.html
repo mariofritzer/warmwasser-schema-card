@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="de">
+<meta charset="utf-8">
+<title>Flexibler HKV – lokale Prüfung</title>
+<style>
+  :root { --primary-text-color:#222; --secondary-text-color:#555; --secondary-background-color:#e5e7eb; --card-background-color:#fff }
+  :root[data-theme=dark] { --primary-text-color:#eee; --secondary-text-color:#aaa; --secondary-background-color:#282b31; --card-background-color:#202328; background:#15171a }
+  body { margin:20px; font:15px system-ui; color:var(--primary-text-color) }
+  header { display:flex; gap:16px; align-items:center; flex-wrap:wrap }
+  #cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:20px }
+  #cards.narrow { grid-template-columns:320px }
+  section { min-width:0 } h2 { font-size:16px }
+  ha-card { display:block; background:var(--card-background-color); border-radius:12px; box-shadow:0 1px 6px #8885 }
+  ha-icon { display:inline-block; width:1em; height:1em }
+  output { display:block; padding:16px 0; white-space:pre-wrap }
+</style>
+<header><h1>Flexibler Heizkreisverteiler</h1>
+<label>Theme <select id="theme"><option>light</option><option>dark</option></select></label>
+<label>Breite <select id="width"><option>normal</option><option>320px</option></select></label>
+<button id="toggle">Pumpen umschalten</button><button id="check">Prüfen</button></header>
+<p>Lokale synthetische Daten. HA-Icons sind Stubs; kein Zugriff auf Home Assistant.</p>
+<output id="report" aria-live="polite"></output><div id="cards"></div>
+<script src="/current.js"></script>
+<script>
+const sensor = state => ({ state: String(state), attributes: {} });
+const states = { 'sensor.demo_pump': sensor('on'), 'sensor.demo_vl': sensor(52), 'sensor.demo_rl': sensor(38), 'sensor.demo_wmz': sensor(123.4) };
+const measured = { pumpe:'sensor.demo_pump', vorlauf:'sensor.demo_vl', ruecklauf:'sensor.demo_rl', wmz:'sensor.demo_wmz' };
+const slots = [
+  { name:'HK', typ:'heizkoerper', richtung:'oben' },
+  { name:'FBH', typ:'fussboden', richtung:'oben' },
+  { name:'Blind', status:'blind', richtung:'oben' },
+];
+const mixed = Array.from({length:6}, (_, i) => ({ ...measured, name:i === 0 ? 'Langer Anschlussname mit Umlauten' : `Anschluss ${i+1}`, typ:['heizkoerper','fussboden','warmwasser','frei'][i%4], richtung:i%2 ? 'unten':'oben', status:i===4 ? 'blind':'aktiv' }));
+const cases = [
+  ['HK – FBH – Blind', { verteiler:{anschluesse:slots} }],
+  ['Breite Namen: 17 × W nebeneinander', { verteiler:{anschluesse:[{name:'W'.repeat(17),richtung:'oben'},{name:'W'.repeat(17),richtung:'oben'}]} }],
+  ['Natürliche Textbreite', { verteiler:{anschluesse:[{name:'Anschluss 2'},{name:'i'.repeat(18)},{name:'HK',status:'blind'}]} }],
+  ['Sechs gemischte Plätze mit Sensoren', { verteiler:{anschluesse:mixed} }],
+  ['Vollanlage mit Weiche', { speicher:{typ:'getrennt'}, fuehler:[{name:'Oben',entity:'sensor.demo_vl',hoehe:15}], wp:{typ:'sole',betrieb:'sensor.demo_pump'}, fm:true, weiche:true, solar:{pumpe:'sensor.demo_pump'}, kamin:{typ:'pellet',pumpe:'sensor.demo_pump'}, verteiler:{anschluesse:mixed} }],
+  ['Zwölf Plätze', { verteiler:{anschluesse:Array.from({length:12}, (_,i)=>({...measured,name:`Platz ${i+1}`,richtung:i%2?'unten':'oben',typ:'heizkoerper'}))} }],
+  ['Ein Blindplatz unten', { verteiler:{anschluesse:[{name:'Reserve',status:'blind',richtung:'unten',...measured}]} }],
+  ['Alle vier Verbrauchertypen unten', { verteiler:{anschluesse:['heizkoerper','fussboden','warmwasser','frei'].map(typ=>({typ,richtung:'unten',...measured}))} }],
+];
+const cards = cases.map(([title, config]) => {
+  const section=document.createElement('section'), heading=document.createElement('h2'), card=document.createElement('warmwasser-schema-card');
+  heading.textContent=title; card.setConfig(config); card.hass={states,language:'de'};
+  section.append(heading,card); document.querySelector('#cards').append(section); return card;
+});
+function inspect() {
+  const failures=[]; let checks=0;
+  const check=(condition,message)=>{ checks++; if(!condition) failures.push(message); };
+  const checkText=(label,message)=>{
+    const reference=label.cloneNode(true);
+    reference.removeAttribute('textLength'); reference.removeAttribute('lengthAdjust');
+    label.parentNode.append(reference);
+    const natural=reference.getComputedTextLength(), naturalBounds=reference.getBBox();
+    reference.remove();
+    const fitted=label.getBBox();
+    check(fitted.width<=naturalBounds.width+0.1,`${message}: text stretched`);
+    check(natural>94 ? label.getAttribute('textLength')==='94' : !label.hasAttribute('textLength'),`${message}: incorrect fitting threshold`);
+    if(natural<=94) check(Math.abs(fitted.width-naturalBounds.width)<0.1,`${message}: natural width changed`);
+  };
+  cards.forEach((card,index)=>{
+    const svg=card.shadowRoot.querySelector('svg'), view=svg.viewBox.baseVal;
+    const groups=[...svg.querySelectorAll('[data-distributor-slot]')];
+    check(groups.length===card._cfg.verteiler.anschluesse.length,`Case ${index}: slot count`);
+    groups.forEach((group,i)=>{
+      const b=group.getBBox(), slot=card._cfg.verteiler.anschluesse[i];
+      check(b.x>=view.x && b.y>=view.y && b.x+b.width<=view.x+view.width && b.y+b.height<=view.y+view.height,`Case ${index}, slot ${i}: clipped`);
+      const label=group.querySelector('text.wt'), labelBounds=label.getBBox();
+      group.querySelectorAll('text').forEach(text=>checkText(text,`Case ${index}, slot ${i}`));
+      const center=card._model.components[`distributor-slot-${i}`].origin.x+48;
+      // Slots are 110 units apart; include glyph overhang beyond textLength.
+      check(labelBounds.x>=center-55 && labelBounds.x+labelBounds.width<=center+55,`Case ${index}, slot ${i}: label exceeds its slot`);
+      if(slot.status==='blind') {
+        check(group.querySelectorAll('[data-blank-cap]').length===2,`Case ${index}: caps`);
+        check(!group.querySelector('.w3,.wp,[data-symboltyp],[data-more]'),`Case ${index}: blind activity`);
+      } else check(!!group.querySelector('.w3')===(!!slot.pumpe && states['sensor.demo_pump'].state==='on'),`Case ${index}: flow`);
+    });
+    const geometry=JSON.stringify(card._model), before=svg.getAttribute('viewBox');
+    card.hass={states:{...states,'sensor.demo_vl':sensor(61)},language:'de'};
+    check(JSON.stringify(card._model)===geometry && card.shadowRoot.querySelector('svg').getAttribute('viewBox')===before,`Case ${index}: unstable geometry`);
+    card.hass={states,language:'de'};
+    card.shadowRoot.querySelectorAll('[data-distributor] text').forEach(text=>checkText(text,`Case ${index} after sensor update`));
+  });
+  // Exercise actual DOM patching when a previously fitted name becomes narrow.
+  const changing=cards[1], original=cases[1][1];
+  for(const name of ['Anschluss 2','i'.repeat(18),'W'.repeat(17)]) {
+    changing.setConfig({verteiler:{anschluesse:[{name,richtung:'oben'},{name,richtung:'oben'}]}});
+    changing.shadowRoot.querySelectorAll('[data-distributor-slot] text.wt').forEach(label=>checkText(label,`Renamed ${name}`));
+  }
+  changing.setConfig(original);
+  document.querySelector('#report').textContent=failures.length ? `${failures.length} Fehler / ${checks} Prüfungen\n${failures.join('\n')}` : `${checks} Prüfungen bestanden: SVG-Grenzen, Blindkappen, Strömung und stabile Geometrie.`;
+}
+document.querySelector('#theme').onchange=e=>{document.documentElement.dataset.theme=e.target.value;inspect();};
+document.querySelector('#width').onchange=e=>{document.querySelector('#cards').classList.toggle('narrow',e.target.value==='320px');inspect();};
+document.querySelector('#toggle').onclick=()=>{
+  states['sensor.demo_pump']=sensor(states['sensor.demo_pump'].state==='on'?'off':'on');
+  for(const card of cards) card.hass={states:{...states},language:'de'};
+  inspect();
+};
+document.querySelector('#check').onclick=inspect;
+inspect();
+</script>
+</html>

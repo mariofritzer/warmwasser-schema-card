@@ -54,7 +54,7 @@ An animated hydraulic diagram for Home Assistant: storage tank, fresh water modu
 </table>
 
 - **Everything is optional:** every device and every single value only appears when you configure an entity for it
-- **Visual editor:** set everything up in the dashboard editor – no YAML required
+- **Visual editor:** configure existing equipment in the dashboard editor; the new flexible distributor uses YAML
 - **German and English:** follows your Home Assistant language, or set `sprache: de` / `sprache: en`
 - **Rendered in the browser:** no server-side template rendering, visible immediately after loading
 - Tank temperature as a colour gradient from any number of sensors
@@ -80,6 +80,11 @@ An animated hydraulic diagram for Home Assistant: storage tank, fresh water modu
 3. Reload the browser (Ctrl+F5)
 
 ## Configuration
+
+An optional [flexible heating distributor](docs/distributor.md) supports ordered
+slots, upward/downward branches and capped connections. Configure it in YAML
+under `verteiler.anschluesse` instead of `heizkreise`:
+[example](verteiler-beispiel.yaml). Existing heating circuits and mixers are unchanged.
 
 Add the card via **Add card → Warmwasser Schema Card** and configure it in the visual editor, or use YAML.
 The configuration keys are German; the table below gives the English meaning.

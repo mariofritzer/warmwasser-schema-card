@@ -1,0 +1,31 @@
+# Flexibler HKV: Konfiguration derzeit ausschließlich in YAML.
+# Alle Beispiel-Entitäten sind synthetisch und müssen bei Bedarf ersetzt werden.
+type: custom:warmwasser-schema-card
+speicher:
+  typ: schicht
+
+# Ein Eintrag = ein Vorlauf-/Rücklaufpaar, von links nach rechts.
+# Nicht gleichzeitig mit einer nicht leeren heizkreise-Liste verwenden.
+verteiler:
+  anschluesse:
+    - name: HK
+      typ: heizkoerper
+      status: aktiv
+      richtung: oben
+      # pumpe: switch.demo_heizkoerperpumpe
+      # vorlauf: sensor.demo_heizkoerper_vorlauf
+      # ruecklauf: sensor.demo_heizkoerper_ruecklauf
+      # wmz: sensor.demo_heizkoerper_waermemenge
+      # icon: mdi:radiator
+    - name: FBH
+      typ: fussboden
+      status: aktiv
+      richtung: unten
+      # pumpe: switch.demo_fussbodenpumpe
+    - name: Warmwasser
+      typ: warmwasser # Ladekreis auf der Heizwasserseite, kein Trinkwasseranschluss.
+      richtung: oben
+    - name: Reserve
+      typ: frei
+      status: blind
+      richtung: unten
