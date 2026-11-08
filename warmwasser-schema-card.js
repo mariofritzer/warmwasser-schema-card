@@ -627,6 +627,68 @@ function directedPolicy(options) {
   return JSON.stringify({ radius: options.radius ?? 8, bridgeRadius: options.bridgeRadius ?? 6,
     halfWidth: options.halfWidth ?? 5, obstacles: (options.obstacles ?? []).map(o => [o.x,o.y,o.width,o.height,o.owner ?? null]) });
 }
+// Preserve semantic vertices while removing only straight, forward helper points.
+function normalizeDirectedPolyline(points, nodes) {
+  for (let i = points.length - 2; i > 0; i--) {
+    const a = points[i-1], p = points[i], b = points[i+1];
+    if (nodes.some(n => n.x === p.x && n.y === p.y)) continue;
+    if ((a.x === p.x && p.x === b.x && (p.y-a.y)*(b.y-p.y) > 0) ||
+        (a.y === p.y && p.y === b.y && (p.x-a.x)*(b.x-p.x) > 0)) points.splice(i, 1);
+  }
+}
+// Fixed centerlines have no owner-escape exception: their complete stroke must
+// clear every obstacle. This is a primitive, not general manifold support.
+function validateDirectedFixedPolyline(request, options = {}) {
+  const fail = reason => ({ status:'failed', code:'invalid-input', reason });
+  if (!request || typeof request.id !== 'string' || !request.id || request.id === '__proto__' ||
+      (request.role !== undefined && !['supply','neutral'].includes(request.role)) ||
+      !Array.isArray(request.points) || request.points.length < 2 || !Array.isArray(request.nodes) || request.nodes.length < 2 ||
+      !options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).some(k => !['radius','bridgeRadius','halfWidth','obstacles'].includes(k)))
+    return fail('Expected a fixed polyline, ordered nodes and valid options.');
+  const half = options.halfWidth === undefined ? 5 : options.halfWidth;
+  const radius = options.radius === undefined ? 8 : options.radius;
+  const bridge = options.bridgeRadius === undefined ? 6 : options.bridgeRadius;
+  const obstacles = options.obstacles === undefined ? [] : options.obstacles;
+  if (![half,radius,bridge].every(Number.isFinite) || half < 0 || radius < 0 || bridge <= 0 || !Array.isArray(obstacles) ||
+      Array.from(obstacles).some(o => !o || ![o.x,o.y,o.width,o.height].every(Number.isFinite) || o.width < 0 || o.height < 0 || (o.owner != null && typeof o.owner !== 'string')) ||
+      Array.from(request.points).some(p => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)))
+    return fail('Invalid geometry or compiler policy.');
+  const points = request.points.map(p => ({x:p.x,y:p.y}));
+  for (let i=0; i<points.length-1; i++) {
+    const a=points[i], b=points[i+1];
+    if ((a.x === b.x) === (a.y === b.y)) return fail('Segments must be nonzero and orthogonal.');
+    for (const o of obstacles) {
+      if (![o.x-half,o.y-half,o.x+o.width+half,o.y+o.height+half].every(Number.isFinite)) return fail('Invalid inflated obstacle.');
+      if (Math.max(a.x,b.x) >= o.x-half && Math.min(a.x,b.x) <= o.x+o.width+half &&
+          Math.max(a.y,b.y) >= o.y-half && Math.min(a.y,b.y) <= o.y+o.height+half)
+        return {status:'failed',code:'pipe-obstacle',reason:'Fixed pipe stroke intersects an obstacle.'};
+    }
+  }
+  let last = -1; const seen = new Set();
+  for (const n of request.nodes) {
+    if (!n || typeof n.ref !== 'string' || !n.ref || !Number.isFinite(n.x) || !Number.isFinite(n.y) || seen.has(n.ref)) return fail('Invalid node.');
+    const i = points.findIndex((p,k) => k>last && p.x===n.x && p.y===n.y);
+    if (i < 0 || (last < 0 && i !== 0)) return fail('Nodes must be ordered vertices including endpoints.');
+    last=i; seen.add(n.ref);
+  }
+  if (last !== points.length-1) return fail('Final endpoint must be a node.');
+  normalizeDirectedPolyline(points, request.nodes);
+  const gap = (a,b,c,d) => Math.max(0, Math.min(a,b)-Math.max(c,d), Math.min(c,d)-Math.max(a,b));
+  for (let i=0; i<points.length-1; i++) for (let j=i+2; j<points.length-1; j++) {
+    const a=points[i], b=points[i+1], c=points[j], d=points[j+1];
+    const straight=points.slice(i,j+2).every(p => a.x===b.x ? p.x===a.x : p.y===a.y) &&
+      points.slice(i,j+1).every((p,k) => Math.sign(points[i+k+1].x-p.x)===Math.sign(b.x-a.x) && Math.sign(points[i+k+1].y-p.y)===Math.sign(b.y-a.y));
+    if (!straight && Math.hypot(gap(a.x,b.x,c.x,d.x),gap(a.y,b.y,c.y,d.y)) < 2*half)
+      return {status:'failed',code:'pipe-clearance',reason:'Non-adjacent fixed pipe sections are too close.'};
+  }
+  const candidate=Object.freeze({status:'routed',id:request.id,role:request.role,
+    points:Object.freeze(points.map(p=>Object.freeze(p))),
+    nodes:Object.freeze(request.nodes.map(n=>Object.freeze({ref:n.ref,x:n.x,y:n.y}))) });
+  directedRouteProvenance.set(candidate,{policy:directedPolicy(options)});
+  const checked=compileDirectedJunctionBatch([candidate],options);
+  return checked.status === 'routed' ? candidate : checked;
+}
 // Directed junction sides point outward from the node, on both incident legs.
 // This adapter is independent of model topology and is not used by legacy routing.
 function routeDirectedJunctionConnection(request) {
@@ -673,13 +735,7 @@ function routeDirectedJunctionConnection(request) {
       return fail('invalid-input', 'Port escape is not representable at these coordinates.');
     points.push(...(i ? part.points.slice(1) : part.points));
   }
-  // Remove artificial collinear escape points, keeping every semantic node.
-  for (let i = points.length - 2; i > 0; i--) {
-    const a = points[i-1], p = points[i], b = points[i+1];
-    if (nodes.some(n => n.x === p.x && n.y === p.y)) continue;
-    if ((a.x === p.x && p.x === b.x && (p.y-a.y)*(b.y-p.y) > 0) ||
-        (a.y === p.y && p.y === b.y && (p.x-a.x)*(b.x-p.x) > 0)) points.splice(i, 1);
-  }
+  normalizeDirectedPolyline(points, nodes);
   // Reject close non-adjacent strokes conservatively, except one continuous
   // straight run split into collinear segments by mandatory nodes.
   const axisDistance = (a, b, c, d) => {
