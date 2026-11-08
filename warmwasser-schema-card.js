@@ -1098,6 +1098,63 @@ function compilePipeRoutes(routes, options = {}) {
   return {status:'routed',routes:result,paintOrder:rs.map(r => r.id)};
 }
 
+// Extract only incidences proven by the canonical one-circuit WP/HK recipes.
+// This is metadata, not a complete geometry, collision exemption or routing opt-in.
+function resolveLegacyWpHeatingIncidences(model) {
+  const unsupported = () => ({ status:'unsupported', reason:'unproven-geometry' });
+  try {
+    const { components:c, connections:e, junctions:j } = model;
+    const allowed = new Set(['tank','tank-feet','wp','valve','manifolds','heating-circuit-0']);
+    if (Object.keys(c).some(id => !allowed.has(id)) || [...allowed].some(id => !c[id])) return unsupported();
+    const specs = {
+      'wp-lower-supply':['wp.lower-supply','tank.lower-supply',['supply-tee']],
+      'wp-lower-return':['tank.lower-return','valve.lower',['return-tee']],
+      'hk-supply':['supply-tee','manifold-primary-supply',[]],
+      'hk-return':['manifold-primary-return','return-tee',[]],
+      'heating-supply-0':['manifold-supply-0','heating-circuit-0.supply',[]],
+      'heating-return-0':['heating-circuit-0.return','manifold-return-0',[]],
+      'manifold-supply':['manifolds.supply-left','manifolds.supply-right',['manifold-supply-0','manifold-primary-supply']],
+      'manifold-return':['manifolds.return-left','manifolds.return-right',['manifold-return-0','manifold-primary-return']]
+    };
+    const ids = ['supply-tee','return-tee','manifold-primary-supply','manifold-primary-return','manifold-supply-0','manifold-return-0'];
+    // diagramPort resolves junctions before ports; extra keys could shadow a
+    // port reference and invalidate the directions inferred below.
+    if (Object.keys(j).length !== ids.length || Object.keys(j).some(id => !ids.includes(id))) return unsupported();
+    const port = ref => { const [id,name] = ref.split('.'), b=c[id], p=b.ports[name]; return {x:b.origin.x+p.x,y:b.origin.y+p.y,medium:p.medium}; };
+    const node = ref => j[ref] || port(ref);
+    for (const [id,[from,to,via]] of Object.entries(specs)) {
+      const edge=e[id];
+      if (!edge || edge.id !== id || edge.from !== from || edge.to !== to || !Array.isArray(edge.via) || JSON.stringify(edge.via) !== JSON.stringify(via)) return unsupported();
+      for (const ref of [from,...via,to]) {
+        const p=node(ref); if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.medium !== 'heating-water') return unsupported();
+      }
+    }
+    for (const id of ids) if (!j[id] || j[id].id !== id || j[id].kind !== 'tee') return unsupported();
+    // No unaccounted connection may share one of these references.
+    for (const [key, edge] of Object.entries(e)) if (!specs[key] && [edge.from,...edge.via,edge.to].some(ref => ids.includes(ref))) return unsupported();
+    const s=j['supply-tee'], r=j['return-tee'], ps=j['manifold-primary-supply'], pr=j['manifold-primary-return'], bs=j['manifold-supply-0'], br=j['manifold-return-0'];
+    const ws=port('wp.lower-supply'), ts=port('tank.lower-supply'), tr=port('tank.lower-return'), vr=port('valve.lower');
+    const sl=port('manifolds.supply-left'), sr=port('manifolds.supply-right'), rl=port('manifolds.return-left'), rr=port('manifolds.return-right');
+    const hs=port('heating-circuit-0.supply'), hr=port('heating-circuit-0.return');
+    // The renderer's fixed bends and bridges place local legs on these axes.
+    if (!(s.x===295 && r.x===240 && ps.x===295 && pr.x===312 && ws.y===s.y && ts.y===s.y && tr.y===r.y &&
+      ws.x>s.x && ts.x<254 && tr.x<r.x && vr.x===262 && r.y>vr.y && s.y<model.geometry.ym-9 && ps.y>399 && pr.y>381 && r.y<348 &&
+      sl.y===bs.y && bs.y===ps.y && ps.y===sr.y && sl.x<bs.x && bs.x<ps.x && ps.x<sr.x &&
+      rl.y===br.y && br.y===pr.y && pr.y===rr.y && rl.x<br.x && br.x<pr.x && pr.x<rr.x &&
+      bs.y<br.y-11 && hs.x===bs.x && hs.y>br.y+11 && hr.x===br.x && hr.y>br.y)) return unsupported();
+    const incidence = (connectionId, segmentIndex, side) => ({connectionId, segmentIndex, side});
+    const entries = {
+      'supply-tee':[incidence('wp-lower-supply',0,'right'),incidence('wp-lower-supply',1,'left'),incidence('hk-supply',0,'bottom')],
+      'return-tee':[incidence('wp-lower-return',0,'left'),incidence('wp-lower-return',1,'right'),incidence('hk-return',0,'bottom')],
+      'manifold-primary-supply':[incidence('manifold-supply',1,'left'),incidence('manifold-supply',2,'right'),incidence('hk-supply',0,'top')],
+      'manifold-primary-return':[incidence('manifold-return',1,'left'),incidence('manifold-return',2,'right'),incidence('hk-return',0,'top')],
+      'manifold-supply-0':[incidence('manifold-supply',0,'left'),incidence('manifold-supply',1,'right'),incidence('heating-supply-0',0,'bottom')],
+      'manifold-return-0':[incidence('manifold-return',0,'left'),incidence('manifold-return',1,'right'),incidence('heating-return-0',0,'bottom')]
+    };
+    return {status:'resolved', junctions:ids.map(id => ({ref:id,x:j[id].x,y:j[id].y,medium:j[id].medium,incidences:entries[id]}))};
+  } catch (_) { return unsupported(); }
+}
+
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
 function routeDiagramConnections(model, ids, options = {}) {
   const result = {}, candidates = [];
