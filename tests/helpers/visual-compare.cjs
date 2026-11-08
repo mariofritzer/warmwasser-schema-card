@@ -15,6 +15,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   let body, type;
   if (url.pathname === '/') { body = fs.readFileSync(path.join(__dirname, 'visual-compare.html')); type = 'text/html; charset=utf-8'; }
+  else if (url.pathname === '/distributor') { body = fs.readFileSync(path.join(__dirname, 'distributor.html')); type = 'text/html; charset=utf-8'; }
   else if (url.pathname === '/baseline.js') { body = baseline; type = 'text/javascript; charset=utf-8'; }
   else if (url.pathname === '/current.js') { body = fs.readFileSync(path.join(root, 'warmwasser-schema-card.js')); type = 'text/javascript; charset=utf-8'; }
   else { res.writeHead(404); res.end('Not found'); return; }

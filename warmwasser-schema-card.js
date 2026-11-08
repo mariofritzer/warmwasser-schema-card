@@ -118,6 +118,36 @@ const collect = (o, out) => {
   return out;
 };
 
+// Public YAML boundary for the optional distributor. Keep this independent of
+// entity availability and DOM/editor state: list order IS physical slot order.
+const DISTRIBUTOR_TYPES = ['heizkoerper', 'fussboden', 'warmwasser', 'frei'];
+function normalizeDistributor(value, legacyCircuits) {
+  if (value === undefined) return null;
+  const invalid = (field, message) => { throw new Error(`verteiler${field}: ${message}`); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('', 'Objekt erwartet / expected object');
+  if (!Array.isArray(value.anschluesse) || !value.anschluesse.length) invalid('.anschluesse', 'Mindestens ein Platz erforderlich / at least one slot required');
+  if (legacyCircuits?.length) invalid('', 'Entweder verteiler oder heizkreise verwenden / use either verteiler or heizkreise');
+  return { anschluesse: value.anschluesse.map((item, i) => {
+    const field = `.anschluesse[${i}]`;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) invalid(field, 'Objekt erwartet / expected object');
+    const slot = { ...item, name: item.name ?? item.label ?? '', typ: item.typ ?? 'frei', status: item.status ?? 'aktiv', richtung: item.richtung ?? 'unten' };
+    if (typeof slot.name !== 'string') invalid(`${field}.name`, 'Text erwartet / expected text');
+    for (const [key, options] of [['typ', DISTRIBUTOR_TYPES], ['status', ['aktiv', 'blind']], ['richtung', ['oben', 'unten']]]) {
+      if (!options.includes(slot[key])) invalid(`${field}.${key}`, options.join(', '));
+    }
+    slot.symboltyp = item.symboltyp ?? slot.typ;
+    if (![...DISTRIBUTOR_TYPES, 'kein'].includes(slot.symboltyp)) invalid(`${field}.symboltyp`, 'heizkoerper, fussboden, warmwasser, frei, kein');
+    for (const key of ['pumpe', 'vorlauf', 'ruecklauf', 'wmz']) {
+      if (item[key] == null || item[key] === '') delete slot[key];
+      else if (!isEnt(item[key])) invalid(`${field}.${key}`, 'Entitäts-ID erwartet / expected entity ID');
+    }
+    if (item.icon == null || item.icon === '') delete slot.icon;
+    else if (typeof item.icon !== 'string' || !/^[a-z0-9-]+:[a-z0-9-]+$/i.test(item.icon)) invalid(`${field}.icon`, 'Icon wie mdi:radiator erwartet / expected icon ID');
+    if (item.mischer !== undefined) invalid(`${field}.mischer`, 'Im neuen Verteiler noch nicht unterstützt / not yet supported');
+    return slot;
+  }) };
+}
+
 /* Gleiche DOM-Struktur? Dann nur Attribute/Texte angleichen, damit Animationen weiterlaufen. */
 function sameShape(a, b) {
   if (a.childNodes.length !== b.childNodes.length) return false;
@@ -352,8 +382,10 @@ function buildHeatingCircuitsSection(c, builder, geometry, tank) {
   const { component, p, junction, connection, connections } = builder;
   const { hk, weiche, wp } = geometry;
   if (hk) {
-    const dy = weiche ? 70 : 0, yy = 420 + dy, yr = 448 + dy, ymix = 482 + dy, ye = 548 + dy;
-    const positions = HK_X.slice(0, c.heizkreise.length).sort((a, b) => a - b);
+    const slots = c.verteiler?.anschluesse;
+    const upper = slots?.some(slot => slot.richtung === 'oben');
+    const dy = weiche ? 70 : 0, yy = (upper ? 620 : 420) + dy, yr = yy + 28, ymix = 482 + dy, ye = 548 + dy;
+    const positions = slots ? slots.map((_, i) => 220 - (slots.length - 1 - i) * 110) : HK_X.slice(0, c.heizkreise.length).sort((a, b) => a - b);
     const left = Math.min(...positions) - 40;
     const manifold = component('manifolds', left, yy, (weiche ? 372 : 317) - left, yr - yy);
     const supply = junction('manifold-primary-supply', weiche ? 356 : 295, yy, manifold, 'heating-water', weiche ? 'endpoint' : 'tee');
@@ -364,6 +396,31 @@ function buildHeatingCircuitsSection(c, builder, geometry, tank) {
     const rr = weiche ? ret : p(manifold, 'return-right', 317, yr, 'right', 'return');
     const sj = [], rj = [];
     positions.forEach((x, i) => {
+      if (slots) {
+        const slot = slots[i], up = slot.richtung === 'oben', blind = slot.status === 'blind';
+        const endY = up ? yy - (blind ? 36 : 96) : yr + (blind ? 36 : 96);
+        const branch = component(`distributor-slot-${i}`, x - 48, endY - (up ? 108 : 0), 96, up ? (blind ? 108 : 204) : 96, manifold);
+        branch.kind = blind ? 'blank' : 'consumer'; branch.slotIndex = i;
+        branch.endOffset = endY - branch.origin.y; branch.up = up;
+        const bs = p(branch, 'supply', x - 16, endY, up ? 'bottom' : 'top', 'supply');
+        const br = p(branch, 'return', x + 16, endY, up ? 'bottom' : 'top', 'return');
+        if (blind) { branch.ports.supply.closed = true; branch.ports.return.closed = true; }
+        const sv = junction(`manifold-supply-${i}`, x - 16, yy, manifold);
+        const rv = junction(`manifold-return-${i}`, x + 16, yr, manifold);
+        sj.push(sv); rj.push(rv);
+        connection(`distributor-supply-${i}`, sv, bs);
+        connection(`distributor-return-${i}`, br, rv);
+        if (!blind && slot.pumpe) {
+          const py = up ? yy - 50 : yr + 50;
+          const pump = component(`distributor-pump-${i}`, x - 26, py - 10, 20, 20, branch);
+          const a = p(pump, 'in', x - 16, py + (up ? 10 : -10), up ? 'bottom' : 'top', 'supply');
+          const b = p(pump, 'out', x - 16, py + (up ? -10 : 10), up ? 'top' : 'bottom', 'supply');
+          connections[`distributor-supply-${i}`].to = a;
+          connection(`distributor-pump-through-${i}`, a, b);
+          connection(`distributor-pump-out-${i}`, b, bs);
+        }
+        return;
+      }
       const branch = component(`heating-circuit-${i}`, x - 22, ye - 9, 44, 60);
       const bs = p(branch, 'supply', x - 16, ye, 'top', 'supply');
       const br = p(branch, 'return', x + 16, ye, 'top', 'return');
@@ -457,7 +514,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
 
 function diagramModel(c) {
   const split = c.typ === 'getrennt', tt = c.typ === 'kombi' || c.typ === 'hygiene';
-  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0, weiche = hk && !!c.weiche;
+  const fm = !tt && !!(c.fm || c.zirkulationspumpe), wp = !!c.wp, hk = c.heizkreise.length > 0 || !!c.verteiler, weiche = hk && !!c.weiche;
   const yt = 40 + 310 * clamp(c.trennung, 35, 70) / 100, gap = split ? 32 : 18;
   const bo = yt - gap, ru = yt + gap, bu = 340, ym = (ru + 338) / 2;
   const fmHeater = split && !!c.heizstab_oben && !!(c.fm || c.zirkulationspumpe);
@@ -1254,7 +1311,7 @@ function renderAdditionalAndSolarPipes({ K, SO, model, point, F, k_pumpe, so_on 
   return o;
 }
 
-function renderHeatingPipes({ WP, akt, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv }) {
+function renderHeatingPipes({ WP, akt, distributorRunning, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv }) {
   let o = '';
   const verteiler = (edge, cl) => {
     const from = point(edge.from), to = point(edge.to);
@@ -1267,7 +1324,7 @@ function renderHeatingPipes({ WP, akt, wpU, model, point, td, hk_fl, FM, W8, y_b
       `<path d="${route(-3)}" stroke="#fff" stroke-opacity=".25" stroke-width="3"/>` +
       `<rect x="${from.x - 5}" y="${from.y - 10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${to.x}" y="${to.y - 10}" width="5" height="20" rx="1.5" class="wk"/>`;
   };
-  if (WP && akt.length && !wpU) {
+  if (WP && (akt.length || distributorRunning) && !wpU) {
     const supply = model.connections['wp-lower-supply'], ret = model.connections['wp-lower-return'];
     const a = point(supply.to), b = point(ret.from), sj = model.junctions[supply.via[0]], rj = model.junctions[ret.via[0]];
     o += `<path d="M${a.x} ${a.y}H254A8 8 0 0 1 270 ${sj.y}H${sj.x}M${rj.x} ${rj.y}H${b.x}${b.y !== rj.y ? `V${b.y}` : ''}" class="w3" style="${td}"/>`;
@@ -1534,6 +1591,20 @@ function solarState(c, ON, NUM) {
   return { SO, so_on };
 }
 
+function distributorSlotState(slots, S, U, ON) {
+  return slots.map(slot => {
+    if (slot.status === 'blind') return { on: false, rows: [] };
+    const rows = [];
+    for (const [key, prefix] of [['vorlauf', 'VL'], ['ruecklauf', 'RL'], ['wmz', '']]) {
+      if (!slot[key]) continue;
+      const value = S(slot[key]);
+      const text = key === 'wmz' ? `${isNum(value) ? r1(Number(value)) : '–'} ${U(slot[key], 'kWh')}` : `${prefix} ${fmt(value)}`;
+      rows.push({ text, entity: slot[key] });
+    }
+    return { on: !!slot.pumpe && ON(slot.pumpe), rows };
+  });
+}
+
 function heatingCircuitState(c, hkPos, L, S, U, ON, NUM, CW, CK) {
   const hks = c.heizkreise.map((hk, i) => {
     const MIX = !!hk.mischer, m = MIX ? S(hk.mischer) : 'x';
@@ -1549,10 +1620,13 @@ function heatingCircuitState(c, hkPos, L, S, U, ON, NUM, CW, CK) {
       c: MIX ? `color-mix(in srgb,${CW} ${Math.round(a * 100)}%,${CK})` : CW,
     };
   });
-  const HK = hks.length > 0;
-  const hk_fl = hks.filter((x) => x.on).reduce((s, x) => s + x.a, 0);
+  const distributorSlots = c.verteiler?.anschluesse;
+  const distributorState = distributorSlots ? distributorSlotState(distributorSlots, S, U, ON) : [];
+  const distributorRunning = distributorState.filter(slot => slot.on).length;
+  const HK = hks.length > 0 || !!distributorSlots;
+  const hk_fl = distributorSlots ? distributorRunning : hks.filter((x) => x.on).reduce((s, x) => s + x.a, 0);
   const akt = hks.map((x, i) => x.on && x.a > 0.04 ? i : -1).filter((i) => i >= 0);
-  return { hks, HK, hk_fl, akt };
+  return { hks, HK, hk_fl, akt, distributorSlots, distributorState, distributorRunning };
 }
 
 function energyState(c, NUM) {
@@ -1805,6 +1879,81 @@ function renderDailyEnergy({ c, F, NUM, U }) {
   return o;
 }
 
+// The flexible distributor uses the existing rail/pipe/pump recipes. Only its
+// ordered slot geometry is new; no general layout API or automatic router.
+function renderDistributor(model, slots, states, draw) {
+  const { pumpe, more, CW, CK, F, language } = draw;
+  const point = ref => diagramPort(model, ref);
+  const supplyRail = point(model.connections['manifold-supply'].from).y;
+  const returnRail = point(model.connections['manifold-return'].from).y;
+  const running = states.map((state, i) => state.on ? i : -1).filter(i => i >= 0);
+  let out = '<g data-distributor="flexible">';
+  if (running.length) {
+    // The rails carry flow only as far as the leftmost running consumer.
+    const i = running[0], a = point('manifold-primary-supply'), b = point(`manifold-supply-${i}`);
+    const d = point(`manifold-return-${i}`), e = point('manifold-primary-return');
+    out += `<path d="M${a.x} ${a.y}H${b.x}" class="w3"/><path d="M${d.x} ${d.y}H${e.x}" class="w3"/>`;
+  }
+  const vertical = (edge, crossing) => {
+    const a = point(edge.from), b = point(edge.to), dir = Math.sign(b.y - a.y);
+    let path = `M${a.x} ${a.y}`;
+    // A bridge is a visual crossing, never a shared hydraulic junction.
+    if (crossing !== null && Math.min(a.y, b.y) < crossing && Math.max(a.y, b.y) > crossing) {
+      path += `V${crossing - dir * 13}A13 13 0 0 1 ${a.x} ${crossing + dir * 13}`;
+    }
+    return path + `V${b.y}` + (a.x === b.x ? '' : `H${b.x}`);
+  };
+  const text = (x, y, value, css, entity) => {
+    const size = css === 'wc wt wv' ? 10 : 8.5;
+    return `<text x="${x}" y="${y}" font-size="${size}" class="${css}${entity ? ' wx' : ''}"${entity ? ` data-more="${esc(entity)}"` : ''}>${esc(value)}</text>`;
+  };
+  slots.forEach((slot, i) => {
+    const component = model.components[`distributor-slot-${i}`], up = component.up, blind = component.kind === 'blank';
+    const x = component.origin.x + 48, endY = component.origin.y + component.endOffset;
+    const on = running.includes(i), name = slot.name || (blind ? (language === 'de' ? 'Blind' : 'Capped') : `${language === 'de' ? 'Anschluss' : 'Port'} ${i + 1}`);
+    const supply = model.connections[`distributor-supply-${i}`], ret = model.connections[`distributor-return-${i}`];
+    out += `<g data-distributor-slot="${i}" data-status="${slot.status}" data-direction="${slot.richtung}"><title>${esc(name)} · ${blind ? (language === 'de' ? 'Blindanschluss' : 'Capped port') : slot.typ}</title>`;
+    out += rohr(vertical(supply, up ? null : returnRail), blind ? '#8a9099' : CW, on);
+    if (!blind && slot.pumpe) {
+      out += rohr(vertical(model.connections[`distributor-pump-through-${i}`], null), CW, on);
+      out += rohr(vertical(model.connections[`distributor-pump-out-${i}`], null), CW, on);
+    }
+    out += rohr(vertical(ret, up ? supplyRail : null), blind ? '#8a9099' : CK, on);
+    if (blind) {
+      for (const px of [x - 16, x + 16]) {
+        out += `<rect data-blank-cap="true" x="${px - 8}" y="${endY - 4}" width="16" height="8" rx="2" class="wk"/><path d="M${px - 5} ${endY - 2}l10 4" stroke="#555b63" stroke-width="2"/>`;
+      }
+      out += text(x, up ? endY - 29 : endY + 20, name, 'wc wt wv');
+      out += text(x, up ? endY - 15 : endY + 34, language === 'de' ? 'Blind · verschlossen' : 'Capped · closed', 'wc ws');
+    } else {
+      if (slot.pumpe) {
+        const pump = model.components[`distributor-pump-${i}`];
+        out += `<g${more(slot.pumpe)}>${pumpe(pump.origin.x + 10, pump.origin.y + 10, up ? 'u' : 'd', on)}</g>`;
+      }
+      const d = up ? -1 : 1;
+      out += `<path d="M${x - 20} ${endY - d * 9}l4 ${d * 4} 4 ${-d * 4}M${x + 12} ${endY - d * 5}l4 ${-d * 4} 4 ${d * 4}" class="wa"/>`;
+      const labelY = up ? endY - 94 : endY + 18;
+      out += text(x, labelY, name, 'wc wt wv');
+      let rowY = labelY + 14;
+      for (const row of states[i].rows) {
+        out += text(x, rowY, row.text, 'wc ws', row.entity); rowY += 13;
+      }
+      const sy = up ? endY - 34 : endY + 65, color = on ? F.aktiv : '#8a9099';
+      out += `<g data-symboltyp="${slot.icon ? 'icon' : slot.symboltyp}">`;
+      if (slot.icon) out += `<foreignObject x="${x - 12}" y="${sy}" width="24" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="color:${color}"><ha-icon icon="${esc(slot.icon)}" style="--mdc-icon-size:24px;display:block"></ha-icon></div></foreignObject>`;
+      else if (slot.symboltyp === 'heizkoerper') {
+        out += `<rect x="${x - 20}" y="${sy}" width="40" height="20" rx="3" fill="#2b2f35" stroke="${color}" stroke-width="1.5"/>`;
+        for (let k = 0; k < 5; k++) out += `<path d="M${x - 14 + k * 7} ${sy + 4}v12" stroke="${color}" stroke-width="2" stroke-linecap="round"/>`;
+      } else if (slot.symboltyp === 'fussboden') out += `<path d="M${x - 22} ${sy}h40a3 3 0 0 1 0 6h-40a3 3 0 0 0 0 6h40a3 3 0 0 1 0 6h-40" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round"/>`;
+      else if (slot.symboltyp === 'warmwasser') out += `<path d="M${x} ${sy}C${x - 5} ${sy + 8} ${x - 9} ${sy + 12} ${x - 9} ${sy + 16}a9 9 0 0 0 18 0C${x + 9} ${sy + 12} ${x + 5} ${sy + 8} ${x} ${sy}Z" fill="none" stroke="${color}" stroke-width="2"/>`;
+      else if (slot.symboltyp === 'frei') out += `<circle cx="${x}" cy="${sy + 10}" r="9" fill="none" stroke="${color}" stroke-width="2"/>`;
+      out += '</g>';
+    }
+    out += '</g>';
+  });
+  return out + '</g>';
+}
+
 class WarmwasserSchemaCard extends HTMLElement {
   static getConfigElement() { return document.createElement('warmwasser-schema-card-editor'); }
   static getStubConfig() { return { speicher: { typ: 'trennblech' }, fuehler: [] }; }
@@ -1838,6 +1987,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     c.aussen = isEnt(config.aussen) ? config.aussen : '';
     c.legionellen = hasEnt(config.legionellen) ? { tage: 7, ...config.legionellen } : null;
     c.heizkreise = (config.heizkreise || []).filter(hasEnt).slice(0, 6);
+    c.verteiler = normalizeDistributor(config.verteiler, config.heizkreise);
     c.energie = (config.energie || []).filter((e) => e && isEnt(e.entity));
     this._cfg = c;
     this._model = diagramModel(c);
@@ -1849,6 +1999,35 @@ class WarmwasserSchemaCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._update();
+  }
+
+  connectedCallback() {
+    this._fitDistributorText();
+    document.fonts?.ready.then(() => this._fitDistributorText());
+  }
+
+  disconnectedCallback() {
+    this._textResizeObserver?.disconnect();
+    this._textResizeObserver = null;
+  }
+
+  _fitDistributorText() {
+    if (!this.isConnected || !this._box || !this._cfg?.verteiler) return;
+    // A card can first render detached or hidden. Measure again when shown.
+    if (!this._textResizeObserver) {
+      this._textResizeObserver = new ResizeObserver(() => this._fitDistributorText());
+      this._textResizeObserver.observe(this);
+    }
+    const labels = [...this._box.querySelectorAll('[data-distributor] text')];
+    // Remove previous fitting before measuring; short/narrow text must not stretch.
+    labels.forEach(label => { label.removeAttribute('textLength'); label.removeAttribute('lengthAdjust'); });
+    const widths = labels.map(label => label.getComputedTextLength());
+    labels.forEach((label, i) => {
+      if (widths[i] > 94) {
+        label.setAttribute('textLength', '94');
+        label.setAttribute('lengthAdjust', 'spacingAndGlyphs');
+      }
+    });
   }
 
   _init() {
@@ -1868,6 +2047,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     tpl.innerHTML = this._render();
     if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
     else this._box.replaceChildren(tpl.content);
+    this._fitDistributorText();
   }
 
   _click(ev) {
@@ -1935,7 +2115,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     /* ---------- Heizkreise ---------- */
     const W8 = !!c.weiche, dyw = W8 ? 70 : 0;
     const hkPos = c.heizkreise.map((_, i) => model.components[`heating-circuit-${i}`].origin.x + 22);
-    const { hks, HK, hk_fl, akt } = heatingCircuitState(c, hkPos, L, S, U, ON, NUM, CW, CK);
+    const { hks, HK, hk_fl, akt, distributorSlots, distributorState, distributorRunning } = heatingCircuitState(c, hkPos, L, S, U, ON, NUM, CW, CK);
 
     const aktSupply = akt.map((i) => model.junctions[`manifold-supply-${i}`].x);
     const aktReturn = akt.map((i) => model.junctions[`manifold-return-${i}`].x);
@@ -1956,6 +2136,8 @@ class WarmwasserSchemaCard extends HTMLElement {
     const QS = WP && QT !== 'luft';
     const baseMinX = Math.min(0, K ? -160 : 0, SO ? x0 - 10 : 0, HK ? bx1 - 30 : 0);
     let unten = HK ? 574 + dyw + hkExtra : SO ? 412 : 400;
+    if (distributorSlots) unten = Math.max(unten, model.components.manifolds.origin.y + 48,
+      ...distributorSlots.map((_, i) => { const b = model.components[`distributor-slot-${i}`]; return b.origin.y + b.bounds.height + 16; }));
     if (QS) unten = Math.max(unten, 566);
     let minX = baseMinX, maxX = 486, minY = -30, maxY = unten;
     // Internal origin changes are used by tests and must not clip moved symbols.
@@ -2014,10 +2196,12 @@ class WarmwasserSchemaCard extends HTMLElement {
     const y_vv = HK ? point(model.connections['manifold-supply'].from).y : 420 + dyw, y_rv = HK ? point(model.connections['manifold-return'].from).y : 448 + dyw;
     const y_hm = 482 + dyw, y_he = 548 + dyw;
     if (HK) {
-      o += renderHeatingPipes({ WP, akt, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
+      o += renderHeatingPipes({ WP, akt, distributorRunning, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
       o += `<text x="${bx1 - 8}" y="${y_vv + 3}" font-size="7.5" class="we ws" font-weight="600">VL</text><text x="${bx1 - 8}" y="${y_rv + 3}" font-size="7.5" class="we ws" font-weight="600">RL</text>`;
       o += renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComponent, hks, mischer, CW, L, y_hm, pumpe, y_he, F });
     }
+
+    if (distributorSlots) o += renderDistributor(model, distributorSlots, distributorState, { pumpe, more, CW, CK, F, language: sprache(c, h) });
 
     /* Umschaltventil WP + T-Stücke */
     o += renderValve({ WP, W, model, more, mischer, CK, CW, vb });
@@ -2165,7 +2349,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       c.speicher = { ...(c.speicher || {}), ...(c.trennung === false ? { typ: 'schicht' } : { trennung: c.trennung }) };
       delete c.trennung;
     }
-    const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',');
+    const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',') + `|${!!c.verteiler}`;
     this._config = c;
     if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
@@ -2211,7 +2395,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       { key: 'fuehler', icon: 'mdi:thermometer', schema: [{ type: 'grid', name: '', schema: [F_('name', sel.txt), F_('hoehe', sel.num(0, 100))] }, F_('entity', sel.ent)] },
       { key: 'heizkreise', icon: 'mdi:radiator', schema: [{ type: 'grid', name: '', schema: [F_('name', sel.txt), F_('typ', sel.opt(O.hk))] }, ...E_('pumpe', 'mischer', 'vorlauf', 'vorlauf_soll', 'raum', 'wmz')] },
       { key: 'energie', icon: 'mdi:lightning-bolt', schema: [{ type: 'grid', name: '', schema: [F_('name', sel.txt), F_('icon', sel.icon)] }, F_('entity', sel.ent), F_('farbe', sel.txt)] },
-    ];
+    ].filter(list => list.key !== 'heizkreise' || !this._config.verteiler);
   }
 
   _form(schema, getData, onChange) {
@@ -2230,6 +2414,9 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _fire() {
     const cfg = aufraeumen({ ...this._config });
+    // YAML-only in this step: unrelated editor changes must preserve the exact
+    // distributor data, including optional and unknown values.
+    if (Object.prototype.hasOwnProperty.call(this._config, 'verteiler')) cfg.verteiler = this._config.verteiler;
     if (cfg.weiche && cfg.weiche.anzeigen && Object.keys(cfg.weiche).length === 1) cfg.weiche = true;
     if (cfg.fm && cfg.fm.anzeigen && Object.keys(cfg.fm).length === 1) cfg.fm = true;
     for (const k of ['fuehler', 'heizkreise', 'energie']) if (Array.isArray(this._config[k])) cfg[k] = this._config[k].map((x) => aufraeumen(x));
@@ -2239,7 +2426,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _setList(key, arr) {
     this._config = { ...this._config, [key]: arr };
-    this._struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(this._config[k]) ? this._config[k].length : 0)).join(',');
+    this._struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(this._config[k]) ? this._config[k].length : 0)).join(',') + `|${!!this._config.verteiler}`;
   }
 
   _build() {
@@ -2256,6 +2443,13 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button.add{color:var(--primary-color)}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
+    if (this._config.verteiler) {
+      const note = document.createElement('p');
+      note.textContent = sprache(this._config, this._hass) === 'de'
+        ? 'Der flexible Verteiler wird derzeit in YAML unter verteiler.anschluesse bearbeitet. Seine Einstellungen bleiben hier erhalten.'
+        : 'Edit the flexible distributor in YAML under verteiler.anschluesse for now. Its settings are preserved here.';
+      w.appendChild(note);
+    }
     this._forms = [];
     this._ventilSichtbar = this._hatVentil();
     this._mainForm = this._form(this._mainSchema(), () => this._config, (v) => { this._config = { ...this._config, ...v }; this._ventilFelder(); this._fire(); });

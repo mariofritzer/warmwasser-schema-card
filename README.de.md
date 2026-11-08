@@ -7,7 +7,7 @@ Animiertes Anlagenschema für Home Assistant: Speicher, Frischwassermodul mit Zi
 ![Screenshot](images/screenshot.png)
 
 - **Alles optional:** Jedes Gerät und jeder Einzelwert erscheint nur, wenn dafür eine Entität angegeben ist
-- **Grafischer Editor:** Alles im Dashboard-Editor einstellbar, kein YAML nötig
+- **Grafischer Editor:** Bestehende Anlagenoptionen im Dashboard-Editor; der neue flexible HKV wird in YAML konfiguriert
 - **Deutsch und Englisch:** Richtet sich nach der Sprache von Home Assistant, oder fest mit `sprache: de` / `sprache: en`
 - **Im Browser gezeichnet:** Kein Template-Rendering auf dem Server, sofort sichtbar nach dem Laden
 - Speichertemperatur als Farbverlauf aus beliebig vielen Fühlern
@@ -33,6 +33,11 @@ Animiertes Anlagenschema für Home Assistant: Speicher, Frischwassermodul mit Zi
 3. Browser neu laden (Strg+F5)
 
 ## Konfiguration
+
+Optional gibt es einen [flexiblen Heizkreisverteiler](docs/distributor.md) mit
+beliebiger Anschlussreihenfolge, Abgängen oben/unten und Blindplätzen.
+Er verwendet `verteiler.anschluesse` anstelle von `heizkreise` und wird zunächst
+in YAML eingerichtet: [Beispiel](verteiler-beispiel.yaml).
 
 Karte über **Karte hinzufügen → Warmwasser Schema Card** einfügen und im grafischen Editor einrichten, oder per YAML.
 

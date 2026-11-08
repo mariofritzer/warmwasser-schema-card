@@ -1,0 +1,11 @@
+{
+  "type": "custom:warmwasser-schema-card",
+  "speicher": { "typ": "schicht" },
+  "verteiler": {
+    "anschluesse": [
+      { "name": "HK", "typ": "heizkoerper", "status": "aktiv", "richtung": "oben" },
+      { "name": "FBH", "typ": "fussboden", "status": "aktiv", "richtung": "oben" },
+      { "name": "Blind", "typ": "frei", "status": "blind", "richtung": "oben" }
+    ]
+  }
+}
