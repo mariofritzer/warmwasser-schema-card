@@ -156,10 +156,11 @@ function createDiagramBuilder() {
     }
     return item;
   }
-  function port(comp, id, x, y, direction, medium, role, rect) {
+  function port(comp, id, x, y, direction, medium, role, rect, canonicalSide) {
     if (comp.ports[id]) throw new Error(`Duplicate port: ${comp.id}.${id}`);
     comp.ports[id] = { id, x: x - comp.origin.x, y: y - comp.origin.y, direction, medium, role,
       stub: rect && { x: rect[0] - comp.origin.x, y: rect[1] - comp.origin.y, width: rect[2], height: rect[3] } };
+    if (canonicalSide) comp.ports[id].canonicalSide = canonicalSide;
     return `${comp.id}.${id}`;
   }
   function junction(id, x, y, parent = null, medium = 'heating-water', kind = 'tee') {
@@ -178,7 +179,7 @@ function createDiagramBuilder() {
     if (connections[id]) throw new Error(`Duplicate connection: ${id}`);
     connections[id] = { id, from, to, via };
   }
-  const p = (comp, id, x, y, dir, role, rect, medium = 'heating-water') => port(comp, id, x, y, dir, medium, role, rect);
+  const p = (comp, id, x, y, dir, role, rect, medium = 'heating-water', canonicalSide) => port(comp, id, x, y, dir, medium, role, rect, canonicalSide);
   return { components, junctions, connections, component, p, junction, connection };
 }
 
@@ -199,14 +200,14 @@ function buildTankSection(c, builder, geometry) {
   });
 
   const tank = {};
-  if (fm) tank.fmSupply = p(hot, 'fm-supply', 206, 46, 'right', 'supply', [198, 40, 14, 12]);
+  if (fm) tank.fmSupply = p(hot, 'fm-supply', 206, 46, 'right', 'supply', [198, 40, 14, 12], 'heating-water', 'right');
   if (wp) {
-    tank.wpSupply = p(hot, 'wp-supply', 206, ro, 'right', 'supply', [198, ro - 6, 14, 12]);
-    tank.wpReturn = p(hot, 'wp-return', 206, bo, 'right', 'return', [198, bo - 6, 14, 12]);
+    tank.wpSupply = p(hot, 'wp-supply', 206, ro, 'right', 'supply', [198, ro - 6, 14, 12], 'heating-water', 'right');
+    tank.wpReturn = p(hot, 'wp-return', 206, bo, 'right', 'return', [198, bo - 6, 14, 12], 'heating-water', 'right');
   }
   if (wp || hk) {
-    tank.lowerSupply = p(buffer, 'lower-supply', 206, ru, 'right', 'supply', [198, ru - 6, 14, 12]);
-    tank.lowerReturn = p(buffer, 'lower-return', 206, bu, 'right', 'return', [198, bu - 6, 14, 12]);
+    tank.lowerSupply = p(buffer, 'lower-supply', 206, ru, 'right', 'supply', [198, ru - 6, 14, 12], 'heating-water', 'right');
+    tank.lowerReturn = p(buffer, 'lower-return', 206, bu, 'right', 'return', [198, bu - 6, 14, 12], 'heating-water', 'right');
   }
   return { hot, buffer, tank };
 }
@@ -215,11 +216,11 @@ function buildAdditionalHeatSection(c, builder, geometry, buffer) {
   const { component, p, junction, connection, connections } = builder;
   const { ru, bu } = geometry;
   if (c.kamin) {
-    const ts = p(buffer, 'additional-supply', 70, ru, 'left', 'supply', [62, ru - 6, 14, 12]);
-    const tr = p(buffer, 'additional-return', 70, bu, 'left', 'return', [62, bu - 6, 14, 12]);
+    const ts = p(buffer, 'additional-supply', 70, ru, 'left', 'supply', [62, ru - 6, 14, 12], 'heating-water', 'left');
+    const tr = p(buffer, 'additional-return', 70, bu, 'left', 'return', [62, bu - 6, 14, 12], 'heating-water', 'left');
     const device = component('additional-heat', -150, -30, 90, 394);
-    const ds = p(device, 'supply', -58, ru, 'right', 'supply', [-64, ru - 6, 10, 12]);
-    const dr = p(device, 'return', -58, bu, 'right', 'return', [-64, bu - 6, 10, 12]);
+    const ds = p(device, 'supply', -58, ru, 'right', 'supply', [-64, ru - 6, 10, 12], 'heating-water', 'right');
+    const dr = p(device, 'return', -58, bu, 'right', 'return', [-64, bu - 6, 10, 12], 'heating-water', 'right');
     connection('additional-supply', ds, ts);
     if (c.kamin.wmz) {
       const meter = component('additional-meter', -36, ru - 6, 12, 12, device);
@@ -244,8 +245,8 @@ function buildAdditionalHeatSection(c, builder, geometry, buffer) {
 function buildSolarSection(c, builder, buffer) {
   const { component, p, connection } = builder;
   if (c.solar) {
-    const ts = p(buffer, 'solar-supply', 110, 374, 'bottom', 'supply', [104, 368, 12, 8], 'solar-loop');
-    const tr = p(buffer, 'solar-return', 122, 374, 'bottom', 'return', [116, 368, 12, 8], 'solar-loop');
+    const ts = p(buffer, 'solar-supply', 110, 374, 'bottom', 'supply', [104, 368, 12, 8], 'solar-loop', 'bottom');
+    const tr = p(buffer, 'solar-return', 122, 374, 'bottom', 'return', [116, 368, 12, 8], 'solar-loop', 'bottom');
     const sx = c.kamin ? -240 : -85, collector = component('solar-collector', sx, -22, 87, 286);
     const cs = p(collector, 'supply', sx + 52, 36, 'bottom', 'supply', null, 'solar-loop');
     const cr = p(collector, 'return', sx + 8, 36, 'bottom', 'return', null, 'solar-loop');
@@ -263,19 +264,19 @@ function buildFreshWaterSection(builder, geometry, hot, tank) {
   const { component, p, connection } = builder;
   const { fm, tt, split, bo } = geometry;
   if (fm) {
-    tank.fmReturn = split ? p(hot, 'fm-return', 206, bo - 14, 'right', 'return', [198, bo - 20, 12, 12])
-      : p(hot, 'fm-return', 137, 376, 'bottom', 'return', [131, 370, 12, 12]);
+    tank.fmReturn = split ? p(hot, 'fm-return', 206, bo - 14, 'right', 'return', [198, bo - 20, 12, 12], 'heating-water', 'right')
+      : p(hot, 'fm-return', 137, 376, 'bottom', 'return', [131, 370, 12, 12], 'heating-water', 'bottom');
     const f = component('fm', 340, 14, 110, 90);
-    const fs = p(f, 'supply', 336, 46, 'left', 'supply', [332, 40, 10, 12]);
-    const fr = split ? p(f, 'return', 336, 90, 'left', 'return', [332, 84, 10, 12])
-      : p(f, 'return', 452, 90, 'right', 'return', [448, 84, 10, 12]);
-    p(f, 'cold-water', 362, 12, 'top', 'inlet', [356, 8, 12, 10], 'domestic-water');
-    p(f, 'hot-water', 428, 12, 'top', 'outlet', [422, 8, 12, 10], 'domestic-water');
+    const fs = p(f, 'supply', 336, 46, 'left', 'supply', [332, 40, 10, 12], 'heating-water', 'left');
+    const fr = split ? p(f, 'return', 336, 90, 'left', 'return', [332, 84, 10, 12], 'heating-water', 'left')
+      : p(f, 'return', 452, 90, 'right', 'return', [448, 84, 10, 12], 'heating-water', 'right');
+    p(f, 'cold-water', 362, 12, 'top', 'inlet', [356, 8, 12, 10], 'domestic-water', 'top');
+    p(f, 'hot-water', 428, 12, 'top', 'outlet', [422, 8, 12, 10], 'domestic-water', 'top');
     connection('fm-supply', tank.fmSupply, fs); connection('fm-return', fr, tank.fmReturn);
   }
   if (tt) {
-    p(hot, 'cold-water', 110, 18, 'top', 'inlet', [104, 12, 12, 8], 'domestic-water');
-    p(hot, 'hot-water', 164, 18, 'top', 'outlet', [158, 12, 12, 8], 'domestic-water');
+    p(hot, 'cold-water', 110, 18, 'top', 'inlet', [104, 12, 12, 8], 'domestic-water', 'top');
+    p(hot, 'hot-water', 164, 18, 'top', 'outlet', [158, 12, 12, 8], 'domestic-water', 'top');
   }
 }
 
@@ -284,9 +285,9 @@ function buildHeatPumpSection(c, builder, geometry, tank) {
   const { wp, hk, ym, ru, bu } = geometry;
   if (wp) {
     const w = component('wp', 330, 150, 120, 222), v = component('valve', 228, ym - 14, 49, 28);
-    const ws = p(w, 'upper-supply', 350, 146, 'top', 'supply', [344, 142, 12, 10]);
-    const wl = p(w, 'lower-supply', 326, ru, 'left', 'supply', [322, ru - 6, 10, 12]);
-    const wr = p(w, 'return', 326, ym, 'left', 'return', [322, ym - 6, 10, 12]);
+    const ws = p(w, 'upper-supply', 350, 146, 'top', 'supply', [344, 142, 12, 10], 'heating-water', 'top');
+    const wl = p(w, 'lower-supply', 326, ru, 'left', 'supply', [322, ru - 6, 10, 12], 'heating-water', 'left');
+    const wr = p(w, 'return', 326, ym, 'left', 'return', [322, ym - 6, 10, 12], 'heating-water', 'left');
     const vo = p(v, 'upper', 262, ym - 14, 'top', 'return');
     const vu = p(v, 'lower', 262, ym + 14, 'bottom', 'return');
     const vw = p(v, 'wp', 277, ym, 'right', 'return');
@@ -338,8 +339,8 @@ function buildHeatSourceSection(c, builder, geometry) {
   const { wp } = geometry;
   if (wp && ['sole', 'wasser'].includes(c.wp.typ)) {
     const w = components.wp, source = component('heat-source', 382, 404, 100, 156);
-    const wa = p(w, 'source-in', 400, 372, 'bottom', 'inlet', [394, 368, 12, 8], 'source-loop');
-    const wb = p(w, 'source-out', 430, 372, 'bottom', 'outlet', [424, 368, 12, 8], 'source-loop');
+    const wa = p(w, 'source-in', 400, 372, 'bottom', 'inlet', [394, 368, 12, 8], 'source-loop', 'bottom');
+    const wb = p(w, 'source-out', 430, 372, 'bottom', 'outlet', [424, 368, 12, 8], 'source-loop', 'bottom');
     const a = p(source, 'in', 400, c.wp.typ === 'sole' ? 540 : 535, 'top', 'inlet', null, 'source-loop');
     const b = p(source, 'out', 430, c.wp.typ === 'sole' ? 540 : 535, 'top', 'outlet', null, 'source-loop');
     connection('source-in', wa, a); connection('source-out', b, wb);
@@ -486,6 +487,16 @@ function diagramStub(model, reference) {
   if (!port || !port.stub) throw new Error(`Unknown stub: ${reference}`);
   const r = port.stub;
   return [component.origin.x + r.x, component.origin.y + r.y, r.width, r.height];
+}
+
+// Only sides backed by the existing drawn connector geometry are declared here.
+// Other port directions may describe routing or boundaries, not a symbol side.
+function diagramPortGeometry(model, reference) {
+  const anchor = diagramPort(model, reference);
+  const [id, name] = reference.split('.'), component = model.components[id];
+  const port = component && component.ports[name];
+  if (!port) throw new Error(`Unknown port: ${reference}`);
+  return { anchor, stub: port.stub ? diagramStub(model, reference) : null, side: port.canonicalSide || null };
 }
 
 // clearance is the TOTAL obstacle inflation radius, including any stroke allowance.
