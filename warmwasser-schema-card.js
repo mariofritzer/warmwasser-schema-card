@@ -415,6 +415,59 @@ function buildHeatingCircuitsSection(c, builder, geometry, tank) {
   }
 }
 
+// Resolve painted heating symbols and rails without enabling routing. Rectangles
+// conservatively cover the specified SVG paint, not complete router obstacles:
+// heating-circuit arrows, floor/radiator icons, text and connected pipes are not
+// covered. Rail points describe the painted centerline, not graph incidence.
+function resolveHeatingGeometry(model) {
+  const bodies = [], rails = [];
+  const addBody = (id, rect) => {
+    const c = model.components[id];
+    if (c) bodies.push({ owner:id, x:c.origin.x + rect.x, y:c.origin.y + rect.y, width:rect.width, height:rect.height });
+  };
+  addBody('separator', { x:-0.6, y:-0.6, width:21.2, height:73.2 });
+  for (const id of Object.keys(model.components)) {
+    // The pump's animated halo scales its stroked radius (10 + 0.75) by 1.8.
+    if (/^heating-pump-\d+$/.test(id)) addBody(id, { x:-9.35, y:-9.35, width:38.7, height:38.7 });
+    if (/^heating-mixer-\d+$/.test(id)) addBody(id, { x:-0.8, y:-0.8, width:50.6, height:29.6 });
+  }
+  const point = ref => {
+    const j = model.junctions[ref];
+    if (j) return { x:j.x, y:j.y };
+    const dot = ref.lastIndexOf('.'), c = model.components[ref.slice(0, dot)], p = c.ports[ref.slice(dot + 1)];
+    return { x:c.origin.x + p.x, y:c.origin.y + p.y };
+  };
+  // This is the renderer's paint order; neither order implies connectivity.
+  for (const id of ['manifold-return', 'manifold-supply']) {
+    const edge = model.connections[id]; if (!edge) continue;
+    const from = point(edge.from), to = point(edge.to), via = edge.via.map(point);
+    const points = [from];
+    if (to.y === from.y && via.every(j => j.y === from.y && j.x >= Math.min(from.x, to.x) && j.x <= Math.max(from.x, to.x))) points.push(to);
+    else {
+      for (const j of [...via, to]) { points.push({ x:j.x, y:points.at(-1).y }, j); }
+    }
+    const areas = [];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      if (a.x === b.x && a.y === b.y) continue;
+      // This overestimates SVG's butt caps and remains conservative at joins.
+      areas.push({ x:Math.min(a.x,b.x)-9, y:Math.min(a.y,b.y)-9, width:Math.abs(a.x-b.x)+18, height:Math.abs(a.y-b.y)+18 });
+    }
+    // The renderer does not set fill="none": SVG implicitly closes an open
+    // rail path for filling. The highlight uses the same path shifted up by 3;
+    // the combined bounding box conservatively covers both implicit fills.
+    const xs = points.map(p => p.x), ys = points.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    if (minX !== maxX && minY !== maxY)
+      areas.push({ x:minX, y:minY-3, width:maxX-minX, height:maxY-minY+3 });
+    // End caps have a 0.8px stroke; they remain separate even for bent rails.
+    areas.push({ x:from.x-5.4, y:from.y-10.4, width:5.8, height:20.8 },
+      { x:to.x-0.4, y:to.y-10.4, width:5.8, height:20.8 });
+    rails.push({ id, owner:'manifolds', points, areas });
+  }
+  return { bodies, rails };
+}
+
 function finishDiagramModel(c, builder, geometry, hot, buffer) {
   const { components, junctions, connections } = builder;
   const { fm, wp, hk, yt, ro, bo, ru, bu, ym, heaterY } = geometry;
