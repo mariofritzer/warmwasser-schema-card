@@ -401,6 +401,8 @@ function buildHeatingCircuitsSection(c, builder, geometry, tank) {
         const endY = up ? yy - (blind ? 36 : 96) : yr + (blind ? 36 : 96);
         const branch = component(`distributor-slot-${i}`, x - 48, endY - (up ? 108 : 0), 96, up ? (blind ? 108 : 204) : 96, manifold);
         branch.kind = blind ? 'blank' : 'consumer'; branch.slotIndex = i;
+        // Snapshot only the configuration values that select painted geometry.
+        branch.distributorGeometry = Object.freeze({ symboltyp:slot.symboltyp, icon:slot.icon ?? null });
         branch.endOffset = endY - branch.origin.y; branch.up = up;
         const bs = p(branch, 'supply', x - 16, endY, up ? 'bottom' : 'top', 'supply');
         const br = p(branch, 'return', x + 16, endY, up ? 'bottom' : 'top', 'return');
@@ -546,6 +548,56 @@ function resolveHeatingEndpointGeometry(model, hks = []) {
       add('floor', -4, 36 + y, 48, 20);
     else if (['heizkoerper', 'radiator'].includes(state.typ))
       add('radiator', 1.25, 34.25 + y, 41.5, 21.5);
+  }
+  return areas;
+}
+
+// Optional paint envelopes for the flexible distributor's fixed SVG shapes.
+// Requires the complete normalized anschluesse used to build the model. These areas omit
+// text, rails and connected pipes; they are neither a
+// complete component boundary nor permission to route or move the renderer.
+function resolveDistributorGeometry(model, slots) {
+  const areas = [];
+  const invalid = () => { throw new Error('Distributor geometry requires the complete normalized slot list matching the model.'); };
+  if (!model || !model.components || !Array.isArray(slots) || !slots.length) invalid();
+  const ids = Object.keys(model.components).filter(id => /^distributor-slot-\d+$/.test(id));
+  if (ids.length !== slots.length) invalid();
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i], branch = model.components[`distributor-slot-${i}`];
+    if (!Object.hasOwn(slots, i) || !slot || !branch ||
+        !['aktiv', 'blind'].includes(slot.status) || !['oben', 'unten'].includes(slot.richtung) ||
+        ![...DISTRIBUTOR_TYPES, 'kein'].includes(slot.symboltyp) || !branch.distributorGeometry ||
+        branch.distributorGeometry.symboltyp !== slot.symboltyp ||
+        branch.distributorGeometry.icon !== (slot.icon ?? null) ||
+        (branch.kind === 'blank') !== (slot.status === 'blind') ||
+        branch.up !== (slot.richtung === 'oben') ||
+        !!model.components[`distributor-pump-${i}`] !== (slot.status !== 'blind' && !!slot.pumpe)) invalid();
+  }
+  for (const [i, slot] of slots.entries()) {
+    const id = `distributor-slot-${i}`, branch = model.components[id];
+    const x = branch.origin.x + 48, y = branch.origin.y + branch.endOffset;
+    const add = (owner, kind, left, top, width, height) => areas.push({ owner, kind, x:left, y:top, width, height });
+    if (branch.kind === 'blank') {
+      // The stroked 16x8 cap contains the diagonal's 2px stroke.
+      for (const [kind, px] of [['supply-cap', x - 16], ['return-cap', x + 16]])
+        add(id, kind, px - 8.4, y - 4.4, 16.8, 8.8);
+      continue;
+    }
+    const d = branch.up ? -1 : 1;
+    add(id, 'supply-arrow', x - 20.8, Math.min(y - d * 9, y - d * 5) - 0.8, 9.6, 5.6);
+    add(id, 'return-arrow', x + 11.2, Math.min(y - d * 9, y - d * 5) - 0.8, 9.6, 5.6);
+    const pumpId = `distributor-pump-${i}`, pump = model.components[pumpId];
+    if (slot.pumpe && pump)
+      add(pumpId, 'pump', pump.origin.x - 9.35, pump.origin.y - 9.35, 38.7, 38.7);
+    const sy = branch.up ? y - 34 : y + 65;
+    // The foreignObject viewport has no SVG stroke; this is its 24px box,
+    // not a claim about arbitrary content painted outside that viewport.
+    if (slot.icon) add(id, 'icon', x - 12, sy, 24, 24);
+    else if (slot.symboltyp === 'heizkoerper') add(id, 'radiator', x - 20.75, sy - 0.75, 41.5, 21.5);
+    else if (slot.symboltyp === 'fussboden') add(id, 'floor', x - 26, sy - 1, 48, 20);
+    // The closed droplet's pointed join extends beyond a half-stroke.
+    else if (slot.symboltyp === 'warmwasser') add(id, 'hot-water', x - 10, sy - 4, 20, 31);
+    else if (slot.symboltyp === 'frei') add(id, 'free', x - 10, sy, 20, 20);
   }
   return areas;
 }
