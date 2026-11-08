@@ -64,13 +64,13 @@ und Port dokumentiert und für jede Variante getestet, einschließlich Varianten
 die den Port nicht besitzen. Keine pauschale Freigabe aller vier Seiten. Gleichzeitig gewählte Portseiten
 einer Komponente sind zusammen auf Konflikte und erforderliche Abstände zu prüfen.
 
-**Vorschlag:** `auto` wählt deterministisch aus der zulässigen Menge anhand einer
+Bei aktivem gültigem Layout ist `auto` die Standardwahl; ohne `layout` bleiben
+die kanonischen Anschlussseiten unverändert. **Vorschlag:** Auto wählt deterministisch aus der zulässigen Menge anhand einer
 festen Bewertungsregel und stabiler Tie-Breaks; `manual` speichert eine konkrete
 zulässige Seite. Auto darf nie eine unzulässige Seite erfinden. Wenn keine Seite
 bzw. kein sicherer Weg funktioniert, wird ein Fehler angezeigt. Der Editor zeigt
 für jeden Port nur erlaubte Seiten, die aktuelle Wahl und bei Auto das berechnete
-Ergebnis. Ob Auto als Standard für neue Layouts oder nur explizit gewählt wird,
-ist vor der öffentlichen Freigabe mit realen Beispielen zu entscheiden.
+Ergebnis. Bewertungsregel und Tie-Breaks bleiben vor der Freigabe festzulegen.
 
 Beweglich sind zunächst explizit freigegebene Wurzelkomponenten mit vollständigen
 Schutzflächen und nachgewiesener Routbarkeit; gebundene Kinder, Innengeometrie,
@@ -127,7 +127,7 @@ vollständiger Variantenabdeckung mit einem erklärten Fehler abgelehnt.
 
 ```yaml
 layout:
-  version: <new-version>
+  version: 2
   components:
     fm: { x: 500, y: 80 }
   ports:
@@ -135,13 +135,11 @@ layout:
     fm.return: { mode: auto }
 ```
 
-Dies illustriert die Form, nicht bereits freigegebene Portnamen, Seiten oder eine
-festgelegte Versionsnummer. Der alte Prototyp verwendete bereits ein inkompatibles
-Layout V1. Die neue Version ist vor Implementierung festzulegen; altes V1 darf
-weder still umgedeutet noch verworfen werden. Eine ausdrücklich getestete Migration
-ist möglich, andernfalls wird V1 mit einer verständlichen Meldung abgelehnt.
-Nur Abweichungen speichern; fehlende Einträge verwenden die kanonische Position
-bzw. die festgelegte Standardstrategie. Keine generierten Rohrpunkte persistieren:
+Das Beispiel illustriert ein mögliches V2-Format, keine bereits freigegebenen
+Portnamen oder Seiten. Der alte Prototyp verwendete ein inkompatibles Layout V1.
+V1 wird mit einer verständlichen Meldung abgelehnt; es gibt keine Migration und
+keine stille Umdeutung oder Verwerfung. Nur Abweichungen speichern; fehlende
+Einträge verwenden die kanonische Position bzw. für Anschlussseiten `auto`. Keine generierten Rohrpunkte persistieren:
 Reload berechnet deterministisch neu. Falls manuelle Wegpunkte später benötigt
 werden, brauchen sie einen eigenen versionierten Vertrag und dürfen keine
 semantischen Junctions vortäuschen. YAML und visueller Editor müssen dasselbe
@@ -150,11 +148,13 @@ Einträge melden einen verständlichen Fehler; keine stillschweigende Verwerfung
 
 Stabile öffentliche IDs müssen vor Freigabe als eigener Vertrag festgelegt werden.
 Derzeitige interne IDs, insbesondere indexbasierte Heizkreis- und Sensor-IDs,
-sind nicht automatisch stabil beim Einfügen oder Umordnen. Vorschlag: explizite,
-eindeutige optionale IDs für wiederholbare Elemente; keine Zuordnung anhand von
-Name, Entity oder Listenindex als dauerhafte Identität. Migration bestehender
-Listen und Verhalten bei fehlender, doppelter oder entfernter ID sind noch zu
-entscheiden. Verwaiste Layout-Einträge sichtbar melden und gezielt entfernen
+sind nicht automatisch stabil beim Einfügen oder Umordnen. Heizkreise und Fühler
+erhalten stabile eindeutige IDs: Der Editor vergibt eine fehlende ID erst bei
+der ersten gültig übernommenen Bewegung eines dafür freigegebenen Elements.
+Manuell in YAML gesetzte IDs bleiben erhalten. Namen, Entities und Listenindizes
+dienen nicht als dauerhafte Identität. Die genaue ID-Syntax, das Verhalten bei
+fehlender, doppelter oder entfernter ID und der Umgang mit bestehenden Listen
+außerhalb dieses Vorgangs bleiben festzulegen. Verwaiste Layout-Einträge sichtbar melden und gezielt entfernen
 lassen; sie dürfen nicht unbemerkt auf ein anderes Element zeigen. Änderungen
 am semantischen Anlagenmodell invalidieren den Entwurf und lösen erneute
 Validierung aus. Speicherung erfolgt ausschließlich in der Kartenkonfiguration,
@@ -169,9 +169,11 @@ unterstützte Geometrie, blockierter Port, kein Weg, Kollision/ungewollter
 Kontakt, unsichere Brücke und Textüberlauf. Die UI nennt betroffene Komponenten
 und Verbindungen, markiert sie in der Vorschau und bietet Korrektur oder
 Zurücksetzen an. Bei einem Fehler darf weder ein teilweise gerendertes Diagramm noch ein alter
-Weg als gültig dargestellt werden. Bei bereits gespeichertem ungültigem Layout oder dynamischem Textüberlauf zeigt
-die Karte entweder eine verständliche Fehlerkarte oder ein deutlich als kanonisch
-gekennzeichnetes vollständiges Gesamtbild und ermöglicht die Korrektur. Ein
+Weg als gültig dargestellt werden. Bei bereits gespeichertem ungültigem Layout zeigt die Karte das vollständige
+kanonische Standardbild aus derselben Anlagenkonfiguration und den aktuellen
+Sensordaten, vollständig ohne Layout-Overrides, und zeigt einen deutlichen
+Fehlerhinweis. Die Rohkonfiguration und ihre IDs bleiben unverändert; der
+Fehlerzustand löst kein `config-changed` aus und ermöglicht die Korrektur. Das Verhalten bei dynamischem Textüberlauf bleibt festzulegen. Ein
 Mischbild aus altem und neuem Layout ist unzulässig. Modell, Pfade und Anzeige
 werden atomar übernommen; `_key` wird erst nach erfolgreichem Commit aktualisiert,
 damit ein Fehlversuch eine spätere erneute Darstellung nicht verhindert.
@@ -182,7 +184,7 @@ Vorgeschlagene, unabhängig prüfbare PRs:
    stabile Identitätsstrategie; noch kein öffentliches Layout.
 2. Router und Compiler schrittweise für alle obigen Kreise und Kombinationen,
    inklusive Konfliktsuche und eindeutiger Fehler; weiterhin interne Aktivierung.
-3. Versionierte Konfiguration, Validierung, Migration/ID-Regeln und deterministische
+3. Versionierte Konfiguration, Validierung, V1-Ablehnung und ID-Regeln und deterministische
    Wiederherstellung; keine Änderung ohne `layout`.
 4. Editor mit Vorschau, Auto/manuell, zugänglicher Bedienung und Home-Assistant-
    Integration; abschließende Dokumentation und echte HA-Prüfung.
@@ -192,7 +194,10 @@ Referenzausgaben ohne Layout; Graph-/Medien-/Inzidenz-Invarianten vor und nach
 Verschiebung und Seitenwechsel; jeden zulässigen und unzulässigen Port pro Typ;
 Varianten- und Kombinationsmatrix, Hindernisse, Kreuzungen, Junction-Identität,
 Meter, Textüberlauf und ViewBox; deterministische Wiederholung und begrenzte
-Fehlerfälle; Speichern/Laden, Reordering und verwaiste IDs; Editor-Interaktion
+Fehlerfälle; Auto-Standard, V1-Ablehnung und kanonisches Fehlerbild; ID-Vergabe
+bei der ersten gültig übernommenen Bewegung, Erhalt manueller IDs, Speichern/Laden,
+Reordering und verwaiste IDs; ungültiges Layout mit teilweise gültigem Override
+zeigt ausschließlich das kanonische Gesamtbild und löst kein `config-changed` aus; Editor-Interaktion
 mit Maus, Touch und Tastatur, Undo/Cancel, DE/EN sowie Home Assistant. Browser-
 Harnesses ersetzen keine echte HA-Prüfung. Bestehende Golden-Fixtures ohne Layout
 dürfen nicht pauschal aktualisiert werden, um Regressionen zu verdecken.
@@ -249,11 +254,11 @@ anchor, stub, exclusion area and escape direction together. Document and test al
 blanket-enable all four sides. Validate simultaneously selected sides on a
 component together for conflicts and required spacing.
 
-**Proposal:** `auto` deterministically selects from allowed sides using a fixed
+With an active valid layout, `auto` is the default; without `layout`, canonical
+port sides remain unchanged. **Proposal:** Auto deterministically selects from allowed sides using a fixed
 score and stable tie-breaks; `manual` stores one allowed side. Failure to find a
 valid side or route is explicit. Show only valid choices and the resolved auto
-result. Whether auto is the default for new layouts remains open pending real
-examples. Initially only explicitly approved root components with complete protection areas
+result. The scoring and tie-break rules remain to be determined before release. Initially only explicitly approved root components with complete protection areas
 and proven routes are movable; attached children, internal geometry, junctions and
 external boundaries remain owner-bound or fixed. Each implementation PR defines
 the precise approved set per variant. Every variant needs at least one successful
@@ -292,12 +297,11 @@ when all variants are covered.
 
 ### Persistence, identity and errors
 
-The YAML example above proposes a versioned configuration in SVG units; it does
-not assert that the example port names, sides or version number are already public.
-The old prototype already used an incompatible layout V1. Choose a new version
-before implementation; never silently reinterpret or discard old V1. Either supply
-an explicitly tested migration or reject V1 with a clear message. Store only
-overrides, using canonical positions and the agreed default strategy when absent.
+The YAML example above illustrates a possible V2 configuration in SVG units; it
+does not assert that the example port names or sides are already public. The old
+prototype used an incompatible layout V1. Reject V1 with a clear message; do not
+migrate, silently reinterpret or discard it. Store only overrides, using canonical
+positions and `auto` for port sides when absent.
 Recompute paths deterministically on reload rather than storing generated points.
 Future manual waypoints need a separately versioned contract and cannot masquerade
 as semantic junctions. YAML and the visual editor round-trip the same format.
@@ -305,9 +309,12 @@ Reject unknown versions and invalid numbers, sides or entries with clear errors.
 
 Public stable IDs need an explicit contract before release. Existing internal IDs,
 especially index-based heating-circuit and sensor IDs, are not stable across list
-insertion or reordering. Proposed solution: optional explicit unique IDs for
-repeated elements, never persistent matching by name, entity or list index. Migration
-and missing, duplicate and removed IDs remain open decisions. Surface orphaned
+insertion or reordering. Heating circuits and sensors get stable unique IDs: the
+editor assigns a missing ID only when the first valid move of an approved element
+is applied. Manually supplied YAML IDs are preserved.
+Never use name, entity or list index as persistent identity. Exact ID syntax,
+handling missing, duplicate or removed IDs, and treatment of existing lists outside
+that operation remain open decisions. Surface orphaned
 layout entries for deliberate removal; never silently attach them to another item.
 Changes to the installation invalidate and revalidate the draft. Store only in the
 card configuration, using Home Assistant's existing persistence, not localStorage.
@@ -315,9 +322,12 @@ card configuration, using Home Assistant's existing persistence, not localStorag
 Use structured, localized errors for unknown version/ID, duplicate ID, invalid
 position or side, missing port, media mismatch, unsupported geometry, blocked
 escape, no route, collision/unnamed contact, unsafe bridge and text overflow. Name
-and highlight affected items and offer correction or reset. Never present a partially rendered diagram or an old route as valid. For an invalid saved layout or dynamic text overflow, show either an actionable
-error card or a clearly labelled complete canonical diagram, and allow correction.
-Never mix old and new layout output. Commit model, paths and display atomically;
+and highlight affected items and offer correction or reset. Never present a partially rendered diagram or an old route as valid. For an invalid saved layout, show the complete canonical default diagram with a
+prominent error notice and allow correction. Build the entire diagram from the
+same installation configuration and current sensor data, without any layout
+overrides. Preserve the raw configuration and IDs and emit no `config-changed`
+for this error state. Handling dynamic text overflow remains
+to be decided. Never mix old and new layout output. Commit model, paths and display atomically;
 update `_key` only after successful commit so failure cannot suppress a retry.
 
 ### Delivery and verification
@@ -326,7 +336,7 @@ Proposed independently reviewable PRs: (1) complete obstacle/visible envelopes,
 explicit per-port side contracts and stable identity strategy, without public
 layout; (2) router/compiler support for all circuits and combinations, bounded
 conflict retries and explicit errors, still internally activated; (3) versioned
-configuration, validation, ID/migration rules and deterministic reload, preserving
+configuration, validation, V1 rejection and ID rules and deterministic reload, preserving
 output without `layout`; (4) accessible editor with preview, auto/manual control,
 Home Assistant integration and documentation.
 
@@ -334,7 +344,11 @@ Each stage runs syntax validation and `node --test tests/*.test.cjs`. Add unchan
 no-layout golden output, graph/media/incidence invariants after moves and side
 changes, allowed and forbidden sides for every port, variant/combination matrices,
 obstacles, crossings, junction identity, meters, text overflow and viewBox tests;
-determinism and bounded failure tests; save/reload, reorder and orphan-ID tests;
+determinism and bounded failure tests; default auto, V1 rejection and canonical
+error fallback; ID assignment on the first valid applied move, preservation of
+manual IDs, save/reload, reorder and orphan-ID tests; an invalid layout with some
+valid overrides must show only the complete canonical diagram without emitting
+`config-changed`;
 and mouse, touch, keyboard, undo/cancel, DE/EN and Home Assistant interaction.
 Browser harnesses do not replace testing in a real HA installation. Do not bulk
 update no-layout golden fixtures to conceal regressions.
