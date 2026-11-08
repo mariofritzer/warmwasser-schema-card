@@ -472,6 +472,84 @@ function buildHeatingCircuitsSection(c, builder, geometry, tank) {
   }
 }
 
+// Resolve painted heating symbols and rails without enabling routing. Rectangles
+// conservatively cover the specified SVG paint, not complete router obstacles:
+// heating-circuit arrows, floor/radiator icons, text and connected pipes are not
+// covered here. Rail points describe the painted centerline, not graph incidence.
+function resolveHeatingGeometry(model) {
+  const bodies = [], rails = [];
+  const addBody = (id, rect) => {
+    const c = model.components[id];
+    if (c) bodies.push({ owner:id, x:c.origin.x + rect.x, y:c.origin.y + rect.y, width:rect.width, height:rect.height });
+  };
+  addBody('separator', { x:-0.6, y:-0.6, width:21.2, height:73.2 });
+  for (const id of Object.keys(model.components)) {
+    // The pump's animated halo scales its stroked radius (10 + 0.75) by 1.8.
+    if (/^heating-pump-\d+$/.test(id)) addBody(id, { x:-9.35, y:-9.35, width:38.7, height:38.7 });
+    if (/^heating-mixer-\d+$/.test(id)) addBody(id, { x:-0.8, y:-0.8, width:50.6, height:29.6 });
+  }
+  const point = ref => {
+    const j = model.junctions[ref];
+    if (j) return { x:j.x, y:j.y };
+    const dot = ref.lastIndexOf('.'), c = model.components[ref.slice(0, dot)], p = c.ports[ref.slice(dot + 1)];
+    return { x:c.origin.x + p.x, y:c.origin.y + p.y };
+  };
+  // This is the renderer's paint order; neither order implies connectivity.
+  for (const id of ['manifold-return', 'manifold-supply']) {
+    const edge = model.connections[id]; if (!edge) continue;
+    const from = point(edge.from), to = point(edge.to), via = edge.via.map(point);
+    const points = [from];
+    if (to.y === from.y && via.every(j => j.y === from.y && j.x >= Math.min(from.x, to.x) && j.x <= Math.max(from.x, to.x))) points.push(to);
+    else {
+      for (const j of [...via, to]) { points.push({ x:j.x, y:points.at(-1).y }, j); }
+    }
+    const areas = [];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      if (a.x === b.x && a.y === b.y) continue;
+      // This overestimates SVG's butt caps and remains conservative at joins.
+      areas.push({ x:Math.min(a.x,b.x)-9, y:Math.min(a.y,b.y)-9, width:Math.abs(a.x-b.x)+18, height:Math.abs(a.y-b.y)+18 });
+    }
+    // The renderer does not set fill="none": SVG implicitly closes an open
+    // rail path for filling. The highlight uses the same path shifted up by 3;
+    // the combined bounding box conservatively covers both implicit fills.
+    const xs = points.map(p => p.x), ys = points.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    if (minX !== maxX && minY !== maxY)
+      areas.push({ x:minX, y:minY-3, width:maxX-minX, height:maxY-minY+3 });
+    // End caps have a 0.8px stroke; they remain separate even for bent rails.
+    areas.push({ x:from.x-5.4, y:from.y-10.4, width:5.8, height:20.8 },
+      { x:to.x-0.4, y:to.y-10.4, width:5.8, height:20.8 });
+    rails.push({ id, owner:'manifolds', points, areas });
+  }
+  return { bodies, rails };
+}
+
+// Optional paint envelopes for legacy heating-circuit endpoints only. Pass the
+// actual heatingCircuitState hks array to include the configured pictograms at
+// their rendered row-dependent position; without it only arrows are resolved.
+// These rectangles do not cover text, connected pipes, or flexible distributors,
+// and do not indicate that moving or routing any component is supported.
+function resolveHeatingEndpointGeometry(model, hks = []) {
+  const areas = [];
+  for (const [id, branch] of Object.entries(model.components)) {
+    const match = /^heating-circuit-(\d+)$/.exec(id);
+    if (!match) continue;
+    const add = (kind, x, y, width, height) => areas.push({ owner:id, kind, x:branch.origin.x + x, y:branch.origin.y + y, width, height });
+    // Two open chevrons, stroke 1.6 with round joins and caps.
+    add('supply-arrow', 1.2, -0.8, 9.6, 5.6);
+    add('return-arrow', 33.2, -0.8, 9.6, 5.6);
+    const state = hks[Number(match[1])];
+    if (!state || !Array.isArray(state.zeilen)) continue;
+    const y = 12 * state.zeilen.length;
+    if (['fussboden', 'fussbodenheizung', 'floor'].includes(state.typ))
+      add('floor', -4, 36 + y, 48, 20);
+    else if (['heizkoerper', 'radiator'].includes(state.typ))
+      add('radiator', 1.25, 34.25 + y, 41.5, 21.5);
+  }
+  return areas;
+}
+
 function finishDiagramModel(c, builder, geometry, hot, buffer) {
   const { components, junctions, connections } = builder;
   const { fm, wp, hk, yt, ro, bo, ru, bu, ym, heaterY } = geometry;
@@ -695,6 +773,68 @@ function directedPolicy(options) {
   return JSON.stringify({ radius: options.radius ?? 8, bridgeRadius: options.bridgeRadius ?? 6,
     halfWidth: options.halfWidth ?? 5, obstacles: (options.obstacles ?? []).map(o => [o.x,o.y,o.width,o.height,o.owner ?? null]) });
 }
+// Preserve semantic vertices while removing only straight, forward helper points.
+function normalizeDirectedPolyline(points, nodes) {
+  for (let i = points.length - 2; i > 0; i--) {
+    const a = points[i-1], p = points[i], b = points[i+1];
+    if (nodes.some(n => n.x === p.x && n.y === p.y)) continue;
+    if ((a.x === p.x && p.x === b.x && (p.y-a.y)*(b.y-p.y) > 0) ||
+        (a.y === p.y && p.y === b.y && (p.x-a.x)*(b.x-p.x) > 0)) points.splice(i, 1);
+  }
+}
+// Fixed centerlines have no owner-escape exception: their complete stroke must
+// clear every obstacle. This is a primitive, not general manifold support.
+function validateDirectedFixedPolyline(request, options = {}) {
+  const fail = reason => ({ status:'failed', code:'invalid-input', reason });
+  if (!request || typeof request.id !== 'string' || !request.id || request.id === '__proto__' ||
+      (request.role !== undefined && !['supply','neutral'].includes(request.role)) ||
+      !Array.isArray(request.points) || request.points.length < 2 || !Array.isArray(request.nodes) || request.nodes.length < 2 ||
+      !options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).some(k => !['radius','bridgeRadius','halfWidth','obstacles'].includes(k)))
+    return fail('Expected a fixed polyline, ordered nodes and valid options.');
+  const half = options.halfWidth === undefined ? 5 : options.halfWidth;
+  const radius = options.radius === undefined ? 8 : options.radius;
+  const bridge = options.bridgeRadius === undefined ? 6 : options.bridgeRadius;
+  const obstacles = options.obstacles === undefined ? [] : options.obstacles;
+  if (![half,radius,bridge].every(Number.isFinite) || half < 0 || radius < 0 || bridge <= 0 || !Array.isArray(obstacles) ||
+      Array.from(obstacles).some(o => !o || ![o.x,o.y,o.width,o.height].every(Number.isFinite) || o.width < 0 || o.height < 0 || (o.owner != null && typeof o.owner !== 'string')) ||
+      Array.from(request.points).some(p => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)))
+    return fail('Invalid geometry or compiler policy.');
+  const points = request.points.map(p => ({x:p.x,y:p.y}));
+  for (let i=0; i<points.length-1; i++) {
+    const a=points[i], b=points[i+1];
+    if ((a.x === b.x) === (a.y === b.y)) return fail('Segments must be nonzero and orthogonal.');
+    for (const o of obstacles) {
+      if (![o.x-half,o.y-half,o.x+o.width+half,o.y+o.height+half].every(Number.isFinite)) return fail('Invalid inflated obstacle.');
+      if (Math.max(a.x,b.x) >= o.x-half && Math.min(a.x,b.x) <= o.x+o.width+half &&
+          Math.max(a.y,b.y) >= o.y-half && Math.min(a.y,b.y) <= o.y+o.height+half)
+        return {status:'failed',code:'pipe-obstacle',reason:'Fixed pipe stroke intersects an obstacle.'};
+    }
+  }
+  let last = -1; const seen = new Set();
+  for (const n of request.nodes) {
+    if (!n || typeof n.ref !== 'string' || !n.ref || !Number.isFinite(n.x) || !Number.isFinite(n.y) || seen.has(n.ref)) return fail('Invalid node.');
+    const i = points.findIndex((p,k) => k>last && p.x===n.x && p.y===n.y);
+    if (i < 0 || (last < 0 && i !== 0)) return fail('Nodes must be ordered vertices including endpoints.');
+    last=i; seen.add(n.ref);
+  }
+  if (last !== points.length-1) return fail('Final endpoint must be a node.');
+  normalizeDirectedPolyline(points, request.nodes);
+  const gap = (a,b,c,d) => Math.max(0, Math.min(a,b)-Math.max(c,d), Math.min(c,d)-Math.max(a,b));
+  for (let i=0; i<points.length-1; i++) for (let j=i+2; j<points.length-1; j++) {
+    const a=points[i], b=points[i+1], c=points[j], d=points[j+1];
+    const straight=points.slice(i,j+2).every(p => a.x===b.x ? p.x===a.x : p.y===a.y) &&
+      points.slice(i,j+1).every((p,k) => Math.sign(points[i+k+1].x-p.x)===Math.sign(b.x-a.x) && Math.sign(points[i+k+1].y-p.y)===Math.sign(b.y-a.y));
+    if (!straight && Math.hypot(gap(a.x,b.x,c.x,d.x),gap(a.y,b.y,c.y,d.y)) < 2*half)
+      return {status:'failed',code:'pipe-clearance',reason:'Non-adjacent fixed pipe sections are too close.'};
+  }
+  const candidate=Object.freeze({status:'routed',id:request.id,role:request.role,
+    points:Object.freeze(points.map(p=>Object.freeze(p))),
+    nodes:Object.freeze(request.nodes.map(n=>Object.freeze({ref:n.ref,x:n.x,y:n.y}))) });
+  directedRouteProvenance.set(candidate,{policy:directedPolicy(options)});
+  const checked=compileDirectedJunctionBatch([candidate],options);
+  return checked.status === 'routed' ? candidate : checked;
+}
 // Directed junction sides point outward from the node, on both incident legs.
 // This adapter is independent of model topology and is not used by legacy routing.
 function routeDirectedJunctionConnection(request) {
@@ -741,13 +881,7 @@ function routeDirectedJunctionConnection(request) {
       return fail('invalid-input', 'Port escape is not representable at these coordinates.');
     points.push(...(i ? part.points.slice(1) : part.points));
   }
-  // Remove artificial collinear escape points, keeping every semantic node.
-  for (let i = points.length - 2; i > 0; i--) {
-    const a = points[i-1], p = points[i], b = points[i+1];
-    if (nodes.some(n => n.x === p.x && n.y === p.y)) continue;
-    if ((a.x === p.x && p.x === b.x && (p.y-a.y)*(b.y-p.y) > 0) ||
-        (a.y === p.y && p.y === b.y && (p.x-a.x)*(b.x-p.x) > 0)) points.splice(i, 1);
-  }
+  normalizeDirectedPolyline(points, nodes);
   // Reject close non-adjacent strokes conservatively, except one continuous
   // straight run split into collinear segments by mandatory nodes.
   const axisDistance = (a, b, c, d) => {
