@@ -632,6 +632,130 @@ function routeOrthogonalConnection(request) {
   return { status: 'routed', points: points.filter((p, i) => !i || p.x !== points[i - 1].x || p.y !== points[i - 1].y) };
 }
 
+// Candidates are private to this runtime and must retain their search policy.
+const directedRouteProvenance = new WeakMap();
+function directedPolicy(options) {
+  return JSON.stringify({ radius: options.radius ?? 8, bridgeRadius: options.bridgeRadius ?? 6,
+    halfWidth: options.halfWidth ?? 5, obstacles: (options.obstacles ?? []).map(o => [o.x,o.y,o.width,o.height,o.owner ?? null]) });
+}
+// Directed junction sides point outward from the node, on both incident legs.
+// This adapter is independent of model topology and is not used by legacy routing.
+function routeDirectedJunctionConnection(request) {
+  const fail = (code, reason) => ({ status: 'failed', code, reason });
+  const sides = ['left', 'right', 'top', 'bottom'];
+  if (!request || typeof request.id !== 'string' || !request.id || request.id === '__proto__' || !Array.isArray(request.junctions) ||
+      !request.from || !request.to || typeof request.from.ref !== 'string' || !request.from.ref ||
+      typeof request.to.ref !== 'string' || !request.to.ref ||
+      (request.role !== undefined && !['supply', 'neutral'].includes(request.role)) ||
+      [request.from.owner, request.to.owner].some(owner => owner != null && typeof owner !== 'string') ||
+      Array.from(request.junctions).some(j => !j || typeof j.ref !== 'string' || !j.ref ||
+        !Number.isFinite(j.x) || !Number.isFinite(j.y) || !sides.includes(j.incomingSide) ||
+        !sides.includes(j.outgoingSide) || j.incomingSide === j.outgoingSide)) {
+    return fail('invalid-input', 'Expected named endpoints and directed junctions with distinct outward sides.');
+  }
+  const options = request.compileOptions === undefined ? {} : request.compileOptions;
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).some(k => !['radius', 'bridgeRadius', 'halfWidth'].includes(k)))
+    return fail('invalid-input', 'Invalid compiler options.');
+  if (request.obstacles !== undefined && (!Array.isArray(request.obstacles) ||
+      Array.from(request.obstacles).some(o => !o || ![o.x,o.y,o.width,o.height].every(Number.isFinite) || o.width < 0 || o.height < 0 || (o.owner != null && typeof o.owner !== 'string'))))
+    return fail('invalid-input', 'Invalid obstacles.');
+  const halfWidth = options.halfWidth === undefined ? 5 : options.halfWidth;
+  const clearance = request.clearance === undefined ? 6 : request.clearance;
+  if (!Number.isFinite(halfWidth) || halfWidth < 0 || !Number.isFinite(clearance) || clearance < halfWidth ||
+      (options.radius !== undefined && (!Number.isFinite(options.radius) || options.radius < 0)) ||
+      (options.bridgeRadius !== undefined && (!Number.isFinite(options.bridgeRadius) || options.bridgeRadius <= 0)))
+    return fail('invalid-input', 'Clearance must include the pipe half-width and compiler dimensions must be valid.');
+  const nodes = [request.from, ...request.junctions, request.to];
+  if (new Set(nodes.map(n => n.ref)).size !== nodes.length)
+    return fail('invalid-input', 'Node references must be unique within a connection.');
+  const points = [];
+  for (let i = 0; i < nodes.length - 1; i++) {
+    const a = nodes[i], b = nodes[i + 1];
+    const from = i === 0 ? a : { x: a.x, y: a.y, direction: a.outgoingSide };
+    const to = i === nodes.length - 2 ? b : { x: b.x, y: b.y, direction: b.incomingSide };
+    const part = routeOrthogonalConnection({ from, to, obstacles: request.obstacles, clearance: request.clearance, lead: request.lead });
+    if (part.status !== 'routed') return part;
+    const outward = (a, b, side) => side === 'left' ? b.y === a.y && b.x < a.x
+      : side === 'right' ? b.y === a.y && b.x > a.x
+      : side === 'top' ? b.x === a.x && b.y < a.y : b.x === a.x && b.y > a.y;
+    if (part.points.length < 2 || !outward(part.points[0], part.points[1], from.direction) ||
+        !outward(part.points.at(-1), part.points.at(-2), to.direction))
+      return fail('invalid-input', 'Port escape is not representable at these coordinates.');
+    points.push(...(i ? part.points.slice(1) : part.points));
+  }
+  // Remove artificial collinear escape points, keeping every semantic node.
+  for (let i = points.length - 2; i > 0; i--) {
+    const a = points[i-1], p = points[i], b = points[i+1];
+    if (nodes.some(n => n.x === p.x && n.y === p.y)) continue;
+    if ((a.x === p.x && p.x === b.x && (p.y-a.y)*(b.y-p.y) > 0) ||
+        (a.y === p.y && p.y === b.y && (p.x-a.x)*(b.x-p.x) > 0)) points.splice(i, 1);
+  }
+  // Reject close non-adjacent strokes conservatively, except one continuous
+  // straight run split into collinear segments by mandatory nodes.
+  const axisDistance = (a, b, c, d) => {
+    const gap = (a1, a2, b1, b2) => Math.max(0, Math.min(a1,a2) - Math.max(b1,b2), Math.min(b1,b2) - Math.max(a1,a2));
+    return Math.hypot(gap(a.x,b.x,c.x,d.x), gap(a.y,b.y,c.y,d.y));
+  };
+  for (let i = 0; i < points.length - 1; i++) for (let j = i + 2; j < points.length - 1; j++) {
+    const a = points[i], b = points[i+1], c = points[j], d = points[j+1];
+    const straight = points.slice(i, j + 2).every(p => a.x === b.x ? p.x === a.x : p.y === a.y) &&
+      points.slice(i, j + 1).every((p, k) => Math.sign(points[i+k+1].x-p.x) === Math.sign(b.x-a.x) && Math.sign(points[i+k+1].y-p.y) === Math.sign(b.y-a.y));
+    if (!straight && axisDistance(a,b,c,d) < 2 * halfWidth)
+      return fail('pipe-clearance', 'Non-adjacent sections of the same pipe are too close.');
+  }
+  const candidate = Object.freeze({ status:'routed', id: request.id, role: request.role,
+    points: Object.freeze(points.map(p => Object.freeze({ x:p.x, y:p.y }))),
+    nodes: Object.freeze(nodes.map(n => Object.freeze({ ref:n.ref, x:n.x, y:n.y }))) });
+  // Check the combined line as well as the individual searches. Cross-connection
+  // contacts and crossings still require one compiler pass for the entire batch.
+  const policy = { ...options, obstacles: request.obstacles };
+  directedRouteProvenance.set(candidate, { policy: directedPolicy(policy) });
+  const checked = compileDirectedJunctionBatch([candidate], policy);
+  if (checked.status !== 'routed') return checked;
+  return candidate;
+}
+
+// Reference identity must resolve to one point throughout a directed batch.
+function compileDirectedJunctionBatch(routes, options = {}) {
+  const fail = reason => ({ status: 'failed', code: 'invalid-input', reason });
+  if (!Array.isArray(routes) || !options || typeof options !== 'object' || Array.isArray(options) ||
+      (options.obstacles !== undefined && (!Array.isArray(options.obstacles) || Array.from(options.obstacles).some(o => !o || ![o.x,o.y,o.width,o.height].every(Number.isFinite) || o.width < 0 || o.height < 0 || (o.owner != null && typeof o.owner !== 'string')))))
+    return fail('Expected routes and compiler options.');
+  const refs = new Map();
+  for (const route of routes) {
+    if (!route || route.id === '__proto__' || !Array.isArray(route.nodes)) return fail('Each route requires a safe ID and nodes.');
+    const provenance = directedRouteProvenance.get(route);
+    if (!provenance || provenance.policy !== directedPolicy(options))
+      return fail('Routes must be unchanged candidates searched with the same obstacle and compiler policy.');
+    let last = -1;
+    const seen = new Set();
+    for (const node of route.nodes) {
+      if (!node || typeof node.ref !== 'string' || !node.ref || !Number.isFinite(node.x) || !Number.isFinite(node.y))
+        return fail('Each node requires a reference and finite coordinates.');
+      const vertex = route.points.findIndex((p, i) => i > last && p.x === node.x && p.y === node.y);
+      if (seen.has(node.ref) || vertex < 0 || (last < 0 && vertex !== 0))
+        return fail('Nodes must be unique ordered vertices including endpoints.');
+      seen.add(node.ref); last = vertex;
+      const previous = refs.get(node.ref);
+      if (previous && (previous.x !== node.x || previous.y !== node.y))
+        return fail(`Reference ${node.ref} resolves to inconsistent coordinates.`);
+      refs.set(node.ref, node);
+    }
+    if (last !== route.points.length - 1) return fail('Nodes must include the final endpoint.');
+  }
+  const compiled = compilePipeRoutes(routes, options);
+  if (compiled.status !== 'routed') return compiled;
+  const bridges = Object.values(compiled.routes).flatMap(route => route.crossings.filter(c => c.bridge));
+  const envelope = (options.bridgeRadius ?? 6) + (options.halfWidth ?? 5);
+  for (let i = 0; i < bridges.length; i++) for (let j = i + 1; j < bridges.length; j++) {
+    if (Math.abs(bridges[i].point.x - bridges[j].point.x) <= 2 * envelope &&
+        Math.abs(bridges[i].point.y - bridges[j].point.y) <= 2 * envelope)
+      return { status:'failed', code:'bridge-clearance', reason:'Bridge envelopes may overlap.' };
+  }
+  return compiled;
+}
+
 /* Compiles a batch of already validated orthogonal centerlines. The router must
  * validate straight segments including halfWidth and owner escape exceptions.
  * This compiler additionally validates conservative corner/bridge envelopes. */
