@@ -1245,8 +1245,63 @@ function prepareLegacyWpHeatingRails(model, options = {}) {
     rails.push({id, nodes:nodes.map(n => ({...n})), areas:painted.areas.map(a => ({...a}))});
   }
   const result = {status:'unsupported', reason:'rail-batch-validation-required', rails};
-  heatingRailProvenance.set(result, {snapshot:JSON.stringify(rails), policy:directedPolicy(options)});
+  heatingRailProvenance.set(result, {snapshot:JSON.stringify(rails), policy:directedPolicy(options),
+    heatingSupplyEnd:point(model.connections['heating-supply-0'].to)});
   return result;
+}
+
+// Local A11 evidence only. Other pipes, animations and global paint order
+// still require one joint batch validation before any rendering is enabled.
+function inspectLegacyHeatingRailBridge(prepared, route, options = {}) {
+  const unsupported = reason => ({status:'unsupported', reason});
+  const provenance = prepared && heatingRailProvenance.get(prepared);
+  if (!provenance || !options || typeof options !== 'object' || Array.isArray(options))
+    return unsupported('invalid-rail-batch');
+  try {
+    if (JSON.stringify(prepared.rails) !== provenance.snapshot || directedPolicy(options) !== provenance.policy)
+      return unsupported('invalid-rail-batch');
+  } catch (_) { return unsupported('invalid-rail-batch'); }
+  const checked = compileDirectedJunctionBatch([route], options);
+  if (checked.status !== 'routed') return checked;
+  const references = new Map();
+  for (const node of [...prepared.rails.flatMap(r => r.nodes), ...route.nodes]) {
+    const prior = references.get(node.ref);
+    if (prior && (prior.x !== node.x || prior.y !== node.y))
+      return unsupported('reference-coordinate-conflict');
+    references.set(node.ref,node);
+  }
+  const ret = prepared.rails.find(r => r.id === 'manifold-return');
+  const supply = prepared.rails.find(r => r.id === 'manifold-supply');
+  const start = supply && supply.nodes.find(n => n.ref === 'manifold-supply-0');
+  const cross = ret && ret.nodes.find(n => n.ref === 'manifold-return-0');
+  if (!start || !cross || route.id !== 'heating-supply-0' || route.role !== 'supply' ||
+      route.points.length !== 2 || route.nodes.length !== 2 || route.nodes[0].ref !== start.ref ||
+      route.nodes[1].ref !== provenance.heatingSupplyEnd.ref ||
+      route.nodes[1].x !== provenance.heatingSupplyEnd.x || route.nodes[1].y !== provenance.heatingSupplyEnd.y ||
+      route.points[0].x !== start.x || route.points[0].y !== start.y ||
+      route.points[1].x !== start.x || cross.y <= start.y || route.points[1].y <= cross.y ||
+      ret.areas.length !== 3 || supply.areas.length !== 3 || (options.halfWidth ?? 5) !== 5)
+    return unsupported('legacy-bridge-geometry');
+  const x = start.x, y = cross.y, extent = 16; // A11 plus the widest 5-unit stroke.
+  const box = {x:x-extent,y:y-extent,width:2*extent,height:2*extent};
+  if (![box.x,box.y,box.x+box.width,box.y+box.height].every(Number.isFinite) ||
+      y-11 <= start.y || y+11 >= route.points[1].y)
+    return unsupported('legacy-bridge-geometry');
+  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
+    a.y <= b.y+b.height && a.y+a.height >= b.y;
+  // The return stroke is intentionally crossed; its caps, the supply rail
+  // and every obstacle must clear this conservative full-circle envelope.
+  if (ret.areas.slice(1).some(a => intersects(a,box)) || supply.areas.some(a => intersects(a,box)) ||
+      (options.obstacles ?? []).some(a => intersects(a,box)))
+    return unsupported('legacy-bridge-clearance');
+  const rail = ret.areas[0];
+  if (!(x > rail.x+9 && x < rail.x+rail.width-9 &&
+      cross.y === ret.nodes[0].y && ret.nodes.every(n => n.y === y)))
+    return unsupported('legacy-bridge-geometry');
+  return {status:'unsupported', reason:'complete-heating-batch-required', localBridge:{
+    owner:route.id, under:ret.id, point:{x,y}, radius:11, sweep:1, envelope:box,
+    requiredPaintOrder:[ret.id,route.id]
+  }};
 }
 
 // Internal primitive only: the caller must supply every visible ordinary line.
