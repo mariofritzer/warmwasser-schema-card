@@ -27,11 +27,34 @@ test('rejects mutated preparation and untrusted candidates', () => {
   assert.equal(check(p,[straight(390)]).reason,'invalid-rail-batch');
 });
 
-test('named contacts remain unsupported rather than gaining an incidence exemption', () => {
+test('a rail reference cannot resolve to a different point on an ordinary line', () => {
   const p=prepare(fixture());
-  const branch=line({id:'heating-supply-0',points:[{x:150,y:420},{x:150,y:405}],nodes:[{ref:'manifold-supply-0',x:150,y:420},{ref:'end',x:150,y:405}]});
-  assert.equal(branch.status,'routed');
-  assert.equal(check(p,[branch]).reason,'rail-line-contact');
+  const wrong=line({id:'unrelated',points:[{x:10,y:100},{x:50,y:100}],nodes:[{ref:'manifold-supply-0',x:10,y:100},{ref:'end',x:50,y:100}]});
+  assert.equal(wrong.status,'routed');
+  assert.equal(check(p,[wrong]).reason,'reference-coordinate-conflict');
+});
+
+test('only the correct named incidence permits a local straight contact', () => {
+  for (const dy of [0,10]) {
+    const m=fixture(); m.components.manifolds.origin.y+=dy;
+    const p=prepare(m), n=p.rails[1].nodes.find(n=>n.ref==='manifold-supply-0');
+    const branch=(id,ref,side) => line({id,points:[{x:n.x,y:n.y+(side==='top'?-40:40)},{x:n.x,y:n.y}],
+      nodes:[{ref:'end',x:n.x,y:n.y+(side==='top'?-40:40)},{ref,x:n.x,y:n.y}]});
+    const short=line({id:'heating-supply-0',points:[{x:n.x,y:n.y},{x:n.x,y:n.y+11}],nodes:[{ref:n.ref,x:n.x,y:n.y},{ref:'end',x:n.x,y:n.y+11}]});
+    assert.equal(check(p,[short]).status,'clear');
+    assert.equal(check(p,[branch('wrong',n.ref,'top')]).reason,'rail-line-contact');
+    assert.equal(check(p,[branch('heating-supply-0','wrong','top')]).reason,'rail-line-contact');
+    assert.equal(check(p,[branch('heating-supply-0',n.ref,'top')]).reason,'rail-line-contact');
+    const extraNode=line({id:'heating-supply-0',points:[{x:n.x,y:n.y},{x:n.x,y:n.y+6},{x:n.x,y:n.y+11}],nodes:[{ref:n.ref,x:n.x,y:n.y},{ref:'extra',x:n.x,y:n.y+6},{ref:'end',x:n.x,y:n.y+11}]});
+    assert.equal(check(p,[extraNode]).reason,'rail-line-contact');
+    const second=line({id:'heating-supply-0',points:[{x:n.x-30,y:n.y+12},{x:n.x-30,y:n.y+40},{x:n.x,y:n.y+40},{x:n.x,y:n.y}],
+      nodes:[{ref:'end',x:n.x-30,y:n.y+12},{ref:n.ref,x:n.x,y:n.y}]});
+    assert.equal(second.status,'routed');
+    assert.equal(check(p,[second]).reason,'rail-line-contact');
+    const cap=p.rails[1].nodes.find(n=>n.ref==='manifold-primary-supply');
+    const byCap=line({id:'hk-supply',points:[{x:cap.x,y:cap.y-30},{x:cap.x,y:cap.y}],nodes:[{ref:'end',x:cap.x,y:cap.y-30},{ref:cap.ref,x:cap.x,y:cap.y}]});
+    assert.equal(check(p,[byCap]).reason,'rail-line-contact');
+  }
 });
 
 test('corner envelopes and bridges are not assumed clear', () => {

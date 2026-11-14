@@ -1250,7 +1250,7 @@ function prepareLegacyWpHeatingRails(model, options = {}) {
 }
 
 // Internal primitive only: the caller must supply every visible ordinary line.
-// Rail junctions and bridges require a separate proof and remain unsupported.
+// Only proven local rail junctions are exempted; bridges remain unsupported.
 function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
   const unsupported = reason => ({status:'unsupported', reason});
   const provenance = prepared && heatingRailProvenance.get(prepared);
@@ -1260,6 +1260,17 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
     if (JSON.stringify(prepared.rails) !== provenance.snapshot || directedPolicy(options) !== provenance.policy)
       return unsupported('invalid-rail-batch');
   } catch (_) { return unsupported('invalid-rail-batch'); }
+  const references = new Map();
+  for (const nodes of [...prepared.rails.map(r => r.nodes), ...routes.map(r => r && r.nodes)]) {
+    if (!Array.isArray(nodes)) return unsupported('invalid-rail-batch');
+    for (const node of nodes) {
+      if (!node || typeof node.ref !== 'string' || !node.ref || !Number.isFinite(node.x) || !Number.isFinite(node.y))
+        return unsupported('invalid-rail-batch');
+      const prior=references.get(node.ref);
+      if (prior && (prior.x!==node.x || prior.y!==node.y)) return unsupported('reference-coordinate-conflict');
+      references.set(node.ref,node);
+    }
+  }
   const compiled = compileDirectedJunctionBatch(routes, options);
   if (compiled.status !== 'routed') return compiled;
   // Reject all bridges until their full painted shape and rail ordering are proven.
@@ -1276,7 +1287,7 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
     for (let i=0; i<route.points.length-1; i++) {
       const a=route.points[i], b=route.points[i+1];
       boxes.push({x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
-        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half});
+        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half,route,index:i});
     }
     // Bounding squares contain the rounded corner and its full stroke.
     for (let i=1; i<route.points.length-1; i++) {
@@ -1285,7 +1296,34 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
     }
   }
   if (boxes.some(b => !finiteBox(b))) return unsupported('invalid-envelope');
-  if (prepared.rails.some(r => r.areas.some(a => boxes.some(b => intersects(a,b)))))
+  // These are the only branch incidences established by the canonical recipe.
+  const incidences = [
+    ['manifold-supply','manifold-primary-supply','hk-supply',0,'top'],
+    ['manifold-return','manifold-primary-return','hk-return',0,'top'],
+    ['manifold-supply','manifold-supply-0','heating-supply-0',0,'bottom'],
+    ['manifold-return','manifold-return-0','heating-return-0',0,'bottom']
+  ];
+  const allowed = (rail, areaIndex, area, box) => {
+    // The other two areas are end caps, never covered by this exception.
+    if (areaIndex !== 0 || rail.areas.length !== 3 || !box.route || half > 5) return false;
+    return incidences.some(([railId,ref,id,segment,side]) => {
+      const route=box.route, node=rail.nodes.find(n => n.ref===ref);
+      if (rail.id!==railId || route.id!==id || !node || route.nodes.length!==2 || segment!==0) return false;
+      const endpoint=route.nodes.findIndex(n => n.ref===ref && n.x===node.x && n.y===node.y);
+      if (endpoint<0 || (endpoint===0 ? box.index!==0 : box.index!==route.points.length-2)) return false;
+      const p=route.points[endpoint===0 ? box.index : box.index+1];
+      const q=route.points[endpoint===0 ? box.index+1 : box.index];
+      if (p.x!==node.x || p.y!==node.y || q.x!==node.x ||
+          (side==='top' ? q.y>=node.y : q.y<=node.y)) return false;
+      // Permit only the intersection with the rail's central stroke, inside a
+      // tight portal. Caps, corners and other route segments remain checked.
+      const left=Math.max(area.x,box.x), right=Math.min(area.x+area.width,box.x+box.width);
+      const top=Math.max(area.y,box.y), bottom=Math.min(area.y+area.height,box.y+box.height);
+      return [node.x-half,node.x+half,node.y-9,node.y+9].every(Number.isFinite) &&
+        left>=node.x-half && right<=node.x+half && top>=node.y-9 && bottom<=node.y+9;
+    });
+  };
+  if (prepared.rails.some(r => r.areas.some((a,i) => boxes.some(b => intersects(a,b) && !allowed(r,i,a,b)))))
     return unsupported('rail-line-contact');
   if (prepared.rails.some((r,i) => prepared.rails.slice(i+1).some(s =>
       r.areas.some(a => s.areas.some(b => intersects(a,b)))))) return unsupported('rail-rail-contact');
@@ -2383,7 +2421,9 @@ class WarmwasserSchemaCard extends HTMLElement {
     c.energie = (config.energie || []).filter((e) => e && isEnt(e.entity));
     this._cfg = c;
     this._model = diagramModel(c);
-    this._ents = [...new Set(collect(c, []))];
+    // Layout values are geometry/configuration, never entity subscriptions.
+    const { layout: _layout, ...entityConfig } = c;
+    this._ents = [...new Set(collect(entityConfig, []))];
     this._key = null;
     if (this._hass) this._update();
   }
@@ -2433,12 +2473,12 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (!this._cfg || !this._hass) return;
     const key = sprache(this._cfg, this._hass) + '|' + this._ents.map((e) => this._hass.states[e]?.state).join('|');
     if (key === this._key) return;
-    this._key = key;
     if (!this._box) this._init();
     const tpl = document.createElement('template');
     tpl.innerHTML = this._render();
     if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
     else this._box.replaceChildren(tpl.content);
+    this._key = key;
     this._fitDistributorText();
   }
 
