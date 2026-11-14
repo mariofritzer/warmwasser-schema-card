@@ -1207,6 +1207,45 @@ function resolveLegacyWpHeatingIncidences(model) {
   } catch (_) { return unsupported(); }
 }
 
+// Resolve fixed rail geometry only. The ordinary batch compiler assumes a
+// narrower stroke and cannot safely compile these rails with other pipes.
+function prepareLegacyWpHeatingRails(model, options = {}) {
+  const incidence = resolveLegacyWpHeatingIncidences(model);
+  if (incidence.status !== 'resolved') return incidence;
+  const fail = (code, reason) => ({status:'failed', code, reason});
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).some(k => !['radius','bridgeRadius','halfWidth','obstacles'].includes(k)))
+    return fail('invalid-input', 'Invalid rail compiler options.');
+  const obstacles = options.obstacles === undefined ? [] : options.obstacles;
+  if (!Array.isArray(obstacles) || Array.from(obstacles).some(o => !o ||
+      ![o.x,o.y,o.width,o.height].every(Number.isFinite) || o.width < 0 || o.height < 0 ||
+      (o.owner != null && typeof o.owner !== 'string')))
+    return fail('invalid-input', 'Invalid rail obstacles.');
+  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
+    a.y <= b.y+b.height && a.y+a.height >= b.y;
+  const point = ref => {
+    const j = model.junctions[ref];
+    if (j) return {ref,x:j.x,y:j.y};
+    const dot = ref.lastIndexOf('.'), c = model.components[ref.slice(0,dot)], p = c.ports[ref.slice(dot+1)];
+    return {ref,x:c.origin.x+p.x,y:c.origin.y+p.y};
+  };
+  const geometry = resolveHeatingGeometry(model), rails = [];
+  for (const id of ['manifold-return','manifold-supply']) {
+    const edge = model.connections[id], painted = geometry.rails.find(r => r.id === id);
+    // Rail strokes have half-width 9, and the caps extend beyond the stroke.
+    if (!edge || !painted || painted.areas.some(a => obstacles.some(o => intersects(a,o))))
+      return fail('rail-obstacle', 'A painted rail or end cap intersects an obstacle.');
+    const nodes = [edge.from,...edge.via,edge.to].map(point);
+    const candidate = validateDirectedFixedPolyline({id, role:id === 'manifold-supply' ? 'supply' : 'neutral',
+      points:nodes.map(({x,y}) => ({x,y})), nodes}, options);
+    if (candidate.status !== 'routed') return candidate;
+    // Never expose a compiler candidate: other routes must first be checked
+    // against the wider rail paint, including caps and permitted junctions.
+    rails.push({id, nodes:nodes.map(n => ({...n})), areas:painted.areas.map(a => ({...a}))});
+  }
+  return {status:'unsupported', reason:'rail-batch-validation-required', rails};
+}
+
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
 function routeDiagramConnections(model, ids, options = {}) {
   const result = {}, candidates = [];
