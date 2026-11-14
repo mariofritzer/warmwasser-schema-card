@@ -85,6 +85,23 @@ test('return primary cap contact is local and does not exempt the supply rail', 
   }
 });
 
+test('the real heating supply bridge over the return rail is not a clear straight candidate', () => {
+  const c=new (registry.get('warmwasser-schema-card'))();
+  c.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{vorlauf:'sensor.vl'}]});
+  c._hass={language:'de',states:{}};
+  const initialY=c._model.components.manifolds.origin.y;
+  for (const dy of [0,10]) {
+    c._model.components.manifolds.origin.y=initialY+dy;
+    const m=c._model, s=m.junctions['manifold-supply-0'], r=m.junctions['manifold-return-0'];
+    const edge=m.connections['heating-supply-0'], component=m.components['heating-circuit-0'];
+    const port=component.ports.supply, end={x:component.origin.x+port.x,y:component.origin.y+port.y};
+    assert.ok(c._render().includes(`d="M${s.x} ${s.y}V${r.y-11}A11 11 0 0 1 ${s.x} ${r.y+11}`));
+    const candidate=line({id:edge.id,points:[{x:s.x,y:s.y},end],nodes:[{ref:edge.from,x:s.x,y:s.y},{ref:edge.to,...end}]});
+    assert.equal(candidate.status,'routed');
+    assert.equal(check(prepare(m),[candidate]).reason,'rail-line-contact');
+  }
+});
+
 test('overflow in a painted envelope fails closed', () => {
   const options={halfWidth:Number.MAX_VALUE};
   const p=prepare(fixture(),options);

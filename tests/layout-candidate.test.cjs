@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const registry = new Map();
 const context = { HTMLElement: class {}, customElements: { get: n => registry.get(n), define: (n, c) => registry.set(n, c) }, window: {}, console: { info() {} } };
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + '\nglobalThis.resolve = resolveLayoutCandidate;', context);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + '\nglobalThis.resolve = resolveLayoutCandidate; globalThis.preflight = preflightLayoutRender;', context);
 const Card = registry.get('warmwasser-schema-card');
 function fixture(extra = {}) {
   const raw = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, ...extra };
@@ -75,4 +75,62 @@ test('candidate resolution leaves raw and normalized configurations unchanged', 
   assert.equal(JSON.stringify(raw), rawBefore); assert.equal(JSON.stringify(card._cfg), configBefore);
   resolve({ version: 1 });
   assert.equal(JSON.stringify(raw), rawBefore); assert.equal(JSON.stringify(card._cfg), configBefore);
+});
+
+for (const wp of [false, true]) test(`real render preflight uses every routed FM${wp ? '/WP' : ''} path and preserves inputs`, () => {
+  const extra = wp ? { wp: { betrieb: 'sensor.wp', leistung: 'sensor.power' } } : {};
+  const { raw, card, resolve } = fixture(extra);
+  const hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' }, 'sensor.power': { state: '1200' } } };
+  const before = JSON.stringify({ raw, config: card._cfg, model: card._model, hass });
+  const { x, y } = card._model.components.fm.origin;
+  const layout = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  const candidate = resolve(layout), result = context.preflight(raw, layout, hass);
+  assert.equal(result.status, 'rendered-candidate', JSON.stringify(result.errors));
+  for (const route of Object.values(candidate.routes)) for (const layer of ['w0', 'w1', 'w2'])
+    assert.ok(result.html.includes(`<path d="${route.path}" class="${layer}"`));
+  assert.equal(JSON.stringify({ raw, config: card._cfg, model: card._model, hass }), before);
+});
+
+test('preflight fails closed for invalid layout, missing state and live-label overflow', () => {
+  const { raw, card } = fixture({ fm: { pumpe: 'sensor.fm', temp: 'sensor.temp' } });
+  const hass = { language: 'de', states: { 'sensor.temp': { state: '1000000000' }, 'sensor.fm': { state: 'on' } } };
+  const { x, y } = card._model.components.fm.origin;
+  const moved = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  const result = context.preflight(raw, moved, hass);
+  assert.equal(result.status, 'unsupported'); assert.equal(result.errors[0].code, 'label-overflow'); assert.equal(result.html, undefined);
+  assert.equal(context.preflight(raw, { version: 1 }, hass).status, 'invalid');
+  assert.equal(context.preflight(raw, moved, {}).errors[0].code, 'invalid-hass');
+  assert.equal(context.preflight(raw, { version: 2 }, hass).errors[0].code, 'unmoved-candidate');
+});
+
+for (const thrown of [null, 'render error']) test(`preflight contains non-Error renderer throw ${JSON.stringify(thrown)}`, () => {
+  const { raw, card } = fixture();
+  const { x, y } = card._model.components.fm.origin;
+  const layout = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  const hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  const before = JSON.stringify({ raw, layout, hass });
+  const original = Card.prototype._render;
+  try {
+    Card.prototype._render = () => { throw thrown; };
+    const result = context.preflight(raw, layout, hass);
+    assert.equal(result.status, 'unsupported'); assert.equal(result.errors[0].code, 'render-failed');
+    assert.equal(result.html, undefined);
+    assert.equal(JSON.stringify({ raw, layout, hass }), before);
+  } finally { Card.prototype._render = original; }
+});
+
+test('preflight rejects incomplete routed output without exposing HTML', () => {
+  const { raw, card } = fixture();
+  const { x, y } = card._model.components.fm.origin;
+  const layout = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  const hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  const before = JSON.stringify({ raw, layout, hass });
+  const original = Card.prototype._render;
+  try {
+    Card.prototype._render = () => '<svg>incomplete</svg>';
+    const result = context.preflight(raw, layout, hass);
+    assert.equal(result.status, 'unsupported'); assert.equal(result.errors[0].code, 'incomplete-routed-output');
+    assert.equal(result.html, undefined);
+    assert.equal(JSON.stringify({ raw, layout, hass }), before);
+  } finally { Card.prototype._render = original; }
 });

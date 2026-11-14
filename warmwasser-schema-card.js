@@ -2422,6 +2422,33 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
   return { status: 'candidate', capabilities, model, routes };
 }
 
+// Internal preflight, not a public render-safety guarantee: the renderer has
+// no complete text measurement or painted-envelope validation yet. Never
+// expose partial HTML on failure. A moved candidate takes the renderer's
+// all-routed branch, including its live-label checks.
+function preflightLayoutRender(rawConfig, layout, hass) {
+  if (!hass || !layoutObject(hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
+  const card = new WarmwasserSchemaCard();
+  try { card.setConfig(rawConfig); }
+  catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-configuration', path: 'config' }] }; }
+  const candidate = resolveLayoutCandidate(rawConfig, card._cfg, layout);
+  if (candidate.status !== 'candidate') return candidate;
+  const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
+  if (!moved) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
+  card._model = candidate.model; card._hass = hass;
+  try {
+    const html = card._render();
+    // All compiled paths must occur with every base paint layer. The renderer
+    // selects routed or legacy primary paths as one batch, never per edge.
+    const complete = Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
+      html.includes(`<path d="${route.path}" class="${layer}"`)));
+    if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
+    return { status: 'rendered-candidate', html };
+  } catch (error) {
+    return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
+  }
+}
+
 class WarmwasserSchemaCard extends HTMLElement {
   static getConfigElement() { return document.createElement('warmwasser-schema-card-editor'); }
   static getStubConfig() { return { speicher: { typ: 'trennblech' }, fuehler: [] }; }
