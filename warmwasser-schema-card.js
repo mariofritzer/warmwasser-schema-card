@@ -1304,11 +1304,17 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
     ['manifold-return','manifold-return-0','heating-return-0',0,'bottom']
   ];
   const allowed = (rail, areaIndex, area, box) => {
-    // The other two areas are end caps, never covered by this exception.
-    if (areaIndex !== 0 || rail.areas.length !== 3 || !box.route || half > 5) return false;
+    if (rail.areas.length !== 3 || !box.route || half > 5) return false;
     return incidences.some(([railId,ref,id,segment,side]) => {
       const route=box.route, node=rail.nodes.find(n => n.ref===ref);
       if (rail.id!==railId || route.id!==id || !node || route.nodes.length!==2 || segment!==0) return false;
+      // A primary branch can also touch the right end cap. Only the exact
+      // canonical five-unit spacing and the known cap box establish that case.
+      const end=rail.nodes[rail.nodes.length-1];
+      const primary=ref==='manifold-primary-supply' || ref==='manifold-primary-return';
+      const cap=areaIndex===2 && primary && end.x===node.x+5 && end.y===node.y &&
+        area.x===end.x-0.4 && area.y===end.y-10.4 && area.width===5.8 && area.height===20.8;
+      if (areaIndex!==0 && !cap) return false;
       const endpoint=route.nodes.findIndex(n => n.ref===ref && n.x===node.x && n.y===node.y);
       if (endpoint<0 || (endpoint===0 ? box.index!==0 : box.index!==route.points.length-2)) return false;
       const p=route.points[endpoint===0 ? box.index : box.index+1];
@@ -1319,8 +1325,9 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
       // tight portal. Caps, corners and other route segments remain checked.
       const left=Math.max(area.x,box.x), right=Math.min(area.x+area.width,box.x+box.width);
       const top=Math.max(area.y,box.y), bottom=Math.min(area.y+area.height,box.y+box.height);
-      return [node.x-half,node.x+half,node.y-9,node.y+9].every(Number.isFinite) &&
-        left>=node.x-half && right<=node.x+half && top>=node.y-9 && bottom<=node.y+9;
+      const extent=cap ? 10.4 : 9;
+      return [node.x-half,node.x+half,node.y-extent,node.y+extent].every(Number.isFinite) &&
+        left>=node.x-half && right<=node.x+half && top>=node.y-extent && bottom<=node.y+extent;
     });
   };
   if (prepared.rails.some(r => r.areas.some((a,i) => boxes.some(b => intersects(a,b) && !allowed(r,i,a,b)))))
@@ -2382,6 +2389,37 @@ function validateLayoutV2(layout, capabilities) {
     }
   }
   return { errors };
+}
+
+// Internal geometry candidate only. This is not permission to render a layout:
+// presentation bounds, live labels and complete renderer integration need their
+// own checks before any public activation. List identities are validated even
+// though list components are not yet movable here.
+function resolveLayoutCandidate(rawConfig, config, layout) {
+  const identity = layoutIdentityMap(rawConfig);
+  if (identity.errors.length) return { status: 'invalid', errors: identity.errors };
+  const model = diagramModel(config);
+  const supported = model.routingScope.fm && ['schicht', 'trennblech'].includes(config.typ) &&
+    config.fuehler.length === 0 && !config.weiche && !config.energie.length &&
+    !!model.components.fm && (!config.wp || !!model.components.wp);
+  // Internal scope is checked before layout syntax. A public integration must
+  // explicitly decide its error precedence and user-facing diagnostics.
+  if (!supported) return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
+  // Fixed singleton IDs only. No manual port sides or indexed list identities
+  // are advertised until their placement and routing contracts are proven.
+  const capabilities = { components: { fm: 'fm', ...(config.wp ? { wp: 'wp' } : {}) }, ports: {} };
+  const validation = validateLayoutV2(layout, capabilities);
+  if (validation.errors.length) return { status: 'invalid', errors: validation.errors };
+  for (const [id, position] of Object.entries(layout.components || {})) {
+    const component = model.components[capabilities.components[id]];
+    component.origin.x = position.x; component.origin.y = position.y;
+  }
+  const ids = ['fm-supply', 'fm-return', ...(config.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  const routes = routeDiagramConnections(model, ids);
+  for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
+    return { status: 'unsupported', errors: [{ code: route.code || route.reason, path: `layout.connections.${id}` }] };
+  }
+  return { status: 'candidate', capabilities, model, routes };
 }
 
 class WarmwasserSchemaCard extends HTMLElement {
