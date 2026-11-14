@@ -2197,6 +2197,70 @@ function renderDistributor(model, slots, states, draw) {
   return out + '</g>';
 }
 
+// Internal preparation only; the card and editor do not yet activate layouts.
+const LAYOUT_ID = /^[A-Za-z0-9_-]+$/;
+const layoutObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+// Accept the raw configuration, before filtering: public IDs map to the same
+// private indices as setConfig's active lists, never to a remembered index.
+function layoutIdentityMap(config) {
+  const components = Object.create(null), errors = [];
+  for (const [field, prefix, active] of [
+    ['fuehler', 'sensor', item => isEnt(Array.isArray(item) ? item[1] : item?.entity)],
+    ['heizkreise', 'heating-circuit', item => hasEnt(item)],
+  ]) {
+    const seen = new Set(); let index = 0;
+    const items = Array.isArray(config[field]) ? config[field] : [];
+    items.forEach((item, rawIndex) => {
+      const id = !Array.isArray(item) && layoutObject(item) ? item.id : undefined;
+      const path = `${field}[${rawIndex}].id`;
+      let valid = true;
+      if (id !== undefined) {
+        if (typeof id !== 'string' || !LAYOUT_ID.test(id)) { errors.push({ code: 'invalid-id', path }); valid = false; }
+        else if (seen.has(id)) { errors.push({ code: 'duplicate-id', path }); valid = false; }
+        else seen.add(id);
+      }
+      const included = active(item) && (field !== 'heizkreise' || index < 6);
+      if (included && id !== undefined && valid) components[`${prefix}:${id}`] = `${prefix}-${index}`;
+      if (active(item)) index++;
+    });
+  }
+  return { components, errors };
+}
+
+// Capabilities must be built for the current configuration from proven movable
+// components and port sides, not model guesses. Identity errors must be handled
+// before using the map; an unknown capability makes an override an orphan:
+// { components: { publicId: internalId }, ports: { publicPort: [side, ...] } }.
+function validateLayoutV2(layout, capabilities) {
+  const errors = [], add = (code, path) => errors.push({ code, path });
+  const fields = (value, allowed, path) => {
+    for (const key of Object.keys(value)) if (!allowed.includes(key)) add('unknown-field', `${path}.${key}`);
+  };
+  if (!layoutObject(layout)) return { errors: [{ code: 'invalid-layout', path: 'layout' }] };
+  fields(layout, ['version', 'components', 'ports'], 'layout');
+  if (layout.version !== 2) add('unsupported-version', 'layout.version');
+  for (const section of ['components', 'ports']) {
+    if (layout[section] === undefined) continue;
+    if (!layoutObject(layout[section])) { add('invalid-section', `layout.${section}`); continue; }
+    for (const [id, value] of Object.entries(layout[section])) {
+      const path = `layout.${section}.${id}`;
+      if (!Object.prototype.hasOwnProperty.call(capabilities[section] || {}, id)) add('unknown-id', path);
+      if (!layoutObject(value)) { add('invalid-entry', path); continue; }
+      if (section === 'components') {
+        fields(value, ['x', 'y'], path);
+        if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) add('invalid-position', path);
+      } else {
+        fields(value, ['mode', 'side'], path);
+        if (value.mode !== 'auto' && value.mode !== 'manual') add('invalid-mode', `${path}.mode`);
+        if (value.mode === 'auto' && value.side !== undefined) add('invalid-side', `${path}.side`);
+        if (value.mode === 'manual' && !(capabilities.ports?.[id] || []).includes(value.side)) add('invalid-side', `${path}.side`);
+      }
+    }
+  }
+  return { errors };
+}
+
 class WarmwasserSchemaCard extends HTMLElement {
   static getConfigElement() { return document.createElement('warmwasser-schema-card-editor'); }
   static getStubConfig() { return { speicher: { typ: 'trennblech' }, fuehler: [] }; }
