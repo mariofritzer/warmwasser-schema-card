@@ -1209,6 +1209,7 @@ function resolveLegacyWpHeatingIncidences(model) {
 
 // Resolve fixed rail geometry only. The ordinary batch compiler assumes a
 // narrower stroke and cannot safely compile these rails with other pipes.
+const heatingRailProvenance = new WeakMap();
 function prepareLegacyWpHeatingRails(model, options = {}) {
   const incidence = resolveLegacyWpHeatingIncidences(model);
   if (incidence.status !== 'resolved') return incidence;
@@ -1243,7 +1244,52 @@ function prepareLegacyWpHeatingRails(model, options = {}) {
     // against the wider rail paint, including caps and permitted junctions.
     rails.push({id, nodes:nodes.map(n => ({...n})), areas:painted.areas.map(a => ({...a}))});
   }
-  return {status:'unsupported', reason:'rail-batch-validation-required', rails};
+  const result = {status:'unsupported', reason:'rail-batch-validation-required', rails};
+  heatingRailProvenance.set(result, {snapshot:JSON.stringify(rails), policy:directedPolicy(options)});
+  return result;
+}
+
+// Internal primitive only: the caller must supply every visible ordinary line.
+// Rail junctions and bridges require a separate proof and remain unsupported.
+function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
+  const unsupported = reason => ({status:'unsupported', reason});
+  const provenance = prepared && heatingRailProvenance.get(prepared);
+  if (!provenance || !Array.isArray(routes) || !options || typeof options !== 'object' || Array.isArray(options))
+    return unsupported('invalid-rail-batch');
+  try {
+    if (JSON.stringify(prepared.rails) !== provenance.snapshot || directedPolicy(options) !== provenance.policy)
+      return unsupported('invalid-rail-batch');
+  } catch (_) { return unsupported('invalid-rail-batch'); }
+  const compiled = compileDirectedJunctionBatch(routes, options);
+  if (compiled.status !== 'routed') return compiled;
+  // Reject all bridges until their full painted shape and rail ordering are proven.
+  if (Object.values(compiled.routes).some(r => r.crossings.some(c => c.bridge)))
+    return unsupported('bridge-envelope-unproven');
+  const half = options.halfWidth ?? 5, radius = options.radius ?? 8;
+  const finiteBox = a => a && [a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite);
+  if (!Number.isFinite(half) || !Number.isFinite(radius) ||
+      prepared.rails.some(r => r.areas.some(a => !finiteBox(a)))) return unsupported('invalid-envelope');
+  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
+    a.y <= b.y+b.height && a.y+a.height >= b.y;
+  const boxes = [];
+  for (const route of routes) {
+    for (let i=0; i<route.points.length-1; i++) {
+      const a=route.points[i], b=route.points[i+1];
+      boxes.push({x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
+        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half});
+    }
+    // Bounding squares contain the rounded corner and its full stroke.
+    for (let i=1; i<route.points.length-1; i++) {
+      const p=route.points[i], extent=radius+half;
+      boxes.push({x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent});
+    }
+  }
+  if (boxes.some(b => !finiteBox(b))) return unsupported('invalid-envelope');
+  if (prepared.rails.some(r => r.areas.some(a => boxes.some(b => intersects(a,b)))))
+    return unsupported('rail-line-contact');
+  if (prepared.rails.some((r,i) => prepared.rails.slice(i+1).some(s =>
+      r.areas.some(a => s.areas.some(b => intersects(a,b)))))) return unsupported('rail-rail-contact');
+  return {status:'clear'};
 }
 
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
@@ -2673,6 +2719,11 @@ const sel = {
 const F_ = (name, selector) => ({ name, selector });
 const E_ = (...names) => names.map((n) => F_(n, sel.ent));
 const leer = (v) => v === '' || v === null || v === undefined || v === false || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+// Only fields in the form schema can be removed by a form change.
+const formFelder = (schema) => new Set(schema.flatMap((field) => [
+  ...(field.name ? [field.name] : []),
+  ...(!field.name && field.schema ? [...formFelder(field.schema)] : []),
+]));
 const aufraeumen = (o) => {
   if (Array.isArray(o)) return o.map(aufraeumen);
   if (o && typeof o === 'object') {
@@ -2762,10 +2813,23 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const cfg = aufraeumen({ ...this._config });
     // YAML-only in this step: unrelated editor changes must preserve the exact
     // distributor data, including optional and unknown values.
-    if (Object.prototype.hasOwnProperty.call(this._config, 'verteiler')) cfg.verteiler = this._config.verteiler;
+    for (const key of ['verteiler', 'layout']) {
+      if (Object.prototype.hasOwnProperty.call(this._config, key)) cfg[key] = this._config[key];
+    }
     if (cfg.weiche && cfg.weiche.anzeigen && Object.keys(cfg.weiche).length === 1) cfg.weiche = true;
     if (cfg.fm && cfg.fm.anzeigen && Object.keys(cfg.fm).length === 1) cfg.fm = true;
-    for (const k of ['fuehler', 'heizkreise', 'energie']) if (Array.isArray(this._config[k])) cfg[k] = this._config[k].map((x) => aufraeumen(x));
+    for (const k of ['fuehler', 'heizkreise', 'energie']) if (Array.isArray(this._config[k])) {
+      const list = this._listen().find((item) => item.key === k);
+      if (!list) { cfg[k] = this._config[k]; continue; }
+      const fields = formFelder(list.schema);
+      cfg[k] = this._config[k].map((item) => {
+        const cleaned = aufraeumen(item);
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          for (const [key, value] of Object.entries(item)) if (!fields.has(key)) cleaned[key] = value;
+        }
+        return cleaned;
+      });
+    }
     cfg.type = this._config.type || 'custom:warmwasser-schema-card';
     this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
   }
@@ -2809,7 +2873,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         const box = document.createElement('div');
         box.className = 'item';
         box.appendChild(this._form(li.schema, () => (this._config[li.key] || [])[i] || {}, (v) => {
-          const n = [...(this._config[li.key] || [])]; n[i] = v; this._config = { ...this._config, [li.key]: n }; this._fire();
+          const n = [...(this._config[li.key] || [])];
+          const fields = formFelder(li.schema);
+          const preserved = Object.fromEntries(Object.entries(n[i] || {}).filter(([key]) => !fields.has(key)));
+          n[i] = { ...preserved, ...v }; this._config = { ...this._config, [li.key]: n }; this._fire();
         }));
         const row = document.createElement('div');
         row.className = 'row';

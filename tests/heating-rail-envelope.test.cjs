@@ -1,0 +1,55 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const registry = new Map();
+const context = {HTMLElement:class {}, customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)}, window:{},console:{info(){}}};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8') + '\nglobalThis.api={prepareLegacyWpHeatingRails,checkHeatingRailEnvelopes,validateDirectedFixedPolyline};',context);
+const {prepareLegacyWpHeatingRails:prepare,checkHeatingRailEnvelopes:check,validateDirectedFixedPolyline:line}=context.api;
+const fixture = () => {const c=new (registry.get('warmwasser-schema-card'))();c.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{vorlauf:'sensor.vl'}]});return c._model;};
+const straight = (y,x1=180,x2=250) => line({id:'branch',points:[{x:x1,y},{x:x2,y}],nodes:[{ref:'a',x:x1,y},{ref:'b',x:x2,y}]});
+
+test('checks the full ordinary stroke against rail paint including touching', () => {
+  for (const dy of [0,10]) {
+    const m=fixture(); m.components.manifolds.origin.y+=dy;
+    const p=prepare(m);
+    for (const d of [13,14]) assert.equal(check(p,[straight(420+dy+d)]).reason,'rail-line-contact');
+    assert.equal(check(p,[straight(420+dy-15)]).status,'clear');
+    assert.equal(check(p,[straight(410+dy,110,120)]).reason,'rail-line-contact');
+  }
+});
+
+test('rejects mutated preparation and untrusted candidates', () => {
+  const p=prepare(fixture());
+  assert.equal(check(p,[{id:'forged',points:[],nodes:[]}]).code,'invalid-input');
+  p.rails[0].areas[0].x++;
+  assert.equal(check(p,[straight(390)]).reason,'invalid-rail-batch');
+});
+
+test('named contacts remain unsupported rather than gaining an incidence exemption', () => {
+  const p=prepare(fixture());
+  const branch=line({id:'heating-supply-0',points:[{x:150,y:420},{x:150,y:405}],nodes:[{ref:'manifold-supply-0',x:150,y:420},{ref:'end',x:150,y:405}]});
+  assert.equal(branch.status,'routed');
+  assert.equal(check(p,[branch]).reason,'rail-line-contact');
+});
+
+test('corner envelopes and bridges are not assumed clear', () => {
+  const p=prepare(fixture());
+  const corner=line({id:'corner',points:[{x:180,y:390},{x:180,y:405},{x:160,y:405}],nodes:[{ref:'a',x:180,y:390},{ref:'b',x:160,y:405}]});
+  assert.equal(corner.status,'routed');
+  assert.equal(check(p,[corner]).reason,'rail-line-contact');
+  const h=line({id:'h',points:[{x:10,y:100},{x:100,y:100}],nodes:[{ref:'h1',x:10,y:100},{ref:'h2',x:100,y:100}]});
+  const v=line({id:'v',points:[{x:50,y:50},{x:50,y:150}],nodes:[{ref:'v1',x:50,y:50},{ref:'v2',x:50,y:150}]});
+  assert.equal(check(p,[h,v]).reason,'bridge-envelope-unproven');
+});
+
+test('overflow in a painted envelope fails closed', () => {
+  const options={halfWidth:Number.MAX_VALUE};
+  const p=prepare(fixture(),options);
+  const x1=-Number.MAX_VALUE, x2=-Number.MAX_VALUE/2;
+  const candidate=line({id:'huge',points:[{x:x1,y:100},{x:x2,y:100}],nodes:[{ref:'a',x:x1,y:100},{ref:'b',x:x2,y:100}]},options);
+  assert.equal(p.reason,'rail-batch-validation-required');
+  assert.equal(candidate.status,'routed');
+  assert.equal(check(p,[candidate],options).reason,'invalid-envelope');
+});

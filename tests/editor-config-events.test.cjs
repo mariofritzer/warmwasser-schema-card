@@ -62,3 +62,34 @@ test('removing a list entry emits the remaining entry and leaves layout intact',
   assert.deepEqual(config.fuehler, [{ id: 'second', entity: 'sensor.second' }]);
   assert.deepEqual(config.layout, layout);
 });
+
+for (const layout of [{}, null, false, '', { version: 2, components: {}, extra: false }]) {
+  test(`main form preserves raw layout ${JSON.stringify(layout)}`, () => {
+    const editor = editorFor({ layout });
+    editor._mainForm.emit('value-changed', { value: { titel: 'Updated' } });
+    assert.deepEqual(plain(editor.events[0].detail.config).layout, layout);
+  });
+}
+
+for (const [language, key] of [['de', 'fuehler'], ['en', 'heizkreise'], ['en', 'energie']]) {
+  test(`${language} ${key} form preserves hidden fields and permits clearing visible fields`, () => {
+    const editor = editorFor({ sprache: language, [key]: [{ id: 'stable', name: 'Old', entity: 'sensor.old', extra: { empty: '', flag: false } }] });
+    const form = editor._forms[1];
+    form.emit('value-changed', { value: { name: 'New' } });
+    const item = plain(editor.events[0].detail.config)[key][0];
+    assert.equal(item.id, 'stable');
+    assert.equal(item.name, 'New');
+    assert.deepEqual(item.extra, { empty: '', flag: false });
+    if (key !== 'heizkreise') assert.equal(item.entity, undefined);
+    else assert.equal(item.entity, 'sensor.old');
+  });
+}
+
+for (const cleared of ['', null, false]) {
+  test(`list form cleans explicitly cleared visible value ${JSON.stringify(cleared)} while preserving zero`, () => {
+    const editor = editorFor({ fuehler: [{ id: 'stable', name: 'Old', entity: 'sensor.old', hoehe: 50 }] });
+    editor._forms[1].emit('value-changed', { value: { name: cleared, entity: 'sensor.old', hoehe: 0 } });
+    const item = plain(editor.events[0].detail.config).fuehler[0];
+    assert.deepEqual(item, { id: 'stable', entity: 'sensor.old', hoehe: 0 });
+  });
+}
