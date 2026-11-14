@@ -2334,7 +2334,7 @@ const layoutObject = value => value !== null && typeof value === 'object' && !Ar
 // Accept the raw configuration, before filtering: public IDs map to the same
 // private indices as setConfig's active lists, never to a remembered index.
 function layoutIdentityMap(config) {
-  const components = Object.create(null), errors = [];
+  const components = Object.create(null), inactive = Object.create(null), overflow = Object.create(null), errors = [];
   for (const [field, prefix, active] of [
     ['fuehler', 'sensor', item => isEnt(Array.isArray(item) ? item[1] : item?.entity)],
     ['heizkreise', 'heating-circuit', item => hasEnt(item)],
@@ -2352,18 +2352,22 @@ function layoutIdentityMap(config) {
       }
       const included = active(item) && (field !== 'heizkreise' || index < 6);
       if (included && id !== undefined && valid) components[`${prefix}:${id}`] = `${prefix}-${index}`;
+      else if (id !== undefined && valid) {
+        (active(item) ? overflow : inactive)[`${prefix}:${id}`] = true;
+      }
       if (active(item)) index++;
     });
   }
-  return { components, errors };
+  return { components, inactive, overflow, errors };
 }
 
 // Capabilities must be built for the current configuration from proven movable
 // components and port sides, not model guesses. Identity errors must be handled
 // before using the map; an unknown capability makes an override an orphan:
-// { components: { publicId: internalId }, ports: { publicPort: [side, ...] } }.
+// Inactive capabilities are known fixed identities, not permission to render.
+// List identities that disappear from the configuration remain unknown.
 function validateLayoutV2(layout, capabilities) {
-  const errors = [], add = (code, path) => errors.push({ code, path });
+  const errors = [], inactive = [], add = (code, path) => errors.push({ code, path });
   const fields = (value, allowed, path) => {
     for (const key of Object.keys(value)) if (!allowed.includes(key)) add('unknown-field', `${path}.${key}`);
   };
@@ -2375,7 +2379,10 @@ function validateLayoutV2(layout, capabilities) {
     if (!layoutObject(layout[section])) { add('invalid-section', `layout.${section}`); continue; }
     for (const [id, value] of Object.entries(layout[section])) {
       const path = `layout.${section}.${id}`;
-      if (!Object.prototype.hasOwnProperty.call(capabilities[section] || {}, id)) add('unknown-id', path);
+      const active = Object.prototype.hasOwnProperty.call(capabilities[section] || {}, id);
+      const dormant = Object.prototype.hasOwnProperty.call(capabilities.inactive?.[section] || {}, id);
+      if (!active && !dormant) add('unknown-id', path);
+      else if (!active) inactive.push({ code: 'inactive-id', path });
       if (!layoutObject(value)) { add('invalid-entry', path); continue; }
       if (section === 'components') {
         fields(value, ['x', 'y'], path);
@@ -2384,11 +2391,11 @@ function validateLayoutV2(layout, capabilities) {
         fields(value, ['mode', 'side'], path);
         if (value.mode !== 'auto' && value.mode !== 'manual') add('invalid-mode', `${path}.mode`);
         if (value.mode === 'auto' && value.side !== undefined) add('invalid-side', `${path}.side`);
-        if (value.mode === 'manual' && !(capabilities.ports?.[id] || []).includes(value.side)) add('invalid-side', `${path}.side`);
+        if (value.mode === 'manual' && !(capabilities.ports?.[id] || capabilities.inactive?.ports?.[id] || []).includes(value.side)) add('invalid-side', `${path}.side`);
       }
     }
   }
-  return { errors };
+  return { errors, inactive };
 }
 
 // Internal geometry candidate only. This is not permission to render a layout:
@@ -2407,10 +2414,12 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
   if (!supported) return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
   // Fixed singleton IDs only. No manual port sides or indexed list identities
   // are advertised until their placement and routing contracts are proven.
-  const capabilities = { components: { fm: 'fm', ...(config.wp ? { wp: 'wp' } : {}) }, ports: {} };
+  const capabilities = { components: { fm: 'fm', ...(config.wp ? { wp: 'wp' } : {}) }, ports: {},
+    inactive: { components: config.wp ? {} : { wp: 'wp' }, ports: {} } };
   const validation = validateLayoutV2(layout, capabilities);
   if (validation.errors.length) return { status: 'invalid', errors: validation.errors };
   for (const [id, position] of Object.entries(layout.components || {})) {
+    if (!Object.prototype.hasOwnProperty.call(capabilities.components, id)) continue;
     const component = model.components[capabilities.components[id]];
     component.origin.x = position.x; component.origin.y = position.y;
   }
@@ -2419,7 +2428,7 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
   for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     return { status: 'unsupported', errors: [{ code: route.code || route.reason, path: `layout.connections.${id}` }] };
   }
-  return { status: 'candidate', capabilities, model, routes };
+  return { status: 'candidate', capabilities, inactive: validation.inactive, model, routes };
 }
 
 // Internal preflight, not a public render-safety guarantee: the renderer has

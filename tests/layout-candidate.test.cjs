@@ -30,8 +30,48 @@ test('unproven identities and port overrides are rejected', () => {
   const { resolve } = fixture();
   const result = resolve({ version: 2, components: { wp: { x: 1, y: 2 } }, ports: { 'fm.supply': { mode: 'auto' } } });
   assert.equal(result.status, 'invalid');
-  assert.deepEqual(Array.from(result.errors, e => e.code), ['unknown-id', 'unknown-id']);
+  assert.deepEqual(Array.from(result.errors, e => e.code), ['unknown-id']);
   assert.equal(result.model, undefined);
+});
+
+test('disabled WP keeps its position while active FM is routed, then reapplies it', () => {
+  const enabled = fixture({ wp: { betrieb: 'sensor.wp' } });
+  const disabled = fixture({ wp: {} });
+  const fm = disabled.card._model.components.fm.origin;
+  const wp = enabled.card._model.components.wp.origin;
+  const layout = { version: 2, components: { fm: { x: fm.x + 30, y: fm.y + 15 }, wp: { x: 360, y: 165 } } };
+  assert.notDeepEqual({ x: wp.x, y: wp.y }, layout.components.wp);
+  const before = JSON.stringify(layout);
+  const dormant = disabled.resolve(layout);
+  assert.equal(dormant.status, 'candidate', JSON.stringify(dormant.errors));
+  assert.equal(dormant.model.components.fm.origin.x, fm.x + 30);
+  assert.equal(dormant.model.components.wp, undefined);
+  assert.deepEqual(Array.from(dormant.inactive, e => e.path), ['layout.components.wp']);
+  const restored = enabled.resolve(layout);
+  assert.equal(restored.status, 'candidate', JSON.stringify(restored.errors));
+  assert.equal(restored.model.components.wp.origin.x, layout.components.wp.x);
+  assert.equal(restored.model.components.wp.origin.y, layout.components.wp.y);
+  assert.ok(Object.values(restored.routes).every(route => route.status === 'routed'));
+  assert.equal(restored.inactive.length, 0);
+  assert.equal(JSON.stringify(layout), before);
+  const invalid = disabled.resolve({ version: 2, components: { wp: { x: 'bad', y: 1 } } });
+  assert.equal(invalid.status, 'invalid');
+  assert.equal(invalid.errors[0].code, 'invalid-position');
+  const missingFm = fixture({ fm: {} }).resolve(layout);
+  assert.equal(missingFm.status, 'unsupported');
+  assert.equal(missingFm.errors[0].code, 'unsupported-configuration');
+});
+
+test('unavailable entity state does not disable a configured WP', () => {
+  const { raw, card } = fixture({ wp: { betrieb: 'sensor.wp' } });
+  const fm = card._model.components.fm.origin, wp = card._model.components.wp.origin;
+  const layout = { version: 2, components: { fm: { x: fm.x + 30, y: fm.y + 15 }, wp: { x: wp.x, y: wp.y } } };
+  const result = context.resolve(raw, card._cfg, layout);
+  assert.equal(result.status, 'candidate');
+  assert.ok(result.model.components.wp);
+  const hass = { language: 'en', states: { 'sensor.fm': { state: 'unavailable' }, 'sensor.wp': { state: 'unavailable' } } };
+  const preflight = context.preflight(raw, layout, hass);
+  assert.equal(preflight.status, 'rendered-candidate', JSON.stringify(preflight.errors));
 });
 
 test('duplicate stable IDs fail closed before exposing any candidate', () => {

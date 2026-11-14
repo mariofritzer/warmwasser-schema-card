@@ -20,6 +20,8 @@ test('stable IDs follow active list entries across reordering and filtering', ()
   assert.equal(first.components['heating-circuit:one'], 'heating-circuit-0');
   assert.equal(second.components['heating-circuit:one'], 'heating-circuit-1');
   assert.equal(first.components['sensor:inactive'], undefined);
+  assert.equal(first.inactive['sensor:inactive'], true);
+  assert.equal(second.inactive['sensor:inactive'], undefined);
 });
 
 test('missing IDs do not gain identities and invalid or duplicate IDs are reported', () => {
@@ -40,6 +42,20 @@ test('heating circuit mapping follows the six active circuit limit', () => {
   assert.equal(result.components['heating-circuit:h5'], 'heating-circuit-5');
   assert.equal(result.components['heating-circuit:h6'], undefined);
   assert.equal(result.components['heating-circuit:inactive'], undefined);
+  assert.equal(result.inactive['heating-circuit:inactive'], true);
+  assert.equal(result.overflow['heating-circuit:h6'], true);
+});
+
+test('known inactive ports validate without becoming active capabilities', () => {
+  const caps = { components: {}, ports: {}, inactive: { components: { wp: 'wp' }, ports: { 'wp.supply': ['left', 'right'] } } };
+  const layout = { version: 2, components: { wp: { x: 1, y: 2 } }, ports: { 'wp.supply': { mode: 'manual', side: 'left' } } };
+  const before = JSON.stringify(layout);
+  const result = validateLayoutV2(layout, caps);
+  assert.deepEqual(plain(result.errors), []);
+  assert.deepEqual(plain(result.inactive).map(e => e.path), ['layout.components.wp', 'layout.ports.wp.supply']);
+  assert.equal(JSON.stringify(layout), before);
+  assert.equal(validateLayoutV2({ version: 2, ports: { 'wp.supply': { mode: 'manual', side: 'top' } } }, caps).errors[0].code, 'invalid-side');
+  assert.equal(validateLayoutV2({ version: 2, components: { removed: { x: 1, y: 2 } } }, caps).errors[0].code, 'unknown-id');
 });
 
 test('layout validation reports orphaned entries and rejects malformed overrides', () => {
