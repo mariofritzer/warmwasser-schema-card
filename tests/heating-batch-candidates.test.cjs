@@ -2,7 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {card,routeDirectedJunctionConnection,validateDirectedFixedPolyline,compileDirectedJunctionBatch,resolveLegacyWpHeatingIncidences,inspectCompleteLegacyWpHeatingBatch}=require('./helpers/routing-harness.cjs');
 
-test('canonical nine-line candidates expose their full batch clearance', () => {
+test('nine-line batch with canonical primary return', () => {
   const m=card('schicht',{fm:null,wp:{betrieb:'sensor.wp'},heizkreise:[{vorlauf:'sensor.vl'}]})._model;
   const incidence=resolveLegacyWpHeatingIncidences(m);
   const resolve=ref=>{const j=m.junctions[ref]; if(j)return {...j,ref}; const [id,name]=ref.split('.'),c=m.components[id],p=c.ports[name];return {...p,x:c.origin.x+p.x,y:c.origin.y+p.y,ref,owner:id};};
@@ -24,7 +24,5 @@ test('canonical nine-line candidates expose their full batch clearance', () => {
   const result=compileDirectedJunctionBatch(routes);
   assert.equal(result.status,'routed',JSON.stringify(result));
   const complete=inspectCompleteLegacyWpHeatingBatch(m,routes);
-  // The primary return at x=312 grazes the supply rail's paint, which extends
-  // to x=309; a 5px half-width stroke reaches x=307. Keep it rejected.
-  assert.equal(complete.reason,'rail-line-contact',JSON.stringify(complete));
+  assert.equal(complete.reason,'heating-obstacle-and-paint-validation-required',JSON.stringify(complete));
 });

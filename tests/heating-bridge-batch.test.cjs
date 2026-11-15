@@ -40,8 +40,8 @@ test('the whole ordinary batch must be trusted and ordinary bridges clear the ra
 });
 test('an A6 bridge envelope must clear rail paint, cap paint, and the A11 envelope', () => {
   const {prepared,owner}=fixture();
-  const railH=other('rail-h',{x:80,y:400},{x:140,y:400});
-  const railV=other('rail-v',{x:110,y:370},{x:110,y:430});
+  const railH=other('rail-h',{x:90,y:400},{x:149,y:400});
+  const railV=other('rail-v',{x:119,y:370},{x:119,y:430});
   assert.equal(check(prepared,[owner,railH]).status,'clear');
   assert.equal(check(prepared,[owner,railV]).status,'clear');
   assert.equal(check(prepared,[owner,railH,railV]).reason,'rail-line-contact');

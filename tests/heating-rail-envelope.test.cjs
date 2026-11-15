@@ -75,13 +75,13 @@ test('corner and bridge envelopes are checked against rails', () => {
   assert.equal(check(p,[h,v]).status,'clear');
 });
 
-test('return primary cap contact is local and does not exempt the supply rail', () => {
+test('return primary clears the supply rail end and cap with the exact butt envelope', () => {
   for (const dy of [0,10]) {
     const m=fixture(); m.components.manifolds.origin.y+=dy;
     const p=prepare(m), n=p.rails[0].nodes.find(n=>n.ref==='manifold-primary-return');
     const branch=lead => line({id:'hk-return',points:[{x:n.x,y:n.y-lead},{x:n.x,y:n.y}],nodes:[{ref:'end',x:n.x,y:n.y-lead},{ref:n.ref,x:n.x,y:n.y}]});
     assert.equal(check(p,[branch(12)]).status,'clear');
-    assert.equal(check(p,[branch(15)]).reason,'rail-line-contact');
+    assert.equal(check(p,[branch(15)]).status,'clear');
   }
 });
 

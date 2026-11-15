@@ -31,6 +31,20 @@ test('local evidence matches rendered A11 and remains explicitly incomplete', ()
   const rail=svg.indexOf(`d="M${ret[0].x} ${ret[0].y}H${ret.at(-1).x}"`);
   assert.ok(rail>=0 && bridge>rail);
 });
+test('prepared straight rail uses butt-stroke bounds and retains both cap boxes', () => {
+  const {c,prepared}=fixture(), rail=prepared.rails.find(r=>r.id==='manifold-supply');
+  const a=rail.nodes[0], b=rail.nodes.at(-1), svg=c._render();
+  assert.ok(svg.includes(`<path d="M${a.x} ${a.y}H${b.x}" stroke="#000" stroke-opacity=".35" stroke-width="18"/>`));
+  assert.equal(rail.areas[0].x,a.x);
+  assert.equal(rail.areas[0].width,b.x-a.x);
+  assert.equal(rail.areas[0].y,a.y-9);
+  assert.equal(rail.areas[1].x,a.x-5.4);
+  assert.equal(rail.areas[2].x,b.x-0.4);
+  // The only round-cap selector applies to pipe/animation classes; the
+  // unclassed rail path uses SVG's default butt cap.
+  const source=fs.readFileSync(require('node:path').join(__dirname,'../warmwasser-schema-card.js'),'utf8');
+  assert.ok(source.includes('.w0,.w1,.w2,.w3,.wa{fill:none;stroke-linecap:round;'));
+});
 test('active return rail and its animation paint before every A11 bridge layer', () => {
   const c=new (registry.get('warmwasser-schema-card'))();
   c.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{vorlauf:'sensor.vl',pumpe:'switch.hk'}]});

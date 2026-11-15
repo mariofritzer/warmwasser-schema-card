@@ -1242,7 +1242,16 @@ function prepareLegacyWpHeatingRails(model, options = {}) {
     if (candidate.status !== 'routed') return candidate;
     // Never expose a compiler candidate: other routes must first be checked
     // against the wider rail paint, including caps and permitted junctions.
-    rails.push({id, nodes:nodes.map(n => ({...n})), areas:painted.areas.map(a => ({...a}))});
+    const areas=painted.areas.map(a => ({...a}));
+    // These exact horizontal rails are painted by unclassed SVG paths with
+    // default butt linecaps. Their w3 animation stays between interior nodes;
+    // its 1.3px round caps remain inside the 9px stroke and explicit end caps.
+    // Bent rails retain the conservative general-purpose geometry.
+    if (painted.points.length===2 && painted.points[0].y===painted.points[1].y && areas.length===3) {
+      const [a,b]=painted.points;
+      areas[0]={x:Math.min(a.x,b.x),y:a.y-9,width:Math.abs(a.x-b.x),height:18};
+    }
+    rails.push({id, nodes:nodes.map(n => ({...n})), areas});
   }
   const result = {status:'unsupported', reason:'rail-batch-validation-required', rails};
   heatingRailProvenance.set(result, {snapshot:JSON.stringify(rails), policy:directedPolicy(options),
@@ -2587,6 +2596,19 @@ function validateLayoutV2(layout, capabilities) {
   return { errors, inactive };
 }
 
+// Layout is configuration data. Detach it from the caller without normalizing
+// invalid values; validation must see them and fail closed. Cycles are invalid.
+function snapshotLayout(value, ancestors = new Set()) {
+  if (!value || typeof value !== 'object') return value;
+  if (ancestors.has(value)) throw new Error('cyclic layout');
+  ancestors.add(value);
+  const copy = Array.isArray(value)
+    ? value.map(item => snapshotLayout(item, ancestors))
+    : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshotLayout(item, ancestors)]));
+  ancestors.delete(value);
+  return Object.freeze(copy);
+}
+
 // Internal geometry candidate only. This is not permission to render a layout:
 // presentation bounds, live labels and complete renderer integration need their
 // own checks before any public activation. List identities are validated even
@@ -2697,7 +2719,17 @@ class WarmwasserSchemaCard extends HTMLElement {
     c.heizkreise = (config.heizkreise || []).filter(hasEnt).slice(0, 6);
     c.verteiler = normalizeDistributor(config.verteiler, config.heizkreise);
     c.energie = (config.energie || []).filter((e) => e && isEnt(e.entity));
+    const hasLayout = Object.prototype.hasOwnProperty.call(config, 'layout');
+    let savedLayout;
+    if (hasLayout) {
+      try { savedLayout = snapshotLayout(config.layout); }
+      catch (_) { savedLayout = null; }
+      c.layout = savedLayout;
+    }
     this._cfg = c;
+    this._savedLayout = hasLayout ? { value: savedLayout } : null;
+    this._layoutDraft = null;
+    this._layoutStatus = null;
     // Snapshot identity inputs so an internal commit uses this card's config.
     this._layoutIdentityConfig = Object.fromEntries(['fuehler', 'heizkreise'].map(field =>
       [field, Array.isArray(config[field]) ? config[field].map(item => Array.isArray(item) ? [...item] : layoutObject(item) ? { ...item } : item) : []]));
@@ -2710,32 +2742,48 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (this._hass) this._update();
   }
 
+  // This gate is intentionally closed until the full editor and geometry scope
+  // is ready. Tests may override it on an instance to exercise the data path.
+  _layoutFeatureEnabled() { return false; }
+
   // Internal only: no config event or persistence. A failed preparation leaves
   // the currently rendered model untouched. setConfig always clears it.
   _commitLayoutCandidate(layout) {
-    const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, layout);
+    let draft;
+    try { draft = snapshotLayout(layout); }
+    catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-layout', path: 'layout' }] }; }
+    const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, draft);
     if (result.status !== 'rendered-candidate') return result;
-    // Snapshot before patching: patch and text fitting can both throw after
-    // changing the DOM. Event handlers are delegated on the shadow root.
+    // An explicit draft takes precedence over saved config until setConfig.
+    // Neither this snapshot nor the saved config is emitted or persisted.
+    const guarded = this._layoutFeatureEnabled();
     const previous = { candidate: this._layoutCandidate, model: this._model,
-      html: this._box ? this._box.innerHTML : '' };
+      status: this._layoutStatus, draft: this._layoutDraft, html: this._box ? this._box.innerHTML : '' };
+    this._layoutDraft = guarded ? { value: draft } : null;
     this._layoutCandidate = result.candidate;
     this._model = result.candidate.model;
     this._key = null;
-    try { this._update(); }
-    catch (_) {
+    const rollback = () => {
       try {
         if (this._box) this._box.innerHTML = previous.html;
         this._layoutCandidate = previous.candidate; this._model = previous.model;
+        this._layoutStatus = previous.status; this._layoutDraft = previous.draft;
       } catch (_) {
-        // If restoration itself fails, retain the candidate model and force
-        // the next update to repaint instead of asserting a false rollback.
+        // Keep the attempted state and force a repaint if DOM restoration fails.
       }
       this._key = null;
+    };
+    try { this._update(); }
+    catch (_) {
+      rollback();
       return { status: 'unsupported', errors: [{ code: 'commit-failed', path: 'layout' }] };
     }
-    if (this._layoutCandidate !== result.candidate)
+    const applied = guarded ? this._layoutCandidate && this._layoutStatus?.status === 'rendered-candidate'
+      : this._layoutCandidate === result.candidate;
+    if (!applied) {
+      rollback();
       return { status: 'unsupported', errors: [{ code: 'render-failed', path: 'layout' }] };
+    }
     return { status: 'committed-candidate' };
   }
 
@@ -2785,22 +2833,41 @@ class WarmwasserSchemaCard extends HTMLElement {
     const key = sprache(this._cfg, this._hass) + '|' + this._ents.map((e) => this._hass.states[e]?.state).join('|');
     if (key === this._key) return;
     if (!this._box) this._init();
-    const tpl = document.createElement('template');
-    if (this._layoutCandidate) {
-      // Live values can invalidate label bounds after a successful commit.
-      // Fall back as a whole rather than paint a partial routed diagram.
-      const result = renderLayoutCandidate(this, this._layoutCandidate);
-      if (result.status === 'rendered-candidate') tpl.innerHTML = result.html;
-      else {
-        this._layoutCandidate = null;
-        this._model = diagramModel(this._cfg);
-        tpl.innerHTML = this._render();
+    const previous = { html: this._box.innerHTML, model: this._model, candidate: this._layoutCandidate, status: this._layoutStatus };
+    try {
+      const tpl = document.createElement('template');
+      let nextModel = this._model, nextCandidate = this._layoutCandidate, nextStatus = this._layoutStatus, html;
+      const selectedLayout = this._layoutFeatureEnabled() && (this._layoutDraft || this._savedLayout);
+      if (selectedLayout) {
+        // Re-evaluate with current live values, allowing a previously unsafe
+        // label to recover without losing the saved layout or inactive entries.
+        const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, selectedLayout.value);
+        nextStatus = { status: result.status, errors: result.errors || [] };
+        if (result.status === 'rendered-candidate') {
+          nextCandidate = result.candidate; nextModel = result.candidate.model; html = result.html;
+        } else { nextCandidate = null; nextModel = diagramModel(this._cfg); }
+      } else if (nextCandidate) {
+        const result = renderLayoutCandidate(this, nextCandidate);
+        if (result.status === 'rendered-candidate') html = result.html;
+        else { nextCandidate = null; nextModel = diagramModel(this._cfg); }
       }
-    } else tpl.innerHTML = this._render();
-    if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
-    else this._box.replaceChildren(tpl.content);
-    this._fitDistributorText();
-    this._key = key;
+      if (html === undefined) {
+        const model = this._model;
+        try { this._model = nextModel; html = this._render(); }
+        finally { this._model = model; }
+      }
+      tpl.innerHTML = html;
+      if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
+      else this._box.replaceChildren(tpl.content);
+      this._fitDistributorText();
+      this._model = nextModel; this._layoutCandidate = nextCandidate; this._layoutStatus = nextStatus;
+      this._key = key;
+    } catch (error) {
+      try { this._box.innerHTML = previous.html; } catch (_) { /* next update must repaint */ }
+      this._model = previous.model; this._layoutCandidate = previous.candidate; this._layoutStatus = previous.status;
+      this._key = null;
+      throw error;
+    }
   }
 
   _click(ev) {
