@@ -20,10 +20,10 @@ test('transforms measured glyph bounds and stroke conservatively',()=>{
 function fixture() {
   const listeners={}; let ready;
   const fonts={status:'loading',ready:new Promise(resolve=>{ready=resolve;}),addEventListener:(event,fn)=>listeners[event]=fn};
-  const style={length:0,getPropertyValue(){return '';},font:'10px sans-serif',fontFamily:'sans-serif',fontSize:'10px',fontWeight:'400',fontStyle:'normal',fontStretch:'normal',letterSpacing:'normal',wordSpacing:'normal',stroke:'none',strokeWidth:'0px',strokeLinejoin:'round',direction:'ltr',writingMode:'horizontal-tb',textAnchor:'start',textRendering:'auto',vectorEffect:'none',filter:'none',clipPath:'none',mask:'none'};
+  const style={length:0,getPropertyValue(){return '';},width:'400px',boxSizing:'content-box',font:'10px sans-serif',fontFamily:'sans-serif',fontSize:'10px',fontWeight:'400',fontStyle:'normal',fontStretch:'normal',letterSpacing:'normal',wordSpacing:'normal',stroke:'none',strokeWidth:'0px',strokeLinejoin:'round',direction:'ltr',writingMode:'horizontal-tb',textAnchor:'start',textRendering:'auto',vectorEffect:'none',filter:'none',clipPath:'none',mask:'none'};
   const doc={fonts,defaultView:{getComputedStyle:()=>style}};
   const node={ownerDocument:doc,isConnected:true,textContent:'sample',getScreenCTM:()=>identity,getBBox:()=>({...node.box}),box:{x:0,y:0,width:10,height:4}};
-  const svg={ownerDocument:doc,isConnected:true,getScreenCTM:()=>identity,querySelectorAll:()=>[node],contains:n=>n===node}; node.parentElement=svg;
+  const svg={ownerDocument:doc,isConnected:true,getScreenCTM:()=>identity,getBoundingClientRect:()=>({width:400,height:150}),querySelectorAll:()=>[node],contains:n=>n===node}; node.parentElement=svg;
   return {fonts,listeners,style,node,svg,ready:()=>{fonts.status='loaded';ready();}};
 }
 test('waits for fonts and invalidates font, style, inventory and overflow changes',async()=>{
@@ -100,7 +100,7 @@ test('a later stale entry invalidates the whole inventory before reporting overf
 function stagingFixture() {
   const f=fixture(), doc=f.svg.ownerDocument, host={isConnected:true,parentElement:null,getRootNode:()=>({})};
   const root={host,querySelectorAll:()=>[]};
-  const parent={isConnected:true,ownerDocument:doc,parentElement:null,getRootNode:()=>root,append(element){element.isConnected=true;element.parentElement=this;element.parentNode=this;this.child=element;}};
+  const parent={nodeType:1,isConnected:true,ownerDocument:doc,parentElement:null,getRootNode:()=>root,append(element){element.isConnected=true;element.parentElement=this;element.parentNode=this;this.child=element;}};
   f.svg.localName='svg'; f.svg.namespaceURI='http://www.w3.org/2000/svg'; f.svg.id=''; f.svg.attributes=[];
   f.svg.getRootNode=()=>root;
   f.svg.querySelectorAll=selector=>selector==='[id]'?[]:[f.node];
@@ -151,6 +151,41 @@ test('identical baseline text parity is checked with and without the staged sibl
   other.parentElement=changed; changed.querySelectorAll=()=>[other]; changed.contains=n=>n===other;
   assert.equal((await stage(g.parent,'<svg></svg>','theme-1',1,()=>true,changed)).reason,'text-stage-style-mismatch');
   assert.equal(g.removed(),true);
+});
+test('translated text parity accepts only matching style and linear matrix',async()=>{
+  const f=stagingFixture();f.ready();
+  const reference={...f.svg,parentNode:f.parent,parentElement:f.parent},text={...f.node};
+  text.parentElement=reference;text.getScreenCTM=()=>({...identity,e:10,f:7});
+  reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+  let result=await stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference,undefined,false,'translated');
+  assert.equal(result.textStyleParity,'translated-text-only');
+  const linear=stagingFixture();linear.ready();
+  const ref2={...linear.svg,parentNode:linear.parent,parentElement:linear.parent},text2={...linear.node};
+  text2.parentElement=ref2;text2.getScreenCTM=()=>({...identity,a:1.1,e:10});
+  ref2.querySelectorAll=()=>[text2];ref2.contains=n=>n===text2;
+  result=await stage(linear.parent,'<svg></svg>','theme-1',1,()=>true,ref2,undefined,false,'translated');
+  assert.equal(result.reason,'text-stage-style-mismatch');
+  const css=stagingFixture();css.ready();
+  const ref3={...css.svg,parentNode:css.parent,parentElement:css.parent},text3={...css.node};
+  text3.parentElement=ref3;ref3.querySelectorAll=()=>[text3];ref3.contains=n=>n===text3;
+  css.svg.ownerDocument.defaultView.getComputedStyle=node=>node===text3?{...css.style,fontWeight:'700'}:css.style;
+  result=await stage(css.parent,'<svg></svg>','theme-1',1,()=>true,ref3,undefined,false,'translated');
+  assert.equal(result.reason,'text-stage-style-mismatch');
+  const viewport=stagingFixture();viewport.ready();
+  const ref4={...viewport.svg,parentNode:viewport.parent,parentElement:viewport.parent,getScreenCTM:()=>({...identity,a:1.1})},text4={...viewport.node};
+  text4.parentElement=ref4;ref4.querySelectorAll=()=>[text4];ref4.contains=n=>n===text4;
+  result=await stage(viewport.parent,'<svg></svg>','theme-1',1,()=>true,ref4,undefined,false,'translated');
+  assert.equal(result.reason,'text-stage-viewport-unproven');
+});
+test('screen transform changes after stage cleanup invalidate parity',async()=>{
+  const f=stagingFixture();f.ready();
+  const reference={...f.svg,parentNode:f.parent,parentElement:f.parent,
+    getScreenCTM:()=>f.removed()?{...identity,a:2,d:2}:identity};
+  const text={...f.node};text.parentElement=reference;
+  reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+  const result=await stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference,undefined,false,'translated');
+  assert.equal(result.reason,'text-stage-viewport-unproven');
+  assert.equal(f.removed(),true);
 });
 test('staging discards stale generations after fonts resolve and cleans up',async()=>{
   const f=stagingFixture(); let generation=1;

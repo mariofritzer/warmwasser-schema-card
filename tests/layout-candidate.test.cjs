@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const registry = new Map();
 const context = { HTMLElement: class {}, customElements: { get: n => registry.get(n), define: (n, c) => registry.set(n, c) }, window: {}, console: { info() {} } };
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + '\nglobalThis.resolve = resolveLayoutCandidate; globalThis.preflight = preflightLayoutRender;', context);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + '\nglobalThis.resolve = resolveLayoutCandidate; globalThis.preflight = preflightLayoutRender; globalThis.renderGeometry=(card,candidate,hass)=>{const model=card._model,old=card._hass;try{card._model=candidate.model;card._hass=hass;layoutRenderRoutes.set(card,candidate);return card._render();}finally{layoutRenderRoutes.delete(card);card._model=model;card._hass=old;}};', context);
 const Card = registry.get('warmwasser-schema-card');
 function fixture(extra = {}) {
   const raw = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, ...extra };
@@ -156,6 +156,11 @@ test('visible volume text cannot be released without connected measurement and p
     card._hass=hass;assert.ok(card._render().includes(String(volume)),'legacy rendering remains unchanged');
   }
 });
+test('split tank prefixes require measurement even without volume values',()=>{
+  const {raw}=fixture({speicher:{typ:'getrennt'}});
+  const result=context.preflight(raw,{version:2,components:{fm:{x:400,y:29}}},{language:'en',states:{'sensor.fm':{state:'on'}}});
+  assert.equal(result.status,'unsupported');assert.equal(result.errors[0].code,'text-measurement-unavailable');assert.equal(result.html,undefined);
+});
 
 for (const thrown of [null, 'render error']) test(`preflight contains non-Error renderer throw ${JSON.stringify(thrown)}`, () => {
   const { raw, card } = fixture();
@@ -265,12 +270,13 @@ test('separated FM/WP alternate connector pairs render the entire seven-path bat
     }
   }
   const rendered = context.preflight(raw, layout, hass);
-  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
-  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2'])
-    assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
-  const [, vx, vy, vw, vh] = rendered.html.match(/viewBox="([^ ]+) ([^ ]+) ([^ ]+) ([^"]+)"/).map(Number);
+  assert.equal(rendered.status,'unsupported');assert.equal(rendered.errors[0].code,'text-measurement-unavailable');assert.equal(rendered.html,undefined);
+  const html=context.renderGeometry(card,result,hass);
+  for (const route of Object.values(result.routes)) for (const layer of ['w0','w1','w2'])
+    assert.ok(html.includes(`<path d="${route.path}" class="${layer}"`));
+  const [,vx,vy,vw,vh]=html.match(/viewBox="([^ ]+) ([^ ]+) ([^ ]+) ([^"]+)"/).map(Number);
   for (const route of Object.values(result.routes)) for (const p of route.points) {
-    assert.ok(p.x - 16 >= vx && p.x + 16 <= vx + vw); assert.ok(p.y - 16 >= vy && p.y + 16 <= vy + vh);
+    assert.ok(p.x-16>=vx && p.x+16<=vx+vw);assert.ok(p.y-16>=vy && p.y+16<=vy+vh);
   }
   assert.equal(JSON.stringify({ raw, config: card._cfg, model: card._model, layout }), before);
 });
@@ -315,13 +321,15 @@ for (const [angle, dx, dy, upper] of [[90, 0, 0, 'right'], [180, 0, 100, 'left']
     ports: { 'tank.wp-supply': { mode: 'manual', side: upper } } };
   const result = resolve(layout), rendered = context.preflight(raw, layout, { language: 'en', states: {} });
   assert.equal(result.status, 'candidate', JSON.stringify(result.errors)); assert.equal(Object.keys(result.routes).length, 7);
-  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
+  assert.equal(rendered.status,'unsupported');assert.equal(rendered.errors[0].code,'text-measurement-unavailable');assert.equal(rendered.html,undefined);
   const rotated = result.model.components.valve;
   assert.equal(rotated.ports.wp.role, v.ports.wp.role); assert.equal(rotated.ports.upper.role, v.ports.upper.role);
   if (angle === 90 || angle === 270) { assert.equal(rotated.bounds.width, 28); assert.equal(rotated.bounds.height, 49); }
-  assert.ok(rendered.html.includes(`rotate(${angle} ${rotated.origin.x + 34} ${rotated.origin.y + 14})`));
-  assert.ok(rendered.html.includes(`rotate(${-angle} ${rotated.origin.x + 8} ${rotated.origin.y + 14})`));
-  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2']) assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+  assert.equal(result.model.layoutValveRotation,angle);
+  const html=context.renderGeometry(card,result,{language:'en',states:{}});
+  assert.ok(html.includes(`rotate(${angle} ${rotated.origin.x+34} ${rotated.origin.y+14})`));
+  assert.ok(html.includes(`rotate(${-angle} ${rotated.origin.x+8} ${rotated.origin.y+14})`));
+  for (const route of Object.values(result.routes)) for (const layer of ['w0','w1','w2']) assert.ok(html.includes(`<path d="${route.path}" class="${layer}"`));
   assert.equal(JSON.stringify({ raw, model: card._model }), before);
 });
 
@@ -334,8 +342,9 @@ for (const [name, layout] of [
   const full = { version: 2, ...layout }, result = resolve(full);
   assert.equal(result.status, 'candidate', JSON.stringify(result.errors)); assert.equal(Object.keys(result.routes).length, 7);
   const rendered = context.preflight(raw, full, { language: 'en', states: {} });
-  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
-  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2']) assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+  assert.equal(rendered.status,'unsupported');assert.equal(rendered.errors[0].code,'text-measurement-unavailable');assert.equal(rendered.html,undefined);
+  const html=context.renderGeometry(card,result,{language:'en',states:{}});
+  for (const route of Object.values(result.routes)) for (const layer of ['w0','w1','w2']) assert.ok(html.includes(`<path d="${route.path}" class="${layer}"`));
   if (name === 'heat pump') {
     const before = card._model.components.wp.ports['upper-supply'], after = result.model.components.wp.ports['upper-supply'];
     assert.equal(after.direction, 'top'); assert.equal(after.x, result.model.components.wp.bounds.width - before.x);
@@ -373,6 +382,7 @@ test('separated buffer placement moves its feet and keeps the seven routed paths
   assert.equal(result.model.components['tank-feet'].origin.x, feet.origin.x + 5);
   assert.equal(Object.keys(result.routes).length, 7);
   const rendered = context.preflight(raw, layout, { language: 'en', states: {} });
-  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
-  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2']) assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+  assert.equal(rendered.status,'unsupported');assert.equal(rendered.errors[0].code,'text-measurement-unavailable');assert.equal(rendered.html,undefined);
+  const html=context.renderGeometry(card,result,{language:'en',states:{}});
+  for (const route of Object.values(result.routes)) for (const layer of ['w0','w1','w2']) assert.ok(html.includes(`<path d="${route.path}" class="${layer}"`));
 });

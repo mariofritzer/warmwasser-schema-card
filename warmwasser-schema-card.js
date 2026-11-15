@@ -1746,7 +1746,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical') {
   const unsupported=reason=>({status:'unsupported',reason});
   const wait=promise=>{
     if (!signal) return promise;
@@ -1761,7 +1761,8 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
   };
   let stage,svg;
   try {
-    if (!parent || !parent.isConnected || typeof candidateHtml!=='string' || !candidateHtml ||
+    if (!['identical','translated'].includes(parityMode) || (parityMode==='translated' && !referenceSvg) ||
+        !parent || !parent.isConnected || typeof candidateHtml!=='string' || !candidateHtml ||
         typeof contextKey!=='string' || !contextKey || typeof isCurrent!=='function' || !isCurrent(generation))
       return unsupported('text-stage-invalidated');
     const doc=parent.ownerDocument, root=parent.getRootNode();
@@ -1769,6 +1770,17 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       return unsupported('text-stage-unavailable');
     if (referenceSvg && (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root))
       return unsupported('text-stage-reference-invalid');
+    const screen=node=>{
+      const m=node?.getScreenCTM(), keys=['a','b','c','d','e','f'];
+      if (!m || m.is2D===false || !keys.every(k=>Number.isFinite(m[k]))) return null;
+      const det=m.a*m.d-m.b*m.c;
+      if (!Number.isFinite(det) || !det) return null;
+      return Object.fromEntries(keys.map(k=>[k,m[k]]));
+    };
+    const sameScreen=(a,b,keys)=>!!a && !!b && keys.every(k=>Math.abs(a[k]-b[k])<=1e-9);
+    const allMatrix=['a','b','c','d','e','f'],linearMatrix=['a','b','c','d'];
+    const referenceInitial=referenceSvg?screen(referenceSvg):null;
+    if (referenceSvg && !referenceInitial) return unsupported('text-stage-viewport-unproven');
     const template=doc.createElement('template');
     template.innerHTML=candidateHtml;
     const children=Array.from(template.content.children);
@@ -1779,11 +1791,26 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     stage=doc.createElement('div');
     stage.setAttribute('aria-hidden','true'); stage.setAttribute('inert','');
     stage.style.cssText='position:fixed;left:-100000px;top:0;pointer-events:none;z-index:-1;';
+    if (parityMode==='translated') {
+      // The SVG is width:100% in the real card. A fixed-position wrapper with
+      // auto width otherwise shrink-wraps to ~300px and changes font metrics.
+      // Reproduce the actual containing block's content width, not the old
+      // SVG height: a changed candidate viewBox may have a different height.
+      const container=parent.nodeType===11?root.host:parent,style=doc.defaultView.getComputedStyle(container);
+      const px=value=>typeof value==='string' && /^(?:\d+(?:\.\d*)?|\.\d+)px$/.test(value) ? Number.parseFloat(value) : NaN;
+      let width=px(style.width);
+      if (style.boxSizing==='border-box') width-=px(style.paddingLeft)+px(style.paddingRight)+px(style.borderLeftWidth)+px(style.borderRightWidth);
+      if (!Number.isFinite(width) || width<=0) return unsupported('text-stage-viewport-unproven');
+      stage.style.cssText+=`width:${width}px;box-sizing:content-box;margin:0;padding:0;border:0;`;
+    }
     stage.append(svg); parent.append(stage);
     const intact=()=>stage.isConnected && stage.parentNode===parent && svg.parentNode===stage && svg.getRootNode()===root &&
       !Array.from(root.querySelectorAll('[id]')).some(el=>!svg.contains(el) && el!==svg &&
         [svg,...svg.querySelectorAll('[id]')].some(inside=>inside.id && inside.id===el.id));
     if (!intact() || !isCurrent(generation)) return unsupported('text-stage-invalidated');
+    const stageInitial=referenceSvg?screen(svg):null;
+    if (referenceSvg && (!sameScreen(referenceInitial,screen(referenceSvg),allMatrix) ||
+        !sameScreen(referenceInitial,stageInitial,linearMatrix))) return unsupported('text-stage-viewport-unproven');
     const reserve=await wait(measureLegacyHeatingSvgText(svg,contextKey));
     if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
     if (!reserve) return unsupported('text-stage-invalidated');
@@ -1813,35 +1840,47 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
         return JSON.stringify(parts);
       };
       const tolerance=1e-9, close=(x,y)=>Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
-      const same=(a,b)=>a.length===b.length && a.every((entry,i)=>{
+      const same=(a,b,translated=false)=>a.length===b.length && a.every((entry,i)=>{
         const other=b[i],x=entry.box,y=other && other.box;
         const ma=JSON.parse(entry.fingerprint).at(-1),mb=other && JSON.parse(other.fingerprint).at(-1);
         return other && entry.text===other.text && parityFingerprint(entry.fingerprint)===parityFingerprint(other.fingerprint) && y &&
-          ['a','b','c','d','e','f'].every(k=>close(ma[k],mb[k])) &&
-          ['x','y','width','height'].every(k=>close(x[k],y[k]));
+          ['a','b','c','d'].every(k=>close(ma[k],mb[k])) &&
+          (translated || (close(ma.e,mb.e) && close(ma.f,mb.f))) &&
+          close(x.x+(translated?mb.e-ma.e:0),y.x) && close(x.y+(translated?mb.f-ma.f:0),y.y) &&
+          close(x.width,y.width) && close(x.height,y.height);
       });
-      if (!same(active.entries,current.entries)) {
-        const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]]));
+      const translated=parityMode==='translated';
+      if (!same(active.entries,current.entries,translated)) {
+        const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]],translated));
         const a=active.entries[index], b=current.entries[index];
         const aStyles=a && new Map(JSON.parse(parityFingerprint(a.fingerprint))[0]);
         const bStyles=b && new Map(JSON.parse(parityFingerprint(b.fingerprint))[0]);
         const properties=aStyles && bStyles ? [...new Set([...aStyles.keys(),...bStyles.keys()])].filter(k=>aStyles.get(k)!==bStyles.get(k)) : [];
+        const viewport=node=>{const r=node.getBoundingClientRect(),m=node.getScreenCTM();return {width:r.width,height:r.height,
+          matrix:m && {a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}};};
         return {status:'unsupported',reason:'text-stage-style-mismatch',mismatch:{index,properties,
           activeBox:a && a.box,stageBox:b && b.box,
-          activeMatrix:a && JSON.parse(a.fingerprint).at(-1),stageMatrix:b && JSON.parse(b.fingerprint).at(-1)}};
+          activeMatrix:a && JSON.parse(a.fingerprint).at(-1),stageMatrix:b && JSON.parse(b.fingerprint).at(-1),
+          activeViewport:viewport(referenceSvg),stageViewport:viewport(svg)}};
       }
+      const referenceBeforeCleanup=screen(referenceSvg),stageBeforeCleanup=screen(svg);
+      if (!sameScreen(referenceInitial,referenceBeforeCleanup,allMatrix) ||
+          !sameScreen(stageInitial,stageBeforeCleanup,allMatrix) ||
+          !sameScreen(referenceBeforeCleanup,stageBeforeCleanup,linearMatrix))
+        return unsupported('text-stage-viewport-unproven');
       // Recheck the visible SVG after removing the staged sibling: structural
       // selectors such as :last-child must not alter the on-screen styles.
       stage.remove(); stage=null;
       if (!isCurrent(generation) || !referenceSvg.isConnected || referenceSvg.parentNode!==parent) return unsupported('text-stage-invalidated');
+      if (!sameScreen(referenceBeforeCleanup,screen(referenceSvg),allMatrix)) return unsupported('text-stage-viewport-unproven');
       const provenance=textMeasurementProvenance.get(active);
       const after=provenance && captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
-      if (!after || !after.entries || !same(active.entries,after.entries) || !same(current.entries,after.entries) || active.fontEpoch!==after.fontEpoch)
+      if (!after || !after.entries || !same(active.entries,after.entries) || !same(current.entries,after.entries,translated) || active.fontEpoch!==after.fontEpoch)
         return unsupported('text-stage-style-mismatch');
-      textStyleParity='identical-baseline-only';
+      textStyleParity=translated?'translated-text-only':'identical-baseline-only';
     }
     // Position and dimension can each differ by the parity tolerance.
-    const pad=textStyleParity ? 2e-9 : 0;
+    const pad=textStyleParity ? 4e-9 : 0;
     const boxes=current.entries.map(e=>({x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}));
     const textRecords=includeTextRecords ? current.entries.map((e,i)=>({text:e.text,x:e.node.getAttribute('x'),y:e.node.getAttribute('y'),
       className:e.node.getAttribute('class'),matrix:JSON.parse(e.fingerprint).at(-1),box:boxes[i]})) : undefined;
@@ -3591,11 +3630,11 @@ function inspectMeasuredVolumeSlots(card,candidate,records) {
       ? [{id:'hot-tank',y:38,value:cfg.volumen_ww,prefix:L.ww},{id:'buffer-tank',y:338,value:cfg.volumen,prefix:L.puffer}]
       : [{id:'tank',y:338,value:cfg.volumen,prefix:null}];
     const boxes=[];
-    for (const spec of specs.filter(s=>visible(s.value))) {
+    for (const spec of specs.filter(s=>s.prefix || visible(s.value))) {
       const c=model.components[spec.id],b=c?.bounds,o=c?.origin,base=c?.baseOrigin;
       if (!b || !o || !base || b.x!==0 || b.y!==0 || b.width!==130 || !Number.isFinite(b.height) || b.height<44 ||
           ![o.x,o.y,base.x,base.y].every(Number.isFinite)) return fail('volume-text-unproven');
-      const expected=spec.prefix ? `${spec.prefix} · ${spec.value} l` : `${spec.value} l`;
+      const expected=[spec.prefix,visible(spec.value)?`${spec.value} l`:null].filter(Boolean).join(' · ');
       const matches=records.filter(r=>r && r.text===expected && r.x==='137' && r.y===String(spec.y) && r.className==='wc wt wo');
       if (matches.length!==1) return fail('volume-text-unproven');
       const r=matches[0],m=r.matrix,q=r.box,dx=o.x-base.x,dy=o.y-base.y,eps=1e-8;
@@ -3707,11 +3746,16 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass)])===key;}catch(_){return false;}};
     const finish=result=>{
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
-      const volume=inspectMeasuredVolumeSlots(card,candidate,result?.textRecords);
+      const volume=result?.textStyleParity==='translated-text-only'
+        ? inspectMeasuredVolumeSlots(card,candidate,result.textRecords) : {reason:'volume-text-unproven'};
       const code=['volume-label-overflow','volume-label-pipe-contact'].includes(volume.reason)?volume.reason:'text-slots-and-paint-unproven';
       layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
     };
-    Promise.resolve().then(()=>stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,undefined,controller.signal,true))
+    Promise.resolve().then(()=>{
+      const reference=parent.querySelector('svg');
+      if (!reference) return {status:'unsupported',reason:'text-stage-reference-invalid'};
+      return stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,reference,controller.signal,true,'translated');
+    })
       .then(finish,finish);
     return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
   } catch (_) { cancelLayoutTextMeasurement(owner); return unsupported('text-measurement-unavailable'); }
@@ -3726,7 +3770,7 @@ function renderLayoutCandidate(card, candidate, owner=card) {
       html.includes(`<path d="${route.path}" class="${layer}"`)));
     if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
     const visible=value=>value!==null && value!==undefined && value!=='';
-    if (visible(card._cfg.volumen) || (card._cfg.typ==='getrennt' && visible(card._cfg.volumen_ww)))
+    if (card._cfg.typ==='getrennt' || visible(card._cfg.volumen))
       return requestLayoutVolumeMeasurement(owner,card,html,candidate);
     return { status: 'rendered-candidate', html };
   } catch (error) {

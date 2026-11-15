@@ -477,7 +477,7 @@ test('external nested mutation without setConfig blocks draft apply until rebind
   assert.equal(editor.events.length, 1);
 });
 
-test('separated visual editor changes grouped connector sides and validates seven-pipe preview', () => {
+test('separated editor retains connector draft while prefix text remains unproven', () => {
   const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
   editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
   editor.setConfig({ speicher: { typ: 'getrennt' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' } });
@@ -488,31 +488,21 @@ test('separated visual editor changes grouped connector sides and validates seve
   ui.inputs.x.value = '-110'; ui.inputs.x.emit('change');
   ui.portControls.tankSelect.value = 'left'; ui.portControls.tankSelect.emit('change');
   ui.portControls.fmSelect.value = 'right'; ui.portControls.fmSelect.emit('change');
-  const state = editor._layoutDraftState(); assert.equal(state.status, 'rendered-candidate', JSON.stringify(state.errors));
+  const state = editor._layoutDraftState(); assert.equal(state.status, 'unsupported', JSON.stringify(state.errors));
   assert.equal(state.layout.ports['tank.fm-supply'].side, 'left'); assert.equal(state.layout.ports['tank.fm-return'].side, 'left');
   assert.equal(state.layout.ports['fm.supply'].side, 'right'); assert.equal(state.layout.ports['fm.return'].side, 'right');
-  assert.equal(ui.apply.disabled, false); assert.ok(ui.previewRoot._html.includes('<svg'));
-  ui.apply.emit('click'); assert.equal(editor.events.length, 1);
-  assert.equal(editor.events[0].detail.config.layout.ports['fm.return'].side, 'right');
+  assert.equal(ui.apply.disabled, true); assert.ok(ui.previewRoot._html.includes('<svg'));
+  ui.apply.emit('click'); assert.equal((editor.events || []).length, 0);
 });
 
-test('dragging a rotated valve uses its origin rather than its offset bounds', () => {
+test('unproven separated layout shows canonical valve geometry', () => {
   const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
   editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
   editor.setConfig({ speicher: { typ: 'getrennt' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp', ventil: 'sensor.valve' },
     layout: { version: 2, components: { fm: { x: 400, y: 29 }, valve: { x: 228, y: 268.5, rotation: 90 } } } });
   const ui = editor._layoutPanel, box = ui.hitBoxes.find(b => b.id === 'valve');
-  assert.notEqual(box.x, box.originX); assert.notEqual(box.y, box.originY);
-  const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
-    getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
-  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
-  ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
-  const event = { pointerId: 12, isPrimary: true, pointerType: 'mouse', button: 0, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
-  ui.overlay.emit('pointerdown', event);
-  assert.equal(ui.select.value, 'valve');
-  ui.overlay.emit('pointerup', { ...event, clientX: event.clientX + 5, clientY: event.clientY + 3 });
-  const valve = editor._layoutDraft.history[editor._layoutDraft.index].components.valve;
-  assert.equal(valve.x, 233); assert.equal(valve.y, 271.5); assert.equal(valve.rotation, 90);
+  assert.equal(box.x, box.originX); assert.equal(box.y, box.originY);
+  assert.equal(ui.apply.disabled,true);
 });
 
 test('editor reports saved invalid layout, then updates notice when config recovers', () => {
@@ -593,7 +583,7 @@ test('separated device picker shows named equipment and permits buffer positioni
   ui.select.value = 'buffer'; ui.select.emit('change');
   const x = Number(ui.inputs.x.value); ui.inputs.x.value = String(x + 5); ui.inputs.x.emit('change');
   assert.equal(editor._layoutDraftState().layout.components.buffer.x, x + 5);
-  assert.equal(editor._layoutDraftState().status, 'rendered-candidate');
+  assert.equal(editor._layoutDraftState().status, 'unsupported');
 });
 
 test('separated editor restores saved port groups and valve rotation from config', () => {
@@ -607,5 +597,5 @@ test('separated editor restores saved port groups and valve rotation from config
   assert.equal(ui.portControls.wpSelect.value, 'right'); assert.equal(ui.portControls.tankSelect.value, 'auto');
   assert.equal(ui.portControls.fmSelect.value, 'auto'); assert.equal(ui.valveSelect.value, '90');
   ui.select.value = 'valve'; ui.select.emit('change'); assert.equal(Number(ui.inputs.x.value), 272); assert.equal(Number(ui.inputs.y.value), 376);
-  assert.equal(ui.apply.disabled, false); assert.equal(JSON.stringify(config), before);
+  assert.equal(ui.apply.disabled, true); assert.equal(JSON.stringify(config), before);
 });

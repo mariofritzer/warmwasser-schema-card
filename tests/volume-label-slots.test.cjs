@@ -39,3 +39,18 @@ test('split tank values use separate model-bound slots and transforms',()=>{
   assert.equal(inspect(c,candidate,[hot,{...buffer,matrix:{...buffer.matrix,e:0}}]).reason,'volume-text-unproven');
   assert.equal(inspect(c,candidate,[hot,{...buffer,box:{...buffer.box,width:100}}]).reason,'volume-label-overflow');
 });
+test('both split-tank prefixes remain checked when only one volume is supplied',()=>{
+  const {c,candidate}=fixture({typ:'getrennt',volumen:500},{version:2,components:{fm:{x:400,y:29}}});
+  const hot=record('HOT WATER',38,{x:112,y:29,width:50,height:10});
+  const buffer=record('BUFFER · 500 l',338,{x:110,y:329,width:54,height:10});
+  assert.equal(inspect(c,candidate,[hot,buffer]).reason,'volume-slots-staged-only');
+  assert.equal(inspect(c,candidate,[buffer]).reason,'volume-text-unproven');
+  assert.equal(inspect(c,candidate,[{...hot,box:{...hot.box,width:100}},buffer]).reason,'volume-label-overflow');
+});
+test('split-tank prefixes are still measured when no volumes are supplied',()=>{
+  const {c,candidate}=fixture({typ:'getrennt'},{version:2,components:{fm:{x:400,y:29}}});
+  const hot=record('HOT WATER',38,{x:112,y:29,width:50,height:10});
+  const buffer=record('BUFFER',338,{x:115,y:329,width:44,height:10});
+  assert.equal(inspect(c,candidate,[hot,buffer]).reason,'volume-slots-staged-only');
+  assert.equal(inspect(c,candidate,[hot]).reason,'volume-text-unproven');
+});

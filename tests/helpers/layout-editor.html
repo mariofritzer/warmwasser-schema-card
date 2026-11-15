@@ -44,6 +44,12 @@
       let config, hass, editor, enabledWp;
       const copy = value => JSON.parse(JSON.stringify(value));
       const output = document.getElementById('config'), result = document.getElementById('result');
+      const realTextStage=stageLegacyHeatingTextCandidate;
+      stageLegacyHeatingTextCandidate=async (...args)=>{
+        const checked=await realTextStage(...args);
+        result.textContent+=` | stage: ${checked.reason}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}`;
+        return checked;
+      };
       function install(nextConfig) {
         config = copy(nextConfig);
         const host = document.getElementById('editor'); host.replaceChildren();

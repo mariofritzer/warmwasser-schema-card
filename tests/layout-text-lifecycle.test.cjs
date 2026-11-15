@@ -16,7 +16,7 @@ function fixture(kind='card') {
   const view={AbortController,MutationObserver:Mutation,ResizeObserver:Resize};
   const doc={fonts,defaultView:view,head:null,createElement:()=>({content:{querySelectorAll:()=>[{outerHTML:'<svg></svg>'}]},set innerHTML(v){doc.lastHTML=v;}})};
   const host={isConnected:true,parentElement:null,ownerDocument:doc,getRootNode:()=>({}),getBoundingClientRect(){return {width:this.width,height:100};},width:200};
-  const root={host,querySelectorAll:()=>[]},parent={isConnected:true,ownerDocument:doc,getRootNode:()=>root};
+  const root={host,querySelectorAll:()=>[]},parent={isConnected:true,ownerDocument:doc,getRootNode:()=>root,querySelector:()=>({})};
   const card=new (registry.get('warmwasser-schema-card'))();card.isConnected=true;card._cfg={sprache:'en'};card._ents=['sensor.a'];card._hass={language:'en',states:{}};card._box=parent;card._update=()=>{};card._layoutFeatureEnabled=()=>true;
   const owner=kind==='card'?card:new (registry.get('warmwasser-schema-card-editor'))();
   if(kind==='editor') {owner.isConnected=true;owner._config={};owner._hass=card._hass;owner._layoutPanel={previewRoot:parent,apply:{disabled:false},status:{textContent:''}};owner._layoutDraft={history:[{version:2}],index:0};}
@@ -37,6 +37,22 @@ test('real Editor preflight of an unsafe volume becomes pending, never a rendere
   await Promise.resolve();assert.equal(f.calls.length,1);
   f.owner._editLayoutDraft({version:2,components:{}},false);
   assert.equal(f.calls[0].signal.aborted,true);
+});
+test('real pending Editor path rejects a measured volume overflow and keeps a fitting label unapproved',async()=>{
+  for(const [value,width,expected] of [['W'.repeat(80),400,/does not fit/],[500,24,/not complete/]]) {
+    const f=fixture('editor'),raw={speicher:{typ:'schicht',volumen:value},fm:{pumpe:'sensor.fm'}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    const {x,y}=c._model.components.fm.origin,layout={version:2,components:{fm:{x:x+30,y:y+15}}};
+    const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};
+    f.owner._config=raw;f.owner._hass=hass;
+    setStage(async()=>({reason:'text-stage-style-and-paint-validation-required',textStyleParity:'translated-text-only',textRecords:[{
+      text:`${value} l`,x:'137',y:'338',className:'wc wt wo',matrix:{a:1,b:0,c:0,d:1,e:0,f:0},
+      box:{x:125,y:329,width,height:10}}]}));
+    assert.equal(preflight(raw,layout,hass,f.owner).status,'pending');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(f.owner._layoutPanel.status.textContent,expected);
+    assert.equal(f.owner._layoutPanel.apply.disabled,true);
+  }
 });
 test('real Card preparation stays pending and setConfig aborts it',async()=>{
   const f=fixture(),raw={speicher:{typ:'schicht',volumen:'W'.repeat(80)},fm:{pumpe:'sensor.fm'}};

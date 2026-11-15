@@ -5,25 +5,31 @@ const registry=new Map(), context={HTMLElement:class{},customElements:{get:n=>re
 let source=fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8');
 source=source.replace('function resolveLayoutCandidate(rawConfig, config, layout) {','function resolveLayoutCandidate(rawConfig, config, layout) { globalThis.resolves++;');
 source=source.replace('function routeDiagramConnections(model, ids, options = {}) {','function routeDiagramConnections(model, ids, options = {}) { globalThis.routes++;');
-vm.runInNewContext(source+'\nglobalThis.preflight=preflightLayoutRender; globalThis.key=layoutGeometryKey; globalThis.cached=cachedLayoutCandidate; globalThis.resolves=0; globalThis.routes=0;',context);
+vm.runInNewContext(source+'\nglobalThis.preflight=preflightLayoutRender; globalThis.key=layoutGeometryKey; globalThis.cached=cachedLayoutCandidate; globalThis.resolves=0; globalThis.routes=0;globalThis.renderGeometry=(card,candidate,hass)=>{const model=card._model,old=card._hass;try{card._model=candidate.model;card._hass=hass;layoutRenderRoutes.set(card,candidate);return card._render();}finally{layoutRenderRoutes.delete(card);card._model=model;card._hass=old;}};',context);
 const raw={speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm',temp:'sensor.temp'},wp:{typ:'luft',betrieb:'sensor.wp',ventil:'sensor.valve'}};
 const layout={version:2,components:{fm:{x:400,y:29}},ports:Object.fromEntries(['tank.fm-supply','fm.supply','tank.wp-supply','buffer.lower-supply','wp.lower-supply'].map(id=>[id,{mode:'auto'}]))};
 const state=value=>({language:'de',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:value},'sensor.wp':{state:'on'},'sensor.valve':{state:'100'}}});
 test('preflight reuses geometry on state-only changes but rechecks live labels and paint',()=>{
   const owner={}, first=context.preflight(raw,layout,state('40'),owner);
-  assert.equal(first.status,'rendered-candidate',JSON.stringify(first.errors));
+  assert.equal(first.status,'unsupported',JSON.stringify(first.errors));assert.equal(first.errors[0].code,'text-measurement-unavailable');
   const firstRoutes=context.routes; assert.equal(context.resolves,1); assert.ok(firstRoutes>1);
   const second=context.preflight(raw,layout,state('41'),owner);
-  assert.equal(second.status,'rendered-candidate'); assert.equal(context.resolves,1); assert.equal(context.routes,firstRoutes);
+  assert.equal(second.status,'unsupported'); assert.equal(context.resolves,1); assert.equal(context.routes,firstRoutes);
+  const card=new (registry.get('warmwasser-schema-card'))();card.setConfig(raw);
+  const firstCandidate=context.cached(owner,raw,card._cfg,layout),secondCandidate=context.cached(owner,raw,card._cfg,layout);
+  assert.equal(firstCandidate,secondCandidate);assert.equal(context.resolves,1);
+  const firstHtml=context.renderGeometry(card,firstCandidate,state('41'));
+  assert.equal(firstHtml,context.renderGeometry(card,secondCandidate,state('41')));
+  for(const route of Object.values(firstCandidate.routes))for(const layer of ['w0','w1','w2'])assert.ok(firstHtml.includes(`<path d="${route.path}" class="${layer}"`));
   const fresh=context.preflight(raw,layout,state('41'));
-  assert.equal(second.html,fresh.html); assert.equal(context.resolves,2);
+  assert.equal(fresh.status,'unsupported'); assert.equal(context.resolves,2);
   const rejected=context.preflight(raw,layout,state('1000000000'),owner);
   assert.equal(rejected.status,'unsupported'); assert.equal(rejected.errors[0].code,'label-overflow'); assert.equal(rejected.html,undefined);
   assert.equal(context.resolves,2);
 });
 test('layout and configuration changes invalidate the owner cache',()=>{
   const owner={},base=context.resolves;
-  assert.equal(context.preflight(raw,layout,state('40'),owner).status,'rendered-candidate');
+  assert.equal(context.preflight(raw,layout,state('40'),owner).status,'unsupported');
   const changed={...layout,components:{fm:{x:401,y:29}}};
   context.preflight(raw,changed,state('40'),owner); assert.equal(context.resolves,base+2);
   context.preflight({...raw,farbe:'ignored-change'},changed,state('40'),owner); assert.equal(context.resolves,base+3);
@@ -43,17 +49,17 @@ test('mutating a cached model or route forces fresh geometry',()=>{
   const third=context.cached(owner,raw,c._cfg,layout); assert.equal(context.resolves,start+3);
   assert.notEqual(third.routes['fm-supply'].points[0].x,second.routes['fm-supply'].points[0].x);
 });
-test('card live updates reuse safe geometry and rerun live label checks',()=>{
+test('card live updates reuse geometry but keep unmeasured separated labels closed',()=>{
   const c=new (registry.get('warmwasser-schema-card'))();
   c._init=()=>{c._box={get innerHTML(){return this.html||'';},set innerHTML(value){this.html=value;},replaceChildren(content){this.html=content.html;}};};
   c._layoutFeatureEnabled=()=>true; c.setConfig({...raw,layout});
   const start=context.resolves; c.hass=state('40');
-  assert.equal(c._layoutStatus.status,'rendered-candidate'); assert.equal(context.resolves,start+1);
+  assert.equal(c._layoutStatus.status,'unsupported'); assert.equal(context.resolves,start+1);
   const firstRoutes=context.routes; c.hass=state('41');
   assert.equal(context.resolves,start+1); assert.equal(context.routes,firstRoutes);
   c._model.components.fm.origin.x+=13; c.hass=state('42');
-  assert.equal(context.resolves,start+2); assert.equal(c._model.components.fm.origin.x,400);
+  assert.equal(context.resolves,start+1); assert.notEqual(c._model.components.fm.origin.x,400);
   c.hass=state('1000000000'); assert.equal(c._layoutStatus.errors[0].code,'label-overflow');
-  assert.equal(context.resolves,start+2);
-  c.setConfig({...raw,titel:'different',layout}); assert.equal(context.resolves,start+3);
+  assert.equal(context.resolves,start+1);
+  c.setConfig({...raw,titel:'different',layout}); assert.equal(context.resolves,start+2);
 });
