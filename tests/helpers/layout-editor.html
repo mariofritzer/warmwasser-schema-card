@@ -60,6 +60,7 @@
           before:{width:before.width,height:before.height},after:{width:after.width,height:after.height}});
       };
       const realTextStage=stageLegacyHeatingTextCandidate;
+      const targetProbes=[];
       const realTextInventory=inspectMeasuredLayoutTexts;
       const realShadowPolicy=inspectLayoutShadowPolicy;
       const realTargetReferences=inspectLayoutTargetReferences;
@@ -92,8 +93,13 @@
       };
       stageLegacyHeatingTextCandidate=async (...args)=>{
         const checked=await realTextStage(...args);
-        result.textContent+=` | stage: ${checked.reason}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}${checked.symbolStrokeProof ? ` ${checked.symbolStrokeProof.reason}` : ''}${checked.pipeStrokeProof ? ` ${checked.pipeStrokeProof.reason}` : ''}`;
+        const stageOwner=args[0]?.getRootNode()?.host?.localName;
+        result.textContent+=` | stage: ${checked.reason}${checked.detail?` ${JSON.stringify(checked.detail)}`:''}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}${checked.symbolStrokeProof ? ` ${checked.symbolStrokeProof.reason}` : ''}${checked.pipeStrokeProof ? ` ${checked.pipeStrokeProof.reason}` : ''}${checked.ambientPaintProof ? ` ${checked.ambientPaintProof.reason}` : ''}`;
         if (checked.held) result.textContent+=` | held: ${checked.held.validate()?'fresh':checked.held.reason}${checked.held.detail?` ${JSON.stringify(checked.held.detail)}`:''}`;
+        if (checked.held?.probe) {const realProbe=checked.held.probe;checked.held.probe=(...args)=>{
+          const checkedProbe=realProbe(...args);targetProbes.push({owner:stageOwner,status:checkedProbe.status});
+          result.textContent+=` | target probe: ${checkedProbe.status} ${checkedProbe.reason||''}`;return checkedProbe;
+        };}
         return checked;
       };
       function install(nextConfig) {
@@ -211,6 +217,7 @@
       document.getElementById('viewport-real').addEventListener('click', async()=>{
         let container;
         try {
+          targetProbes.length=0;
           volume(500);
           const draft=copy(editor._layoutDraft.history[editor._layoutDraft.index]);
           const saved={...copy(config),layout:draft};
@@ -219,6 +226,9 @@
             container.replaceChildren(card);card.setConfig(copy(saved));card.hass=hass;return card;};
           let card=mount();const observations=[];
           const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          await frame();
+          if(!['div','warmwasser-schema-card'].every(owner=>targetProbes.some(p=>p.owner===owner && p.status==='validated-target-probe')))
+            throw new Error(`separate editor/card target probes not proven: ${JSON.stringify(targetProbes)}`);
           for(const width of [320,420,320,420]) {
             container.style.width=`${width}px`;editor._layoutPanel.viewport.style.width=`${width}px`;await frame();
             const hosts=[card.shadowRoot.querySelector('[data-layout-viewport]'),editor._layoutPanel.previewRoot.querySelector('[data-layout-viewport]')];

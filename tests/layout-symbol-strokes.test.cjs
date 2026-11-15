@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const context={HTMLElement:class{},customElements:{get(){},define(){}},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.inspect=inspectStagedLayoutSymbolStrokes;globalThis.inspectPipes=inspectStagedLayoutPipeStrokes;',context);
+  '\nglobalThis.inspect=inspectStagedLayoutSymbolStrokes;globalThis.inspectPipes=inspectStagedLayoutPipeStrokes;globalThis.inspectAmbient=inspectStagedLayoutAmbientPaint;',context);
 function fixture() {
   const shape=(localName,attrs,stroke,width)=>({localName,getAttribute:name=>attrs[name]??null,style:{stroke,strokeWidth:width,vectorEffect:'none'}});
   const drop=shape('path',{d:'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'},'none','1px');
@@ -53,4 +53,28 @@ test('pipe and stub stroke envelopes reject wider, missing and non-scaling style
   assert.equal(context.inspectPipes(svg).reason,'layout-pipe-stroke-unproven');
   paths[0].getScreenCTM=()=>matrix;paths.push(element('w0 wx',10));
   assert.equal(context.inspectPipes(svg).reason,'layout-pipe-stroke-unproven');
+});
+test('ambient paint rejects inherited stroke and oversized implicit widths',()=>{
+  const effects={markerStart:'none',markerMid:'none',markerEnd:'none',clipPath:'none',mask:'none',mixBlendMode:'normal',filter:'none',opacity:'1',isolation:'auto',backdropFilter:'none'};
+  const attrs={},shape={localName:'rect',getAttribute:name=>attrs[name]??null,closest:()=>null,
+    style:{getPropertyValue:()=>''},computed:{...effects,stroke:'none',strokeWidth:'1px',vectorEffect:'none'}};
+  const svg={isConnected:true,computed:{...effects},ownerDocument:{defaultView:{getComputedStyle:el=>el.computed}},querySelectorAll:()=>[shape],
+    querySelector:()=>({localName:'filter'})};shape.parentElement=svg;
+  assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-bound-only');
+  shape.computed.markerStart='url(#evil)';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  shape.computed.markerStart='none';svg.computed.clipPath='url(#evil)';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  svg.computed.clipPath='none';
+  const host={computed:{...effects,mixBlendMode:'multiply'},parentElement:null};svg.getRootNode=()=>({host});
+  assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  host.computed.mixBlendMode='normal';host.computed.opacity='.5';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  host.computed.opacity='1';host.computed.backdropFilter='blur(3px)';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  host.computed.backdropFilter='none';shape.computed.filter='url("#ww-text-stage-1")';attrs.filter='url(#ww-text-stage-1)';
+  assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-bound-only');
+  shape.computed.filter='url("#foreign")';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  shape.computed.filter='none';delete attrs.filter;
+  shape.computed.stroke='red';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  attrs.stroke='#fff';shape.computed.strokeWidth='100px';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+  shape.computed.strokeWidth='1px';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-bound-only');
+  attrs['stroke-width']='2';shape.computed.strokeWidth='2px';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-bound-only');
+  shape.computed.strokeWidth='10%';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
 });

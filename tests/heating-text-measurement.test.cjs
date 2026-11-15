@@ -5,7 +5,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const context={HTMLElement:class {},customElements:{get(){},define(){}},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={transformMeasuredTextBox,checkMeasuredTextReserve,measureLegacyHeatingSvgText,stageLegacyHeatingTextCandidate,namespaceLegacyHeatingSvgIds};',context);
+  '\nglobalThis.api={transformMeasuredTextBox,checkMeasuredTextReserve,measureLegacyHeatingSvgText,stageLegacyHeatingTextCandidate,namespaceLegacyHeatingSvgIds,setTargetCheck:fn=>{const old=inspectLayoutTargetReferences;inspectLayoutTargetReferences=fn;return old;}};',context);
 const {transformMeasuredTextBox:transform,checkMeasuredTextReserve:checkRaw,measureLegacyHeatingSvgText:measure,stageLegacyHeatingTextCandidate:stage,namespaceLegacyHeatingSvgIds:namespace}=context.api;
 const check=(a,b)=>checkRaw(a,b,'theme-1');
 const identity={a:1,b:0,c:0,d:1,e:0,f:0};
@@ -102,15 +102,20 @@ test('a later stale entry invalidates the whole inventory before reporting overf
 function stagingFixture() {
   const f=fixture(), doc=f.svg.ownerDocument, host={isConnected:true,parentElement:null,getRootNode:()=>({})};
   const root={host,querySelectorAll:()=>[]};
-  const parent={nodeType:1,isConnected:true,ownerDocument:doc,parentElement:null,getRootNode:()=>root,append(element){element.isConnected=true;element.parentElement=this;element.parentNode=this;this.child=element;}};
+  const parent={nodeType:1,isConnected:true,ownerDocument:doc,parentElement:null,getRootNode:()=>root,
+    append(element){element.isConnected=true;element.parentElement=this;element.parentNode=this;if(element.child)element.child.isConnected=true;this.child=element;},
+    removeChild(element){element.isConnected=false;element.parentNode=null;element.parentElement=null;return element;},
+    insertBefore(element){element.isConnected=true;element.parentNode=this;element.parentElement=this;this.lastInserted=element;return element;}};
   f.svg.localName='svg'; f.svg.namespaceURI='http://www.w3.org/2000/svg'; f.svg.id=''; f.svg.attributes=[];
   f.svg.getRootNode=()=>root;
   f.svg.querySelectorAll=selector=>selector==='[id]'?[]:[f.node];
   f.node.localName='text'; f.node.namespaceURI='http://www.w3.org/2000/svg'; f.node.id=''; f.node.attributes=[];
   let removed=false;
   doc.createElement=name=>{
-    if(name==='template') return {content:{children:[f.svg],childNodes:[f.svg]},set innerHTML(value){this.value=value;}};
-    return {style:{},setAttribute(){},append(svg){svg.parentElement=this;svg.parentNode=this;},remove(){removed=true;this.isConnected=false;}};
+    if(name==='template') {f.svg.isConnected=false;return {content:{children:[f.svg],childNodes:[f.svg]},set innerHTML(value){this.value=value;}};}
+    return {style:{},setAttribute(){},append(svg){this.child=svg;svg.isConnected=true;svg.parentElement=this;svg.parentNode=this;},
+      removeChild(svg){this.child=null;svg.isConnected=false;svg.parentNode=null;svg.parentElement=null;return svg;},
+      remove(){removed=true;this.isConnected=false;if(this.child)this.child.isConnected=false;}};
   };
   return {...f,parent,root,removed:()=>removed};
 }
@@ -245,6 +250,61 @@ test('candidate and reference mutations during font wait cannot become a new bas
     assert.equal(result.reason,'text-stage-invalidated',target);assert.equal(result.held,undefined,target);assert.equal(f.removed(),true,target);
   }
 });
+test('target probe uses the measured node once and rolls back on success or failure',async()=>{
+  const originalTargetCheck=context.api.setTargetCheck(()=>({reason:'layout-target-references-bound-only'}));
+  try {for(const outcome of ['accept','reject','throw','stale','mutate','reparent','reference-mutated','new-owner','clone-replaces-owner']) {
+    const f=stagingFixture();f.ready();f.style.height='150px';f.svg.style={};f.svg.outerHTML='<svg/>';
+    f.svg.ownerDocument.defaultView.MutationObserver=class {observe(){}takeRecords(){return [];}disconnect(){}};
+    f.node.getAttribute=name=>({x:'137',y:'338',class:'wc wt wo'})[name];
+    const reference={...f.svg,parentNode:f.parent,parentElement:f.parent,isConnected:true},text={...f.node};
+    text.parentElement=reference;reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+    reference.cloneNode=function(){return {...this,outerHTML:this.outerHTML,parentNode:null,parentElement:null,isConnected:false};};
+    const shape=(name,attrs,stroke,width)=>({localName:name,getAttribute:k=>attrs[k]??null,getScreenCTM:()=>identity,
+      computed:{stroke,strokeWidth:width,vectorEffect:'none',strokeLinecap:'round',strokeLinejoin:'round'}});
+    const drop=shape('path',{d:'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'},'none','1px');
+    const arrows=[shape('path',{class:'wa'},'white','1.6px'),shape('path',{class:'wa'},'white','1.6px')];
+    const paths=['w0','w1','w2'].flatMap((cl,i)=>Array.from({length:4},()=>shape('path',{class:cl},'red',['10px','7px','2px'][i])));
+    const stubs=Array.from({length:6},()=>shape('rect',{class:'wk'},'black','.8px'));
+    f.svg.ownerDocument.defaultView.getComputedStyle=el=>el.computed||f.style;
+    let rogueRemovals=0;
+    f.svg.remove=function(){if(this.parentNode?.removeChild)this.parentNode.removeChild(this);else {this.parentNode=null;this.isConnected=false;}};
+    f.svg.querySelectorAll=selector=>selector==='[id]'?[]:selector==='*'?[f.node]:selector==='text'?[f.node]
+      :selector==='path,circle'?[drop,...arrows,...paths]:selector==='path'?[drop,...arrows,...paths]
+      :selector==='rect'?stubs:selector==='[class]'?[...arrows,...paths,...stubs]:[];
+    let fresh=true,owner=true;const replacement={isConnected:false};
+    const staged=await stage(f.parent,'<svg></svg>','theme-1',1,()=>fresh,reference,undefined,true,'independent',true,true,()=>owner);
+    assert.ok(staged.held);let calls=0,referenceRemovals=0;
+    const removeChild=f.parent.removeChild;
+    f.parent.removeChild=function(node){if(node===reference)referenceRemovals++;return removeChild.call(this,node);};
+    if(outcome==='clone-replaces-owner') {
+      const clone=reference.cloneNode;
+      reference.cloneNode=function(){const backup=clone.call(this);assert.equal(this.isConnected,true);owner=false;fresh=false;return backup;};
+    }
+    const result=staged.held.probe((node,records)=>{
+      calls++;assert.equal(node,f.svg);assert.equal(records.length,1);
+      assert.equal(staged.held.probe(()=>true).status,'unsupported');
+      if(outcome==='throw')throw Error('reentrant failure');
+      if(outcome==='stale')fresh=false;
+      if(outcome==='mutate')node.outerHTML='<svg><path d="M0 0H999"/></svg>';
+      if(outcome==='reference-mutated')reference.outerHTML='<svg><path fill="red"/></svg>';
+      if(outcome==='new-owner') {owner=false;fresh=false;f.parent.insertBefore(replacement,null);}
+      if(outcome==='reparent') {
+        node.parentNode={removeChild(child){rogueRemovals++;child.parentNode=null;child.isConnected=false;}};
+        throw Error('reparented');
+      }
+      return outcome!=='reject';
+    });
+    assert.equal(result.status,outcome==='accept'?'validated-target-probe':'unsupported');
+    assert.equal(calls,outcome==='clone-replaces-owner'?0:1);
+    if(outcome==='clone-replaces-owner') {assert.equal(referenceRemovals,0);staged.held.release();}
+    if(outcome==='reference-mutated') {assert.notEqual(f.parent.lastInserted,reference);assert.equal(f.parent.lastInserted.outerHTML,'<svg/>');}
+    else if(outcome==='new-owner') {assert.equal(f.parent.lastInserted,replacement);assert.equal(reference.isConnected,false);}
+    else {assert.equal(reference.parentNode,f.parent);assert.equal(reference.isConnected,true);}
+    assert.equal(f.svg.isConnected,false);
+    if(outcome==='reparent')assert.equal(rogueRemovals,1);
+    assert.equal(staged.held.probe(()=>true).status,'unsupported');
+  }} finally {context.api.setTargetCheck(originalTargetCheck);}
+});
 test('screen transform changes after stage cleanup invalidate parity',async()=>{
   const f=stagingFixture();f.ready();
   const reference={...f.svg,parentNode:f.parent,parentElement:f.parent,
@@ -291,11 +351,23 @@ test('staging namespaces only local references and rejects ambiguous or active S
   const def=element('linearGradient',{id:'shared'}), path=element('path',{style:'fill:url(#shared)',href:'#shared'});
   const svg=element('svg'); svg.querySelectorAll=()=>[def,path];
   const root={querySelectorAll:()=>[{id:'shared'}]};
-  assert.equal(namespace(svg,root).status,'prepared');
+  svg.isConnected=true;assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');svg.isConnected=false;
+  const prepared=namespace(svg,root);assert.equal(prepared.status,'prepared');
   assert.notEqual(def.id,'shared');
   assert.equal(path.attributes.find(a=>a.name==='href').value,'#'+def.id);
   assert.equal(path.attributes.find(a=>a.name==='style').value,'fill:url(#'+def.id+')');
+  svg.isConnected=true;assert.equal(prepared.restore().reason,'text-stage-restore-unavailable');
+  svg.isConnected=false;assert.equal(prepared.restore().reason,'text-stage-restore-id-conflict');
+  assert.equal(prepared.restore(root).reason,'text-stage-restore-id-conflict');
+  assert.equal(prepared.restore({querySelectorAll:()=>[]}).status,'restored');
+  assert.equal(def.id,'shared');assert.equal(path.attributes.find(a=>a.name==='href').value,'#shared');
+  assert.equal(path.attributes.find(a=>a.name==='style').value,'fill:url(#shared)');
+  assert.equal(prepared.restore().reason,'text-stage-restore-unavailable');
+  const changed=namespace(svg,root);assert.equal(changed.status,'prepared');
+  const namespacedId=def.id;
   path.attributes.find(a=>a.name==='href').value='#external';
+  assert.equal(changed.restore({querySelectorAll:()=>[]}).reason,'text-stage-restore-invalidated');
+  assert.equal(def.id,namespacedId);
   assert.equal(namespace(svg,root).reason,'text-stage-unresolved-reference');
   path.localName='set';
   assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');

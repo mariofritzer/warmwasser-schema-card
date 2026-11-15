@@ -93,7 +93,7 @@ test('shadow policy binds each rendered filter and exact model region but never 
 });
 test('visible droplet, rotating fan, LED and domestic arrows exclude text boxes',()=>{
   const {c,candidate,records}=fixture(),html=renderGeometry(c,candidate),result=symbols(c,candidate,records,html);
-  assert.equal(result.reason,'layout-symbol-paint-bound-only');assert.equal(result.symbols.length,5);
+  assert.equal(result.reason,'layout-symbol-paint-bound-only');assert.equal(result.symbols.length,7);
   for(const icon of result.symbols) {
     const changed=records.map(r=>({...r,box:{...r.box}}));
     changed[0].box={x:icon.x,y:icon.y,width:1,height:1};

@@ -6,7 +6,13 @@ const vm=require('node:vm');
 const registry=new Map();
 const context={HTMLElement:class {},AbortController,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={layoutCandidateViewport,renderLayoutViewport,requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,setStage:fn=>{stageLegacyHeatingTextCandidate=fn;}};',context);
+  `\nglobalThis.api={layoutCandidateViewport,renderLayoutViewport,requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,
+    setStage:fn=>{stageLegacyHeatingTextCandidate=fn;},setJob:(owner,job)=>layoutTextMeasurementJobs.set(owner,job),getJob:owner=>layoutTextMeasurementJobs.get(owner),
+    stubFinishChecks:()=>{const old=[inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutTargetReferences,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectMeasuredVolumeSlots];
+      inspectMeasuredLayoutTexts=()=>({reason:'text-inventory-staged-only'});inspectLayoutShadowPolicy=()=>({reason:'layout-shadow-policy-bound-only'});
+      inspectLayoutTargetReferences=()=>({reason:'layout-target-references-bound-only'});inspectLayoutSymbolPaint=()=>({reason:'layout-symbol-paint-bound-only'});
+      inspectLayoutPipePaint=()=>({reason:'layout-pipe-paint-bound-only'});inspectMeasuredVolumeSlots=()=>({reason:'volume-slots-staged-only'});
+      return ()=>{[inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutTargetReferences,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectMeasuredVolumeSlots]=old;};}};`,context);
 const {layoutCandidateViewport:viewport,renderLayoutViewport:renderViewport,requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
 test('viewport contract rejects malformed, unrepresentable and degenerate dimensions',()=>{
   const parse=value=>viewport({getAttribute:()=>value});
@@ -48,7 +54,7 @@ function fixture(kind='card') {
   setStage((_parent,_html,_key,_generation,_current,_reference,signal)=>new Promise(resolve=>{
     calls.push({signal,resolve});signal.addEventListener('abort',()=>resolve({reason:'text-stage-invalidated'}),{once:true});
   }));
-  return {owner,card,parent,host,doc,handlers,mutations,resizes,calls,reference};
+  return {owner,card,parent,slot,host,doc,handlers,mutations,resizes,calls,reference};
 }
 test('both owners expose the candidate viewport without changing the visible fallback',async()=>{
   for(const kind of ['card','editor']) {
@@ -131,6 +137,19 @@ test('late connected evidence is released when its owner is invalidated',async()
   await new Promise(resolve=>setImmediate(resolve));assert.equal(releases,1);
   assert.equal(f.owner._layoutPanel.apply.disabled,true);
 });
+test('editor and card own independent pending candidates and cancellation',async()=>{
+  const editor=fixture('editor'),card=fixture('card'),pending=new Map();
+  setStage((parent,_html,_key,_generation,_current,_reference,signal)=>new Promise(resolve=>{
+    pending.set(parent,{signal,resolve});signal.addEventListener('abort',()=>resolve({reason:'text-stage-invalidated'}),{once:true});
+  }));
+  assert.equal(request(editor.owner,editor.card,'editor-candidate').status,'pending');
+  assert.equal(request(card.owner,card.card,'card-candidate').status,'pending');
+  await Promise.resolve();
+  const editorSignal=pending.get(editor.slot).signal,cardSignal=pending.get(card.slot).signal;
+  editor.handlers.get('loading')();assert.equal(editorSignal.aborted,true);assert.equal(cardSignal.aborted,false);
+  card.card.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+  assert.equal(cardSignal.aborted,true);
+});
 test('connected evidence is rechecked after inspection and always released',async()=>{
   const f=fixture('editor');let validations=0,releases=0;
   f.card.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
@@ -140,6 +159,19 @@ test('connected evidence is rechecked after inspection and always released',asyn
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(validations,2);assert.equal(releases,1);assert.equal(f.owner._layoutPanel.apply.disabled,true);
   assert.match(f.owner._layoutPanel.status.textContent,/not complete/);
+});
+test('reentrant target probe cannot delete or overwrite a replacement owner job',async()=>{
+  const f=fixture('editor'),restoreChecks=context.api.stubFinishChecks(),replacement={pending:true};let releases=0;
+  try {
+    f.card.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+    f.owner._layoutPanel.status.textContent='new job untouched';f.owner._layoutPanel.apply.disabled=false;
+    setStage(async()=>({textStyleParity:'independent-text-measurements-only',textRecords:[],referenceTextRecords:[],
+      symbolStrokeProof:{reason:'layout-symbol-strokes-bound-only'},pipeStrokeProof:{reason:'layout-pipe-strokes-bound-only'},
+      held:{validate:()=>true,probe:()=>{context.api.setJob(f.owner,replacement);return {status:'unsupported'};},release:()=>{releases++;}}}));
+    assert.equal(request(f.owner,f.card,'candidate').status,'pending');await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(context.api.getJob(f.owner),replacement);assert.equal(f.owner._layoutPanel.status.textContent,'new job untouched');
+    assert.equal(f.owner._layoutPanel.apply.disabled,false);assert.equal(releases,1);
+  } finally {restoreChecks();}
 });
 test('real pending Editor path rejects a measured volume overflow and keeps a fitting label unapproved',async()=>{
   for(const [value,width,expected] of [['W'.repeat(80),400,/does not fit/],[500,24,/not complete/]]) {
