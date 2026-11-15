@@ -1448,6 +1448,54 @@ function checkLegacyHeatingBridgeBatch(prepared, routes, options = {}) {
   return {status:'clear', localBridge:proof.localBridge};
 }
 
+// Bound just the named model bodies. Port escapes are limited to the first or
+// last straight segment, whose outward direction the caller has already checked.
+// Text, filters and decorations require separate coverage before rendering.
+function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localBridge, options = {}) {
+  const unsupported = reason => ({status:'unsupported',reason});
+  const ids=['tank','tank-feet','wp','valve','heating-circuit-0'];
+  const bodies=[];
+  for (const id of ids) {
+    const c=model.components[id], b=c && c.bounds, o=c && c.origin;
+    if (!b || !o || ![o.x,o.y,b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<0 || b.height<0)
+      return unsupported('invalid-model-body');
+    const box={id,x:o.x+b.x,y:o.y+b.y,width:b.width,height:b.height};
+    if (![box.x,box.y,box.x+box.width,box.y+box.height].every(Number.isFinite)) return unsupported('invalid-model-body');
+    bodies.push(box);
+  }
+  const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+  if (prepared.rails.some(r=>r.areas.some(a=>bodies.some(b=>hit(a,b))))) return unsupported('model-body-rail-contact');
+  if (!localBridge || !localBridge.envelope || bodies.some(b=>hit(localBridge.envelope,b))) return unsupported('model-body-bridge-contact');
+  const half=options.halfWidth ?? 5, radius=options.radius ?? 8, bridge=options.bridgeRadius ?? 6;
+  const finiteBox=b=>[b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite);
+  for (const route of routes) {
+    const edge=model.connections[route.id];
+    const owner=ref=>ref.includes('.') ? ref.slice(0,ref.lastIndexOf('.')) : null;
+    const from=owner(edge.from), to=owner(edge.to);
+    for (let i=0;i<route.points.length-1;i++) {
+      const a=route.points[i], b=route.points[i+1];
+      const box={x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
+        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half};
+      if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
+      const collision=bodies.find(body=>hit(box,body) && !(i===0 && body.id===from) && !(i===route.points.length-2 && body.id===to));
+      if (collision) return {status:'unsupported',reason:'model-body-line-contact',connectionId:route.id,bodyId:collision.id,segment:i};
+    }
+    for (let i=1;i<route.points.length-1;i++) {
+      const p=route.points[i], extent=radius+half;
+      const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
+      if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
+      if (bodies.some(body=>hit(box,body))) return unsupported('model-body-corner-contact');
+    }
+  }
+  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
+    const p=crossing.point, extent=bridge+half;
+    const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
+    if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
+    if (bodies.some(body=>hit(box,body))) return unsupported('model-body-bridge-contact');
+  }
+  return {status:'clear'};
+}
+
 // Bind the complete canonical WP/one-circuit inventory to one model before
 // invoking the shared geometry checker. A clear geometry result alone is not
 // permission to render: paint order and animated paths still need validation.
@@ -1484,8 +1532,15 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
     };
     if (Object.entries(upperPorts).some(([ref,[direction,role]]) => {
       const [id,name] = ref.split('.'), c = model.components[id], p = c && c.ports[name];
-      return !p || p.id !== name || p.medium !== 'heating-water' || p.direction !== direction || p.role !== role ||
-        !Number.isFinite(c.origin.x+p.x) || !Number.isFinite(c.origin.y+p.y);
+      const b=c && c.bounds;
+      if (!p || !b || p.id !== name || p.medium !== 'heating-water' || p.direction !== direction || p.role !== role ||
+          ![p.x,p.y,b.x,b.y,b.width,b.height,c.origin.x,c.origin.y].every(Number.isFinite)) return true;
+      // An owner exception is allowed only at a port close to its declared
+      // boundary, with the tangential coordinate inside that boundary.
+      const tangent=direction==='left'||direction==='right' ? p.y>=b.y && p.y<=b.y+b.height : p.x>=b.x && p.x<=b.x+b.width;
+      const edge=direction==='left'?b.x:direction==='right'?b.x+b.width:direction==='top'?b.y:b.y+b.height;
+      const normal=direction==='left'||direction==='right'?p.x:p.y;
+      return !tangent || Math.abs(normal-edge)>10;
     })) return unsupported('unproven-port-geometry');
     if (!Array.isArray(routes) || routes.length !== ordinary.length ||
         ordinary.some(id => routes.filter(r => r && r.id === id).length !== 1))
@@ -1528,9 +1583,13 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
       if (vertex<0 || !adjacent || !outward(route.points[vertex],adjacent,leg.side))
         return unsupported('unproven-junction-incidence');
     }
+    const compiled=compileDirectedJunctionBatch(routes,options);
+    if (compiled.status!=='routed') return compiled;
+    const bodyCheck=checkLegacyHeatingModelBodies(model,prepared,routes,compiled,checked.localBridge,options);
+    if (bodyCheck.status!=='clear') return bodyCheck;
     // The supplied policy is not yet derived from all model bodies, labels and
     // decorations. No rendering clearance can be inferred from this result.
-    return {status:'unsupported', reason:'heating-obstacle-and-paint-validation-required',
+    return {status:'unsupported', reason:'heating-decorations-and-paint-validation-required',
       inventory:{ordinary:[...ordinary],rails:[...rails]}, localBridge:checked.localBridge};
   } catch (_) { return unsupported('unproven-connection-inventory'); }
 }
@@ -3163,7 +3222,63 @@ const aufraeumen = (o) => {
 };
 
 class WarmwasserSchemaCardEditor extends HTMLElement {
+  // Private editor state only. No UI consumes these methods yet.
+  _beginLayoutDraft() {
+    let initial;
+    try { initial = snapshotLayout(Object.prototype.hasOwnProperty.call(this._config, 'layout') ? this._config.layout : { version: 2 }); }
+    catch (_) { initial = null; }
+    this._layoutDraft = { history: [initial], index: 0 };
+    return this._layoutDraftState();
+  }
+
+  _layoutDraftState() {
+    if (!this._layoutDraft) return null;
+    const { history, index } = this._layoutDraft, layout = history[index];
+    const checked = preflightLayoutRender(this._config, layout, this._hass);
+    return { layout, canUndo: index > 0, canRedo: index + 1 < history.length,
+      status: checked.status, errors: checked.errors || [] };
+  }
+
+  _editLayoutDraft(layout) {
+    if (!this._layoutDraft) this._beginLayoutDraft();
+    let next;
+    try { next = snapshotLayout(layout); }
+    catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-layout', path: 'layout' }] }; }
+    const draft = this._layoutDraft;
+    draft.history = [...draft.history.slice(0, draft.index + 1), next];
+    draft.index++;
+    return this._layoutDraftState();
+  }
+
+  _undoLayoutDraft() {
+    if (!this._layoutDraft) return null;
+    if (this._layoutDraft.index > 0) this._layoutDraft.index--;
+    return this._layoutDraftState();
+  }
+
+  _redoLayoutDraft() {
+    if (!this._layoutDraft) return null;
+    if (this._layoutDraft.index + 1 < this._layoutDraft.history.length) this._layoutDraft.index++;
+    return this._layoutDraftState();
+  }
+
+  _applyLayoutDraft() {
+    const state = this._layoutDraftState();
+    if (!state || state.status !== 'rendered-candidate') return state;
+    // Give the emitted configuration its own mutable data, separate from the
+    // frozen history. A successful apply is the only draft operation to emit.
+    const copy = value => Array.isArray(value) ? value.map(copy) : layoutObject(value)
+      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copy(item)])) : value;
+    const previous = this._config, draft = this._layoutDraft;
+    this._config = { ...previous, layout: copy(state.layout) };
+    this._layoutDraft = null;
+    try { this._fire(); }
+    catch (error) { this._config = previous; this._layoutDraft = draft; throw error; }
+    return { status: 'applied' };
+  }
+
   setConfig(config) {
+    this._layoutDraft = null;
     const c = { ...config };
     if (Array.isArray(c.fuehler)) c.fuehler = c.fuehler.map((f) => (Array.isArray(f) ? aufraeumen({ name: f[0], entity: f[1], hoehe: f[2] }) : { ...f }));
     if (c.weiche === true) c.weiche = { anzeigen: true };
