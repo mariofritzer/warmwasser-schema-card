@@ -100,6 +100,18 @@ test('real Editor preflight of an unsafe volume becomes pending, never a rendere
   f.owner._editLayoutDraft({version:2,components:{}},false);
   assert.equal(f.calls[0].signal.aborted,true);
 });
+test('both real candidate paths require connected text measurement without a volume',async()=>{
+  for(const kind of ['card','editor']) {
+    const f=fixture(kind),raw={speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}};
+    const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};
+    f.card.setConfig(raw);f.card._hass=hass;f.owner._hass=hass;
+    if(kind==='editor')f.owner._config=raw;
+    const {x,y}=f.card._model.components.fm.origin,layout={version:2,components:{fm:{x:x+30,y:y+15}}};
+    const result=kind==='editor'?preflight(raw,layout,hass,f.owner):prepare(f.card,raw,layout,f.card);
+    assert.equal(result.status,'pending',kind);assert.equal(result.html,undefined,kind);
+    await Promise.resolve();assert.equal(f.calls.length,1,kind);cancel(f.owner);
+  }
+});
 test('real pending Editor path rejects a measured volume overflow and keeps a fitting label unapproved',async()=>{
   for(const [value,width,expected] of [['W'.repeat(80),400,/does not fit/],[500,24,/not complete/]]) {
     const f=fixture('editor'),raw={speicher:{typ:'schicht',volumen:value},fm:{pumpe:'sensor.fm'}};

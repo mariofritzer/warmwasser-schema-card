@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const registry=new Map();
 const context={HTMLElement:class{},customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
-vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+'\nglobalThis.resolve=resolveLayoutCandidate; globalThis.preflight=preflightLayoutRender;',context);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+'\nglobalThis.resolve=resolveLayoutCandidate; globalThis.preflight=preflightLayoutRender;'+require('./helpers/internal-layout-gate.cjs'),context);
 const Card=registry.get('warmwasser-schema-card');
 for (const type of ['schicht','trennblech']) for (const wp of [false,true]) for (const [x,y] of [[-450,-400],[900,-400]]) {
   test(`${type} ${wp?'with':'without'} WP includes every routed pipe at FM ${x},${y}`,()=>{

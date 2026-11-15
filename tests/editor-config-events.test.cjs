@@ -32,7 +32,7 @@ class ResizeObserverMock {
   observe(target) { this.target = target; }
   disconnect() { this.disconnected = true; }
 }
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8'), {
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + require('./helpers/internal-layout-gate.cjs'), {
   HTMLElement: Host, CustomEvent, ResizeObserver: ResizeObserverMock, document: { createElement: tag => new Element(tag) },
   customElements: { get: name => registry.get(name), define: (name, ctor) => registry.set(name, ctor) },
   window: {}, console: { info() {} },

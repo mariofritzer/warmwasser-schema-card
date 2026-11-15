@@ -60,6 +60,12 @@
           before:{width:before.width,height:before.height},after:{width:after.width,height:after.height}});
       };
       const realTextStage=stageLegacyHeatingTextCandidate;
+      const realTextInventory=inspectMeasuredLayoutTexts;
+      inspectMeasuredLayoutTexts=(...args)=>{
+        const checked=realTextInventory(...args);
+        result.textContent+=` | candidate inventory: ${checked.reason}${checked.count===undefined?'':` (${checked.count})`}${checked.detail ? ` ${JSON.stringify(checked.detail)}` : ''}`;
+        return checked;
+      };
       stageLegacyHeatingTextCandidate=async (...args)=>{
         const checked=await realTextStage(...args);
         result.textContent+=` | stage: ${checked.reason}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}`;

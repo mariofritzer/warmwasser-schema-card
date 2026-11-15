@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 // Exercise the real update method with a minimal DOM commit surface.
 const registry = new Map();
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8'), {
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + require('./helpers/internal-layout-gate.cjs'), {
   HTMLElement: class {},
   document: { createElement: () => ({ content: {}, set innerHTML(value) { this.content.html = value; } }) },
   customElements: { get: name => registry.get(name), define: (name, ctor) => registry.set(name, ctor) },

@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const registry = new Map();
 const context = { HTMLElement: class {}, customElements: { get: n => registry.get(n), define: (n, c) => registry.set(n, c) }, window: {}, console: { info() {} } };
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + '\nglobalThis.resolve = resolveLayoutCandidate; globalThis.preflight = preflightLayoutRender; globalThis.renderGeometry=(card,candidate,hass)=>{const model=card._model,old=card._hass;try{card._model=candidate.model;card._hass=hass;layoutRenderRoutes.set(card,candidate);return card._render();}finally{layoutRenderRoutes.delete(card);card._model=model;card._hass=old;}};', context);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + '\nglobalThis.resolve = resolveLayoutCandidate; globalThis.preflight = preflightLayoutRender; globalThis.renderGeometry=(card,candidate,hass)=>{const model=card._model,old=card._hass;try{card._model=candidate.model;card._hass=hass;layoutRenderRoutes.set(card,candidate);return card._render();}finally{layoutRenderRoutes.delete(card);card._model=model;card._hass=old;}};' + require('./helpers/internal-layout-gate.cjs'), context);
 const Card = registry.get('warmwasser-schema-card');
 function fixture(extra = {}) {
   const raw = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, ...extra };
