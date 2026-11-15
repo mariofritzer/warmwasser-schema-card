@@ -23,7 +23,7 @@
       .label { font: 20px sans-serif; fill:#fff; stroke:#000; stroke-width:2.5px; stroke-linejoin:round; paint-order:stroke; }
     </style><svg viewBox="0 0 400 150" xmlns="http://www.w3.org/2000/svg" aria-label="Measurement fixture">
       <g transform="translate(40 25) scale(1.5)"><text class="label" x="0" y="30">Warmwasser</text></g>
-    </svg>`;
+    </svg><div id="stage-mount"></div><div id="real-mount"></div>`;
     const svg=root.querySelector('svg'), label=root.querySelector('text'), output=document.querySelector('#result');
     const assert=(condition,message)=>{ if(!condition) throw new Error(message); };
     const has=(result,reason)=>result && result.reason===reason;
@@ -58,7 +58,27 @@
         host.style.textDecorationLine=''; label.style.strokeWidth='10%';
         assert(has(await measureLegacyHeatingSvgText(svg,'smoke-theme-1'),'text-effect-unproven'),'Percentage stroke accepted');
         label.style.strokeWidth='';
-        output.textContent='PASS — real SVG, fonts.ready, transform, stroke, Shadow DOM, theme, overflow, stale state and hidden/effect checks';
+        const mount=root.querySelector('#stage-mount');
+        const staged=await stageLegacyHeatingTextCandidate(mount,svg.outerHTML,'smoke-theme-1',1,n=>n===1);
+        assert(has(staged,'text-stage-style-and-paint-validation-required') && staged.textCount===1,`Connected staging: ${staged.reason}`);
+        assert(mount.childNodes.length===0,'Staging was not cleaned up');
+        let calls=0;
+        const cancelled=await stageLegacyHeatingTextCandidate(mount,svg.outerHTML,'smoke-theme-1',1,()=>++calls<3);
+        assert(has(cancelled,'text-stage-invalidated') && mount.childNodes.length===0,'Stale staging was not discarded/cleaned up');
+        const Card=customElements.get('warmwasser-schema-card'), card=new Card();
+        card.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{vorlauf:'sensor.vl'}]});
+        card._hass={language:'de',states:{}};
+        const realTemplate=document.createElement('template'); realTemplate.innerHTML=card._render();
+        const realSvg=realTemplate.content.querySelector('svg');
+        assert(realSvg,'Real card SVG missing');
+        const realMount=root.querySelector('#real-mount'); realMount.replaceChildren(realSvg);
+        const originalIds=[...realSvg.querySelectorAll('[id]')].map(n=>n.id);
+        assert(originalIds.length>0,'Real card SVG has no definition IDs');
+        const realStage=await stageLegacyHeatingTextCandidate(mount,realSvg.outerHTML,'smoke-theme-1',1,n=>n===1);
+        assert(has(realStage,'text-stage-style-and-paint-validation-required') && realStage.textCount>0,`Real card staging: ${realStage.reason}`);
+        assert(mount.childNodes.length===0 && originalIds.join('|')===[...realSvg.querySelectorAll('[id]')].map(n=>n.id).join('|'),'Real card IDs or staging cleanup changed');
+        realMount.replaceChildren();
+        output.textContent='PASS — real SVG, fonts.ready, transform, stroke, Shadow DOM, theme, overflow, stale state, connected staging and real card ID namespaces';
       } catch (error) {
         output.textContent=`FAIL — ${error && error.message || error}`;
       } finally { host.style.display=''; host.style.textDecorationLine=''; label.style.strokeWidth=''; }

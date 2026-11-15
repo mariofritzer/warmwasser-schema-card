@@ -1659,6 +1659,111 @@ function captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch) {
   } catch (_) { return unsupported('text-measurement-unavailable'); }
 }
 
+let heatingTextStageSequence=0;
+function namespaceLegacyHeatingSvgIds(svg,root) {
+  const fail=reason=>({status:'unsupported',reason});
+  const all=[svg,...svg.querySelectorAll('*')], existing=new Set(Array.from(root.querySelectorAll('[id]'),el=>el.id));
+  const elements=new Set(['svg','g','defs','linearGradient','radialGradient','stop','pattern','filter','feDropShadow','rect','path','circle','line','text']);
+  const attributes=new Set(['id','class','cx','cy','d','dx','dy','fill','fill-opacity','filter','flood-color','flood-opacity',
+    'font-size','font-weight','gradientUnits','height','letter-spacing','offset','opacity','patternUnits','r','rx','ry',
+    'stdDeviation','stop-color','stop-opacity','stroke','stroke-linejoin','stroke-opacity','stroke-width','style','transform',
+    'viewBox','width','x','x1','x2','y','y1','y2','data-more','href','xlink:href','xmlns','aria-label']);
+  const ids=new Map();
+  for (const el of all) {
+    if (!elements.has(el.localName) || el.namespaceURI!=='http://www.w3.org/2000/svg') return fail('text-stage-invalid-candidate');
+    if (!el.id) continue;
+    if (ids.has(el.id)) return fail('text-stage-duplicate-id');
+    let replacement;
+    do { replacement=`ww-text-stage-${++heatingTextStageSequence}`; } while (existing.has(replacement));
+    existing.add(replacement); ids.set(el.id,replacement);
+  }
+  const changes=[];
+  const urlPattern=/url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi;
+  for (const el of all) for (const attr of Array.from(el.attributes)) {
+    const name=attr.name,value=attr.value;
+    // CSS escapes and comments can disguise URL tokens in any paint-bearing
+    // attribute, not just style. Reject them before inspecting references.
+    if (!attributes.has(name) || (name==='xmlns' && value!=='http://www.w3.org/2000/svg') || /@import/i.test(value) || /\\|\/\*/.test(value))
+      return fail('text-stage-invalid-candidate');
+    if (name==='id') continue;
+    if (name==='style') {
+      const declaration=el.style;
+      if (!declaration || !Number.isInteger(declaration.length) || typeof declaration.getPropertyValue!=='function' ||
+          typeof declaration.getPropertyPriority!=='function') return fail('text-stage-invalid-candidate');
+      for (let i=0;i<declaration.length;i++) {
+        const property=declaration[i], v=declaration.getPropertyValue(property).trim();
+        if (declaration.getPropertyPriority(property)) return fail('text-stage-invalid-candidate');
+        if (property==='fill' || property==='stroke') {
+          if (!/^(?:none|[a-z]+|#[0-9a-f]{3,8}|rgba?\([\d\s.,%+-]+\)|hsla?\([\d\s.,%+-]+\)|url\(\s*["']?#[^\s"')]+["']?\s*\))$/i.test(v))
+            return fail('text-stage-invalid-candidate');
+        } else if (property==='stroke-width') {
+          if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/i.test(v)) return fail('text-stage-invalid-candidate');
+        } else if (property==='animation-duration') {
+          if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:ms|s)$/i.test(v)) return fail('text-stage-invalid-candidate');
+        } else return fail('text-stage-invalid-candidate');
+      }
+    }
+    if (/^(?:href|xlink:href)$/i.test(name)) {
+      if (!value.startsWith('#') || !ids.has(value.slice(1))) return fail('text-stage-unresolved-reference');
+      changes.push([el,name,`#${ids.get(value.slice(1))}`,attr.namespaceURI]); continue;
+    }
+    let invalid=false;
+    const replaced=value.replace(urlPattern,(_match,a,b,c)=>{
+      const ref=(a ?? b ?? c ?? '').trim();
+      if (!ref.startsWith('#') || !ids.has(ref.slice(1))) { invalid=true; return ''; }
+      return `url(#${ids.get(ref.slice(1))})`;
+    });
+    if (invalid || /url\s*\(/i.test(value.replace(urlPattern,''))) return fail('text-stage-unresolved-reference');
+    if (replaced!==value) changes.push([el,name,replaced,attr.namespaceURI]);
+  }
+  // All references are validated before mutating the detached clone.
+  for (const el of all) if (el.id) el.setAttribute('id',ids.get(el.id));
+  for (const [el,name,value,namespace] of changes) namespace ? el.setAttributeNS(namespace,name,value) : el.setAttribute(name,value);
+  return {status:'prepared'};
+}
+
+// Internal staging only. It provides a real connected measurement of the
+// supplied candidate in the caller's Shadow Root; it never authorizes a paint
+// or a later commit, because staging style parity and paint order remain open.
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent) {
+  const unsupported=reason=>({status:'unsupported',reason});
+  let stage,svg;
+  try {
+    if (!parent || !parent.isConnected || typeof candidateHtml!=='string' || !candidateHtml ||
+        typeof contextKey!=='string' || !contextKey || typeof isCurrent!=='function' || !isCurrent(generation))
+      return unsupported('text-stage-invalidated');
+    const doc=parent.ownerDocument, root=parent.getRootNode();
+    if (!doc || !root || !root.host || !root.host.isConnected || typeof root.querySelectorAll!=='function')
+      return unsupported('text-stage-unavailable');
+    const template=doc.createElement('template');
+    template.innerHTML=candidateHtml;
+    const children=Array.from(template.content.children);
+    if (children.length!==1 || template.content.childNodes.length!==1 || children[0].localName!=='svg' ||
+        children[0].namespaceURI!=='http://www.w3.org/2000/svg') return unsupported('text-stage-invalid-candidate');
+    svg=children[0]; const namespaced=namespaceLegacyHeatingSvgIds(svg,root);
+    if (namespaced.status!=='prepared') return namespaced;
+    stage=doc.createElement('div');
+    stage.setAttribute('aria-hidden','true'); stage.setAttribute('inert','');
+    stage.style.cssText='position:fixed;left:-100000px;top:0;pointer-events:none;z-index:-1;';
+    stage.append(svg); parent.append(stage);
+    const intact=()=>stage.isConnected && stage.parentNode===parent && svg.parentNode===stage && svg.getRootNode()===root &&
+      !Array.from(root.querySelectorAll('[id]')).some(el=>!svg.contains(el) && el!==svg &&
+        [svg,...svg.querySelectorAll('[id]')].some(inside=>inside.id && inside.id===el.id));
+    if (!intact() || !isCurrent(generation)) return unsupported('text-stage-invalidated');
+    const reserve=await measureLegacyHeatingSvgText(svg,contextKey);
+    if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
+    if (!reserve.entries) return reserve;
+    if (!reserve.entries.length) return unsupported('text-stage-empty-inventory');
+    const current=await measureLegacyHeatingSvgText(svg,contextKey);
+    if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
+    const checked=checkMeasuredTextReserve(reserve,current,contextKey);
+    if (checked.textReserve!=='fits') return checked;
+    return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
+      textCount:current.entries.length,boxes:current.entries.map(e=>({...e.box}))};
+  } catch (_) { return unsupported('text-stage-unavailable'); }
+  finally { if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove(); }
+}
+
 function inventoryLegacyHeatingDecorations(model, prepared, routes, compiled, localBridge, options = {}) {
   const unsupported = reason => ({status:'unsupported',reason});
   const shadows=[];
@@ -3427,12 +3532,20 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     try { initial = snapshotLayout(Object.prototype.hasOwnProperty.call(this._config, 'layout') ? this._config.layout : { version: 2 }); }
     catch (_) { initial = null; }
     this._layoutDraft = { history: [initial], index: 0 };
+    this._layoutDraftNeedsRebind = false;
     return this._layoutDraftState();
   }
 
   _layoutDraftState(includePreview = false) {
     if (!this._layoutDraft) return null;
     const { history, index } = this._layoutDraft, layout = history[index];
+    if (history.length > 1 && !this._layoutDraftNeedsRebind) {
+      let current = null;
+      try { current = JSON.stringify(this._config); } catch (_) {}
+      if (current === null || current !== this._layoutConfigFingerprint) this._layoutDraftNeedsRebind = true;
+    }
+    if (this._layoutDraftNeedsRebind) return { layout, canUndo: false, canRedo: false,
+      status: 'unbound', errors: [{ code: 'draft-needs-rebind', path: 'layout' }] };
     const checked = preflightLayoutRender(this._config, layout, this._hass);
     return { layout, canUndo: index > 0, canRedo: index + 1 < history.length,
       status: checked.status, errors: checked.errors || [], ...(includePreview ? { html: checked.html } : {}) };
@@ -3440,6 +3553,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _editLayoutDraft(layout, evaluate = true) {
     if (!this._layoutDraft) this._beginLayoutDraft();
+    if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
     let next;
     try { next = snapshotLayout(layout); }
     catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-layout', path: 'layout' }] }; }
@@ -3451,15 +3565,29 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _undoLayoutDraft(evaluate = true) {
     if (!this._layoutDraft) return null;
+    if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
     if (this._layoutDraft.index > 0) this._layoutDraft.index--;
     return evaluate ? this._layoutDraftState() : null;
   }
 
   _redoLayoutDraft(evaluate = true) {
     if (!this._layoutDraft) return null;
+    if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
     if (this._layoutDraft.index + 1 < this._layoutDraft.history.length) this._layoutDraft.index++;
     return evaluate ? this._layoutDraftState() : null;
   }
+
+  _rebindLayoutDraft() {
+    if (!this._layoutDraft) return null;
+    let current = null;
+    try { current = JSON.stringify(this._config); } catch (_) {}
+    if (current === null) { this._layoutDraftNeedsRebind = true; return this._layoutDraftState(); }
+    this._layoutConfigFingerprint = current;
+    this._layoutDraftNeedsRebind = false;
+    return this._layoutDraftState();
+  }
+
+  _discardLayoutDraft() { return this._beginLayoutDraft(); }
 
   _applyLayoutDraft() {
     const state = this._layoutDraftState();
@@ -3477,8 +3605,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    this._endLayoutDrag(false);
-    this._layoutDraft = null;
+    this._endLayoutDrag(true);
+    // HA supplies no stable card ID. Never silently transfer an unsaved draft
+    // to changed configuration, even if the card type happens to match.
+    const previousConfig = this._config;
     const c = { ...config };
     if (Array.isArray(c.fuehler)) c.fuehler = c.fuehler.map((f) => (Array.isArray(f) ? aufraeumen({ name: f[0], entity: f[1], hoehe: f[2] }) : { ...f }));
     if (c.weiche === true) c.weiche = { anzeigen: true };
@@ -3490,10 +3620,22 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       delete c.trennung;
     }
     const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',') + `|${!!c.verteiler}`;
+    // Capture the accepted value, not a reference to caller-owned nested data:
+    // HA can mutate the original object before passing it back to setConfig.
+    let fingerprint = null;
+    try { fingerprint = JSON.stringify(c); } catch (_) {}
+    if (previousConfig && this._layoutDraft) {
+      const changed = fingerprint === null || this._layoutConfigFingerprint === null || fingerprint !== this._layoutConfigFingerprint;
+      if (changed) {
+        if (this._layoutDraft.history.length > 1) this._layoutDraftNeedsRebind = true;
+        else this._layoutDraft = null;
+      }
+    }
+    this._layoutConfigFingerprint = fingerprint;
     this._config = c;
     if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
-    if (this._layoutPanel) { this._beginLayoutDraft(); this._refreshLayoutUI(); }
+    if (this._layoutPanel) { if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); }
   }
 
   set hass(hass) {
@@ -3576,6 +3718,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       });
     }
     cfg.type = this._config.type || 'custom:warmwasser-schema-card';
+    if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
     this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
     if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
@@ -3618,6 +3761,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const undo = button(label('Rückgängig', 'Undo'), () => { this._endLayoutDrag(true); this._undoLayoutDraft(false); this._refreshLayoutUI(); });
     const redo = button(label('Wiederholen', 'Redo'), () => { this._endLayoutDrag(true); this._redoLayoutDraft(false); this._refreshLayoutUI(); });
     const apply = button(label('Anwenden', 'Apply'), () => { this._endLayoutDrag(true); this._applyLayoutDraft(); if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); });
+    const rebind = button(label('Für diese Karte weiterbearbeiten', 'Continue on this card'), () => { this._rebindLayoutDraft(); this._refreshLayoutUI(); });
+    const discard = button(label('Entwurf verwerfen', 'Discard draft'), () => { this._endLayoutDrag(true); this._discardLayoutDraft(); this._refreshLayoutUI(); });
     panel.appendChild(controls);
     const status = document.createElement('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.appendChild(status);
     const viewport = document.createElement('div'); viewport.className = 'layout-viewport';
@@ -3625,6 +3770,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     preview.setAttribute('aria-label', label('Layout-Vorschau; Pfeiltasten bewegen die Komponente', 'Layout preview; arrow keys move the component'));
     const previewRoot = preview.attachShadow({ mode: 'open' }); viewport.appendChild(preview);
     const overlay = document.createElement('div'); overlay.className = 'layout-drag-overlay';
+    const marker = document.createElement('div'); marker.className = 'layout-draft-marker';
+    marker.textContent = label('Ungeprüft', 'Unchecked'); overlay.appendChild(marker);
     overlay.setAttribute('aria-hidden', 'true'); viewport.appendChild(overlay); panel.appendChild(viewport);
     overlay.addEventListener('pointerdown', event => this._startLayoutDrag(event));
     overlay.addEventListener('pointermove', event => this._moveLayoutDrag(event));
@@ -3633,6 +3780,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     overlay.addEventListener('lostpointercapture', event => { if (this._layoutDrag?.pointerId === event.pointerId) this._endLayoutDrag(true); });
     select.addEventListener('change', () => { this._endLayoutDrag(true); this._refreshLayoutUI(); });
     panel.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && this._layoutDrag) { event.preventDefault(); this._endLayoutDrag(true); return; }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
         event.preventDefault(); this._endLayoutDrag(true); if (event.shiftKey) this._redoLayoutDraft(false); else this._undoLayoutDraft(false); this._refreshLayoutUI(); return;
       }
@@ -3640,16 +3788,22 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
       if (direction) { event.preventDefault(); const step = event.shiftKey ? 10 : 1; move(direction[0] * step, direction[1] * step); }
     });
-    this._layoutPanel = { panel, select, inputs, undo, redo, apply, status, previewRoot, viewport, overlay };
+    this._layoutPanel = { panel, select, inputs, undo, redo, apply, rebind, discard, status, preview, previewRoot, viewport, overlay, marker };
     parent.appendChild(panel); this._refreshLayoutUI(); this._observeLayoutViewport();
   }
 
   connectedCallback() {
-    if (this._layoutPanel) this._observeLayoutViewport();
+    if (this._layoutPanel) {
+      this._observeLayoutViewport();
+      if (this._layoutDraft) this._refreshLayoutUI();
+    }
   }
 
   disconnectedCallback() {
     this._endLayoutDrag(true);
+    // An editor instance may be reattached to a different card without a
+    // distinguishable setConfig call. Require explicit confirmation on reuse.
+    if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
     this._layoutResizeObserver?.disconnect();
     this._layoutResizeObserver = null;
   }
@@ -3676,12 +3830,20 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _positionLayoutOverlay() {
     const ui = this._layoutPanel;
-    if (!ui || this._layoutDrag) return;
+    if (!ui) return;
     const svg = ui.previewRoot.querySelector('svg');
     if (!svg || !this._layoutUIPosition()) { ui.overlay.style.display = 'none'; return; }
     const rect = svg.getBoundingClientRect(), parent = ui.viewport.getBoundingClientRect();
-    Object.assign(ui.overlay.style, { display: 'block', left: `${rect.left - parent.left + ui.viewport.scrollLeft}px`,
+    if (!this._layoutDrag) Object.assign(ui.overlay.style, { display: 'block', left: `${rect.left - parent.left + ui.viewport.scrollLeft}px`,
       top: `${rect.top - parent.top + ui.viewport.scrollTop}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    ui.marker.style.display = 'none';
+    const draft = this._layoutDraft?.history[this._layoutDraft.index], proposed = draft?.components?.[ui.select.value];
+    const box = ui.hitBoxes?.find(item => item.id === ui.select.value), m = svg.getScreenCTM?.();
+    if (ui.unchecked && !this._layoutDraftNeedsRebind && box && layoutObject(proposed) &&
+        Number.isFinite(proposed.x) && Number.isFinite(proposed.y) && m && m.a > 0 && m.d > 0 && m.b === 0 && m.c === 0) {
+      Object.assign(ui.marker.style, { display: 'block', left: `${m.a * proposed.x + m.e - rect.left}px`,
+        top: `${m.d * proposed.y + m.f - rect.top}px`, width: `${m.a * box.width}px`, height: `${m.d * box.height}px` });
+    }
   }
 
   _layoutUIPosition() {
@@ -3700,7 +3862,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _setLayoutUIPosition(position, coalesce = false) {
     if (!coalesce && this._layoutDrag) this._endLayoutDrag(true);
     const ui = this._layoutPanel, draft = this._layoutDraft;
-    if (!ui || !draft || !ui.select.value || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+    if (!ui || !draft || this._layoutDraftNeedsRebind || !ui.select.value || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
     const current = draft.history[draft.index];
     // Do not silently replace malformed or unknown data with a fresh layout.
     if (!layoutObject(current) || current.version !== 2 || (current.components !== undefined && !layoutObject(current.components))) return;
@@ -3714,10 +3876,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _startLayoutDrag(event) {
     const ui = this._layoutPanel, draft = this._layoutDraft;
-    if (!ui || !draft || this._layoutDrag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
-    const svg = ui.previewRoot.querySelector('svg'), position = this._layoutUIPosition();
+    if (!ui || !draft || this._layoutDraftNeedsRebind || this._layoutDrag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const svg = ui.previewRoot.querySelector('svg');
     const matrix = svg?.getScreenCTM();
-    if (!svg || !position || !matrix || !ui.select.value) return;
+    if (!svg || !matrix) return;
     let inverse;
     try { inverse = matrix.inverse(); ui.overlay.setPointerCapture(event.pointerId); }
     catch (_) { return; }
@@ -3725,10 +3887,16 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return;
     }
     const point = (x, y) => ({ x: inverse.a * x + inverse.c * y + inverse.e, y: inverse.b * x + inverse.d * y + inverse.f });
-    this._layoutDrag = { pointerId: event.pointerId, point, start: point(event.clientX, event.clientY), position,
-      id: ui.select.value, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
+    const start = point(event.clientX, event.clientY);
+    const hits = (ui.hitBoxes || []).filter(box => start.x >= box.x && start.x <= box.x + box.width && start.y >= box.y && start.y <= box.y + box.height);
+    // Empty or ambiguous space must not move an arbitrary component.
+    if (hits.length !== 1) { try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return; }
+    const hit = hits[0]; ui.select.value = hit.id;
+    ui.preview.focus?.({ preventScroll: true });
+    this._layoutDrag = { pointerId: event.pointerId, point, start, position: { x: hit.x, y: hit.y },
+      id: hit.id, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
       frame: null, pending: null, edited: false };
-    event.preventDefault();
+    this._refreshLayoutUI(); event.preventDefault();
   }
 
   _moveLayoutDrag(event) {
@@ -3773,12 +3941,22 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const ui = this._layoutPanel;
     if (!ui || !this._layoutDraft) return;
     const state = this._layoutDraftState(true), checked = state;
-    let ids = [];
+    let ids = [], hitBoxes = [];
     try {
       const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
-      const candidate = resolveLayoutCandidate(this._config, card._cfg, { version: 2 });
-      if (candidate.status === 'candidate') ids = Object.keys(candidate.capabilities.components);
+      // Hit-test the model that produced the visible SVG. On failed preflight
+      // the preview shows the canonical model, never an invalid draft model.
+      const candidate = resolveLayoutCandidate(this._config, card._cfg,
+        checked.status === 'rendered-candidate' ? state.layout : { version: 2 });
+      if (candidate.status === 'candidate') {
+        ids = Object.keys(candidate.capabilities.components);
+        hitBoxes = ids.map(id => {
+          const component = candidate.model.components[candidate.capabilities.components[id]], b = component.bounds;
+          return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height };
+        });
+      }
     } catch (_) { /* configuration remains unavailable */ }
+    ui.hitBoxes = hitBoxes;
     const selected = ui.select.value;
     ui.select.replaceChildren();
     for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = id === 'fm' ? 'FM' : 'WP'; ui.select.appendChild(option); }
@@ -3786,13 +3964,21 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const p = this._layoutUIPosition();
     for (const axis of ['x', 'y']) {
       const input = ui.inputs[axis];
-      input.disabled = !p;
+      input.disabled = !p || this._layoutDraftNeedsRebind;
       // A HA state update can arrive while the user is typing, before change
       // fires. Leave that field alone until it is committed or cancelled.
       if (!(preserveFocusedInput && p && this.shadowRoot?.activeElement === input)) input.value = p ? String(p[axis]) : '';
     }
     ui.undo.disabled = !state.canUndo; ui.redo.disabled = !state.canRedo; ui.apply.disabled = checked.status !== 'rendered-candidate';
-    ui.status.textContent = checked.status === 'rendered-candidate' ? (sprache(this._config, this._hass) === 'de' ? 'Entwurf geprüft' : 'Draft validated') : `${checked.status}: ${(checked.errors || []).map(e => e.code).join(', ')}`;
+    ui.rebind.hidden = !this._layoutDraftNeedsRebind;
+    ui.unchecked = checked.status !== 'rendered-candidate';
+    const de = sprache(this._config, this._hass) === 'de';
+    ui.status.textContent = checked.status === 'rendered-candidate' ? (de ? 'Entwurf geprüft' : 'Draft validated')
+      : checked.status === 'unbound' ? (de ? 'Die Konfiguration hat sich geändert. Entwurf für diese Karte bestätigen oder verwerfen.' : 'Configuration changed. Confirm this draft for this card or discard it.')
+      : checked.errors?.[0]?.code === 'unmoved-candidate' ? (de ? 'Komponente bewegen, um einen Entwurf zu prüfen.' : 'Move a component to validate the draft.')
+      : checked.errors?.[0]?.code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Vorschau.' : 'A current sensor value does not fit the preview.')
+      : checked.status === 'invalid' ? (de ? 'Der Entwurf ist ungültig. Bitte Positionen oder Einstellungen prüfen.' : 'The draft is invalid. Check its positions or settings.')
+      : (de ? 'Diese Position oder Gerätekonfiguration wird noch nicht unterstützt.' : 'This position or equipment configuration is not supported yet.');
     let html = checked.status === 'rendered-candidate' ? checked.html : '';
     if (!html && this._hass && layoutObject(this._hass.states)) {
       // An invalid draft never reaches the renderer; show the canonical card.
@@ -3802,7 +3988,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
     const svg = ui.previewRoot.querySelector('svg');
     if (svg && this._layoutDrag?.viewBox) svg.setAttribute('viewBox', this._layoutDrag.viewBox);
-    if (!this._layoutDrag) this._positionLayoutOverlay();
+    this._positionLayoutOverlay();
   }
 
   _build() {
@@ -3822,7 +4008,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button.rm{border:none;background:none;color:var(--error-color,#db4437);padding:2px 6px}
       button.add{color:var(--primary-color)}
       .layout-editor{margin-top:20px;border:1px solid var(--divider-color,#ddd);padding:12px;border-radius:10px}
-      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;touch-action:none;cursor:grab}.layout-drag-overlay:active{cursor:grabbing}
+      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;touch-action:none;cursor:grab}.layout-drag-overlay:active{cursor:grabbing}.layout-draft-marker{position:absolute;display:none;pointer-events:none;border:2px dashed var(--error-color,#c22);box-sizing:border-box;color:var(--error-color,#c22);font-size:12px;font-weight:bold}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
     if (this._config.verteiler) {

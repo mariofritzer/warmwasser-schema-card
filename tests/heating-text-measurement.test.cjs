@@ -5,8 +5,8 @@ const path=require('node:path');
 const vm=require('node:vm');
 const context={HTMLElement:class {},customElements:{get(){},define(){}},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={transformMeasuredTextBox,checkMeasuredTextReserve,measureLegacyHeatingSvgText};',context);
-const {transformMeasuredTextBox:transform,checkMeasuredTextReserve:checkRaw,measureLegacyHeatingSvgText:measure}=context.api;
+  '\nglobalThis.api={transformMeasuredTextBox,checkMeasuredTextReserve,measureLegacyHeatingSvgText,stageLegacyHeatingTextCandidate,namespaceLegacyHeatingSvgIds};',context);
+const {transformMeasuredTextBox:transform,checkMeasuredTextReserve:checkRaw,measureLegacyHeatingSvgText:measure,stageLegacyHeatingTextCandidate:stage,namespaceLegacyHeatingSvgIds:namespace}=context.api;
 const check=(a,b)=>checkRaw(a,b,'theme-1');
 const identity={a:1,b:0,c:0,d:1,e:0,f:0};
 const plain=x=>JSON.parse(JSON.stringify(x));
@@ -96,4 +96,88 @@ test('a later stale entry invalidates the whole inventory before reporting overf
   assert.equal(check(reserve,current).reason,'text-reserve-invalidated');
   second.textContent='second';
   assert.equal(check(reserve,current).reason,'text-reserve-overflow');
+});
+function stagingFixture() {
+  const f=fixture(), doc=f.svg.ownerDocument, host={isConnected:true,parentElement:null,getRootNode:()=>({})};
+  const root={host,querySelectorAll:()=>[]};
+  const parent={isConnected:true,ownerDocument:doc,parentElement:null,getRootNode:()=>root,append(element){element.isConnected=true;element.parentElement=this;element.parentNode=this;this.child=element;}};
+  f.svg.localName='svg'; f.svg.namespaceURI='http://www.w3.org/2000/svg'; f.svg.id=''; f.svg.attributes=[];
+  f.svg.getRootNode=()=>root;
+  f.svg.querySelectorAll=selector=>selector==='[id]'?[]:[f.node];
+  f.node.localName='text'; f.node.namespaceURI='http://www.w3.org/2000/svg'; f.node.id=''; f.node.attributes=[];
+  let removed=false;
+  doc.createElement=name=>{
+    if(name==='template') return {content:{children:[f.svg],childNodes:[f.svg]},set innerHTML(value){this.value=value;}};
+    return {style:{},setAttribute(){},append(svg){svg.parentElement=this;svg.parentNode=this;},remove(){removed=true;this.isConnected=false;}};
+  };
+  return {...f,parent,root,removed:()=>removed};
+}
+test('staging measures a connected same-shadow candidate and always cleans up',async()=>{
+  const f=stagingFixture(); f.ready();
+  const result=await stage(f.parent,'<svg></svg>','theme-1',1,n=>n===1);
+  assert.equal(result.reason,'text-stage-style-and-paint-validation-required');
+  assert.equal(result.textCount,1);
+  assert.equal(f.removed(),true);
+});
+test('staging discards stale generations after fonts resolve and cleans up',async()=>{
+  const f=stagingFixture(); let generation=1;
+  const pending=stage(f.parent,'<svg></svg>','theme-1',1,n=>n===generation);
+  generation=2; f.ready();
+  assert.equal((await pending).reason,'text-stage-invalidated');
+  assert.equal(f.removed(),true);
+});
+test('staging discards a reparented candidate and removes the owned SVG',async()=>{
+  const f=stagingFixture(); let svgRemoved=false;
+  f.svg.remove=()=>{svgRemoved=true;f.svg.isConnected=false;};
+  const pending=stage(f.parent,'<svg></svg>','theme-1',1,()=>true);
+  f.svg.parentNode={}; f.ready();
+  assert.equal((await pending).reason,'text-stage-invalidated');
+  assert.equal(svgRemoved,true);
+  assert.equal(f.removed(),true);
+});
+test('staging refuses active SVG elements before mounting',async()=>{
+  const f=stagingFixture(); f.ready(); f.node.localName='animate';
+  assert.equal((await stage(f.parent,'<svg></svg>','theme-1',1,()=>true)).reason,'text-stage-invalid-candidate');
+  assert.equal(f.removed(),false);
+});
+test('staging namespaces only local references and rejects ambiguous or active SVG',()=>{
+  const element=(localName,attrs={})=>({localName,namespaceURI:'http://www.w3.org/2000/svg',id:attrs.id||'',
+    attributes:Object.entries(attrs).map(([name,value])=>({name,value})),
+    style:attrs.style?{0:'fill',length:1,getPropertyValue:()=>attrs.style.slice(5),getPropertyPriority:()=>''}:undefined,
+    setAttribute(name,value){if(name==='id')this.id=value;const a=this.attributes.find(a=>a.name===name);if(a)a.value=value;}});
+  const def=element('linearGradient',{id:'shared'}), path=element('path',{style:'fill:url(#shared)',href:'#shared'});
+  const svg=element('svg'); svg.querySelectorAll=()=>[def,path];
+  const root={querySelectorAll:()=>[{id:'shared'}]};
+  assert.equal(namespace(svg,root).status,'prepared');
+  assert.notEqual(def.id,'shared');
+  assert.equal(path.attributes.find(a=>a.name==='href').value,'#'+def.id);
+  assert.equal(path.attributes.find(a=>a.name==='style').value,'fill:url(#'+def.id+')');
+  path.attributes.find(a=>a.name==='href').value='#external';
+  assert.equal(namespace(svg,root).reason,'text-stage-unresolved-reference');
+  path.localName='set';
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+});
+test('staging rejects escaped or comment-obfuscated CSS resource references',()=>{
+  const element=(name,value)=>({localName:'path',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[{name,value}],setAttribute(){}});
+  const svg={localName:'svg',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[],querySelectorAll:()=>[child]};
+  const root={querySelectorAll:()=>[]};
+  let child=element('fill','u\\72l(https://example.test/x)');
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  child=element('style','fill:u\\72l(https://example.test/x)');
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  child=element('fill','u/**/rl(https://example.test/x)');
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+});
+test('staging rejects parsed inline layout and external image properties',()=>{
+  const element=(property,value)=>({localName:'path',namespaceURI:'http://www.w3.org/2000/svg',id:'',
+    attributes:[{name:'style',value:`${property}:${value}`}],
+    style:{0:property,length:1,getPropertyValue:()=>value,getPropertyPriority:()=>''},setAttribute(){}});
+  const svg={localName:'svg',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[],querySelectorAll:()=>[child]};
+  const root={querySelectorAll:()=>[]};
+  let child=element('position','fixed');
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  child=element('background-image','image-set("https://example.test/x" 1x)');
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  child=element('fill','image-set("https://example.test/x" 1x)');
+  assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
 });

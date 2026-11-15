@@ -151,7 +151,7 @@ test('invalid and unsupported drafts never emit and are revalidated with current
   assert.equal(editor.events, undefined); assert.equal(editor._config.layout, undefined);
 });
 
-test('inactive WP positions survive draft edit and apply; setConfig resets history', () => {
+test('inactive WP positions survive draft edit, apply and same-card setConfig', () => {
   const { editor, moved } = layoutEditor({ wp: {} });
   const layout = moved(); layout.components.wp = { x: 360, y: 165 };
   editor._beginLayoutDraft(); assert.equal(editor._editLayoutDraft(layout).status, 'rendered-candidate');
@@ -159,7 +159,10 @@ test('inactive WP positions survive draft edit and apply; setConfig resets histo
   assert.deepEqual(plain(editor.events[0].detail.config.layout.components.wp), { x: 360, y: 165 });
   editor._beginLayoutDraft(); editor._editLayoutDraft(moved());
   editor.setConfig(editor.events[0].detail.config);
-  assert.equal(editor._layoutDraftState(), null);
+  assert.equal(editor._layoutDraftState().status, 'unbound');
+  editor.setConfig({ ...editor.events[0].detail.config, type: 'custom:other-card' });
+  assert.equal(editor._layoutDraftState().status, 'unbound');
+  editor._discardLayoutDraft(); assert.equal(editor._layoutDraftState().canUndo, false);
 });
 
 test('valid apply tolerates synchronous Home Assistant setConfig echo', () => {
@@ -182,12 +185,13 @@ test('apply revalidates after an unrelated form enables unsupported equipment', 
   editor._beginLayoutDraft(); assert.equal(editor._editLayoutDraft(moved()).status, 'rendered-candidate');
   editor._mainForm.emit('value-changed', { value: { solar: { pumpe: 'sensor.solar' } } });
   assert.equal(editor.events.length, 1); // Ordinary form change, not draft apply.
-  const result = editor._applyLayoutDraft();
+  assert.equal(editor._applyLayoutDraft().status, 'unbound');
+  const result = editor._rebindLayoutDraft();
   assert.equal(result.status, 'unsupported');
   assert.equal(result.errors[0].code, 'unsupported-configuration');
+  assert.equal(editor._applyLayoutDraft().status, 'unsupported');
   assert.equal(editor.events.length, 1);
   assert.equal(editor._config.layout, undefined);
-  assert.equal(editor._layoutDraftState().status, 'unsupported');
 });
 
 test('visual editor remains absent behind its default gate', () => {
@@ -284,7 +288,7 @@ test('pointer drag uses inverse screen matrix, coalesces moves and cancels stale
   ui.previewRoot.querySelector = () => svg;
   ui.viewport.getBoundingClientRect = () => ({ left: 0, top: 0 }); ui.viewport.scrollLeft = 0; ui.viewport.scrollTop = 0;
   ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
-  const pointer = (clientX, clientY) => ({ pointerId: 1, isPrimary: true, pointerType: 'touch', button: 0, clientX, clientY });
+  const pointer = (clientX, clientY) => ({ pointerId: 1, isPrimary: true, pointerType: 'touch', button: 0, clientX: clientX + 2 * x, clientY: clientY + 2 * y });
   ui.overlay.emit('pointerdown', pointer(10, 20));
   ui.overlay.emit('pointermove', pointer(30, 40)); ui.overlay.emit('pointermove', pointer(50, 60));
   assert.equal(frames.size, 1);
@@ -303,7 +307,7 @@ test('pointer drag uses inverse screen matrix, coalesces moves and cancels stale
   ui.overlay.emit('pointerdown', pointer(10, 20)); ui.overlay.emit('pointermove', pointer(50, 60));
   const stale = [...frames.values()][0];
   editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
-  stale(); assert.equal(editor._layoutDraft.history.length, 1);
+  stale(); assert.equal(editor._layoutDraft.history.length, 2); assert.equal(editor._layoutDraft.index, 0);
 });
 
 test('rebuild and disconnect cancel a drag and reject old animation frames', () => {
@@ -316,8 +320,9 @@ test('rebuild and disconnect cancel a drag and reject old animation frames', () 
       getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
     ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
     ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
-    const event = { pointerId: 7, isPrimary: true, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 };
-    ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: 50 });
+    const box = ui.hitBoxes.find(box => box.id === 'fm');
+    const event = { pointerId: 7, isPrimary: true, pointerType: 'mouse', button: 0, clientX: box.x + 10, clientY: box.y + 10 };
+    ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: event.clientX + 30 });
     return { ui, stale: [...frames.values()][0] };
   };
   const original = Number(editor._layoutPanel.inputs.x.value);
@@ -342,10 +347,132 @@ test('resize repositions overlay and cancels active drag with stale transform', 
     getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 10, top: 20, width, height: 300 }) };
   ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
   ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
-  const event = { pointerId: 8, isPrimary: true, pointerType: 'touch', clientX: 10, clientY: 20 };
-  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: 40 });
+  const box = ui.hitBoxes.find(box => box.id === 'fm');
+  const event = { pointerId: 8, isPrimary: true, pointerType: 'touch', clientX: box.x + 10, clientY: box.y + 10 };
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: event.clientX + 30 });
   const stale = [...frames.values()][0];
   width = 250; ui.viewport.rect = { left: 0, top: 0, width: 500, height: 400 };
   observer.callback(); assert.equal(editor._layoutDrag, null); assert.equal(ui.overlay.style.width, '250px');
   stale(); assert.equal(editor._layoutDraft.history.length, 1);
+});
+
+test('config echo and entity reorder preserve but unbind the draft until explicit rebind', () => {
+  const { editor, moved } = layoutEditor();
+  editor._beginLayoutDraft(); editor._editLayoutDraft(moved());
+  const before = plain(editor._layoutDraftState().layout);
+  const events = [];
+  editor.dispatchEvent = event => { events.push(event); editor.setConfig(event.detail.config); return true; };
+  editor._mainForm.emit('value-changed', { value: { titel: 'Changed' } });
+  assert.equal(events.length, 1); assert.deepEqual(plain(editor._layoutDraftState().layout), before);
+  assert.equal(editor._applyLayoutDraft().status, 'unbound');
+  assert.equal(editor._rebindLayoutDraft().status, 'rendered-candidate');
+  editor.setConfig({ ...editor._config, fuehler: [{ id: 'a', entity: 'sensor.a' }, { id: 'b', entity: 'sensor.b' }] });
+  assert.equal(editor._layoutDraftState().status, 'unbound');
+  editor.setConfig({ ...editor._config, fuehler: [...editor._config.fuehler].reverse() });
+  assert.deepEqual(plain(editor._layoutDraftState().layout), before);
+  assert.equal(editor._applyLayoutDraft().status, 'unbound'); assert.equal(events.length, 1);
+  assert.equal(editor._rebindLayoutDraft().status, 'unsupported');
+  editor.setConfig({ ...editor._config, fuehler: [] });
+  assert.equal(editor._applyLayoutDraft().status, 'unbound');
+  assert.equal(editor._rebindLayoutDraft().status, 'rendered-candidate');
+  assert.equal(editor._applyLayoutDraft().status, 'applied');
+  assert.equal(events.length, 2); assert.equal(editor._layoutDraftState(), null);
+});
+
+test('diagram click selects the hit component and ignores empty or ambiguous space', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' } });
+  const ui = editor._layoutPanel;
+  const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
+    getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
+  const wp = ui.hitBoxes.find(box => box.id === 'wp');
+  const event = { pointerId: 9, isPrimary: true, pointerType: 'mouse', button: 0, clientX: wp.x + wp.width / 2, clientY: wp.y + wp.height / 2 };
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointerup', event);
+  assert.equal(ui.select.value, 'wp'); assert.equal(editor._layoutDraft.history.length, 1);
+  ui.overlay.emit('pointerdown', { ...event, clientX: -10000, clientY: -10000 });
+  assert.equal(editor._layoutDrag, null); assert.equal(ui.select.value, 'wp');
+  ui.hitBoxes = [{ ...wp, id: 'fm' }, wp];
+  ui.overlay.emit('pointerdown', event); assert.equal(editor._layoutDrag, null);
+});
+
+test('unbound draft requires explicit confirmation in visual editor and can be discarded', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'de', states: { 'sensor.fm': { state: 'on' } } };
+  const config = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } };
+  editor.setConfig(config); const ui = editor._layoutPanel;
+  ui.inputs.x.value = String(Number(ui.inputs.x.value) + 30); ui.inputs.x.emit('change');
+  ui.inputs.y.value = String(Number(ui.inputs.y.value) + 15); ui.inputs.y.emit('change');
+  assert.equal(ui.apply.disabled, false);
+  editor.setConfig({ ...config, titel: 'Andere Karte' });
+  assert.equal(ui.rebind.hidden, false); assert.equal(ui.apply.disabled, true);
+  assert.equal(ui.inputs.x.disabled, true); assert.match(ui.status.textContent, /Konfiguration hat sich geändert/);
+  ui.rebind.emit('click'); assert.equal(ui.rebind.hidden, true); assert.equal(ui.apply.disabled, false);
+  editor.setConfig({ ...config, titel: 'Noch eine Karte' });
+  ui.discard.emit('click'); assert.equal(ui.rebind.hidden, true); assert.equal(editor._layoutDraft.history.length, 1);
+});
+
+test('in-place nested config mutations and list reorder unbind a draft', () => {
+  const editor = new Editor(); editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  const raw = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, heizkreise: [{ name: 'A' }, { name: 'B' }] };
+  editor.setConfig(raw);
+  const card = new (registry.get('warmwasser-schema-card'))(); card.setConfig(raw);
+  const { x, y } = card._model.components.fm.origin;
+  editor._beginLayoutDraft(); editor._editLayoutDraft({ version: 2, components: { fm: { x: x + 30, y: y + 15 } } });
+  raw.fm.pumpe = 'sensor.other'; editor.setConfig(raw);
+  assert.equal(editor._layoutDraftState().status, 'unbound');
+  editor._rebindLayoutDraft();
+  raw.heizkreise.reverse(); editor.setConfig(raw);
+  assert.equal(editor._layoutDraftState().status, 'unbound');
+  assert.equal(editor._applyLayoutDraft().status, 'unbound');
+});
+
+test('invalid layout keeps a marked draft while canonical preview remains visible', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel;
+  const svg = { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.inputs.x.value = '72'; ui.inputs.x.emit('change'); ui.inputs.y.value = '14'; ui.inputs.y.emit('change');
+  assert.equal(ui.apply.disabled, true); assert.equal(ui.marker.style.display, 'block');
+  assert.equal(ui.marker.style.left, '72px'); assert.equal(ui.marker.style.top, '14px');
+  assert.ok(ui.previewRoot._html.includes('<svg')); assert.match(ui.status.textContent, /not supported/);
+});
+
+test('reattached editor preserves dirty history but requires explicit rebind', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  const config = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } };
+  editor.setConfig(config); const ui = editor._layoutPanel;
+  ui.inputs.x.value = String(Number(ui.inputs.x.value) + 30); ui.inputs.x.emit('change');
+  ui.inputs.y.value = String(Number(ui.inputs.y.value) + 15); ui.inputs.y.emit('change');
+  const before = plain(editor._layoutDraftState().layout), length = editor._layoutDraft.history.length;
+  assert.equal(ui.apply.disabled, false);
+  editor.disconnectedCallback(); editor.connectedCallback();
+  assert.equal(editor._layoutDraft.history.length, length);
+  assert.deepEqual(plain(editor._layoutDraftState().layout), before);
+  assert.equal(editor._layoutDraftState().status, 'unbound');
+  assert.equal(ui.apply.disabled, true); assert.equal(ui.rebind.hidden, false);
+  assert.equal(editor._applyLayoutDraft().status, 'unbound'); assert.equal(editor.events, undefined);
+  ui.rebind.emit('click'); assert.equal(ui.apply.disabled, false);
+  assert.equal(editor._applyLayoutDraft().status, 'applied');
+});
+
+test('external nested mutation without setConfig blocks draft apply until rebind', () => {
+  const editor = new Editor(); editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.other': { state: 'on' } } };
+  const config = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } };
+  editor.setConfig(config);
+  const card = new (registry.get('warmwasser-schema-card'))(); card.setConfig(config);
+  const { x, y } = card._model.components.fm.origin;
+  editor._beginLayoutDraft(); editor._editLayoutDraft({ version: 2, components: { fm: { x: x + 30, y: y + 15 } } });
+  config.fm.pumpe = 'sensor.other';
+  assert.equal(editor._applyLayoutDraft().status, 'unbound');
+  assert.equal(editor.events, undefined);
+  assert.equal(editor._rebindLayoutDraft().status, 'rendered-candidate');
+  assert.equal(editor._applyLayoutDraft().status, 'applied');
+  assert.equal(editor.events.length, 1);
 });
