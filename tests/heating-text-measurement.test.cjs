@@ -179,6 +179,22 @@ test('translated text parity accepts only matching style and linear matrix',asyn
   result=await stage(viewport.parent,'<svg></svg>','theme-1',1,()=>true,ref4,undefined,false,'translated');
   assert.equal(result.reason,'text-stage-viewport-unproven');
 });
+test('fixed viewport measures translated text boxes independently without authorizing paint',async()=>{
+  const f=stagingFixture();f.ready();f.style.height='150px';f.svg.style={};
+  f.node.getAttribute=name=>({x:'137',y:'338',class:'wc wt wo'})[name];
+  const reference={...f.svg,parentNode:f.parent,parentElement:f.parent},text={...f.node};
+  text.parentElement=reference;text.getBBox=()=>({x:30,y:15.000001,width:10,height:4});
+  reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+  const result=await stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference,undefined,true,'independent',true);
+  assert.equal(result.status,'unsupported');
+  assert.equal(result.textStyleParity,'independent-text-measurements-only');
+  assert.notEqual(result.textRecords[0].box.x,result.referenceTextRecords[0].box.x);
+  const changed=stagingFixture();changed.ready();changed.style.height='150px';changed.svg.style={};
+  const ref={...changed.svg,parentNode:changed.parent,parentElement:changed.parent},node={...changed.node};
+  node.parentElement=ref;ref.querySelectorAll=()=>[node];ref.contains=n=>n===node;
+  changed.svg.ownerDocument.defaultView.getComputedStyle=el=>el===node?{...changed.style,fontWeight:'700'}:changed.style;
+  assert.equal((await stage(changed.parent,'<svg></svg>','theme-1',1,()=>true,ref,undefined,false,'independent',true)).reason,'text-stage-style-mismatch');
+});
 test('screen transform changes after stage cleanup invalidate parity',async()=>{
   const f=stagingFixture();f.ready();
   const reference={...f.svg,parentNode:f.parent,parentElement:f.parent,

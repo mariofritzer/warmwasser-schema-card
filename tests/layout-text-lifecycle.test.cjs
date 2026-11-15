@@ -107,14 +107,27 @@ test('real pending Editor path rejects a measured volume overflow and keeps a fi
     const {x,y}=c._model.components.fm.origin,layout={version:2,components:{fm:{x:x+30,y:y+15}}};
     const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};
     f.owner._config=raw;f.owner._hass=hass;
-    setStage(async()=>({reason:'text-stage-style-and-paint-validation-required',textStyleParity:'translated-text-only',textRecords:[{
+    const records=[{
       text:`${value} l`,x:'137',y:'338',className:'wc wt wo',matrix:{a:1,b:0,c:0,d:1,e:0,f:0},
-      box:{x:125,y:329,width,height:10}}]}));
+      box:{x:125,y:329,width,height:10}}];
+    setStage(async()=>({reason:'text-stage-style-and-paint-validation-required',textStyleParity:'independent-text-measurements-only',
+      textRecords:records,referenceTextRecords:records}));
     assert.equal(preflight(raw,layout,hass,f.owner).status,'pending');
     await new Promise(resolve=>setImmediate(resolve));
     assert.match(f.owner._layoutPanel.status.textContent,expected);
     assert.equal(f.owner._layoutPanel.apply.disabled,true);
   }
+});
+test('independently overflowing reference rejects an otherwise fitting candidate',async()=>{
+  const f=fixture('editor'),raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm'}};
+  const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+  const {x,y}=c._model.components.fm.origin,layout={version:2,components:{fm:{x:x+30,y:y+15}}};
+  const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};f.owner._config=raw;f.owner._hass=hass;
+  const good={text:'500 l',x:'137',y:'338',className:'wc wt wo',matrix:{a:1,b:0,c:0,d:1,e:0,f:0},box:{x:125,y:329,width:24,height:10}};
+  setStage(async()=>({textStyleParity:'independent-text-measurements-only',textRecords:[good],
+    referenceTextRecords:[{...good,box:{...good.box,width:400}}]}));
+  assert.equal(preflight(raw,layout,hass,f.owner).status,'pending');await new Promise(resolve=>setImmediate(resolve));
+  assert.match(f.owner._layoutPanel.status.textContent,/does not fit/);assert.equal(f.owner._layoutPanel.apply.disabled,true);
 });
 test('real Card preparation stays pending and setConfig aborts it',async()=>{
   const f=fixture(),raw={speicher:{typ:'schicht',volumen:'W'.repeat(80)},fm:{pumpe:'sensor.fm'}};

@@ -1762,7 +1762,8 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
   };
   let stage,svg;
   try {
-    if (!['identical','translated'].includes(parityMode) || (parityMode==='translated' && !referenceSvg) ||
+    if (!['identical','translated','independent'].includes(parityMode) || (parityMode!=='identical' && !referenceSvg) ||
+        (parityMode==='independent' && !fixedViewport) ||
         !parent || !parent.isConnected || typeof candidateHtml!=='string' || !candidateHtml ||
         typeof contextKey!=='string' || !contextKey || typeof isCurrent!=='function' || !isCurrent(generation))
       return unsupported('text-stage-invalidated');
@@ -1792,7 +1793,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     stage=doc.createElement('div');
     stage.setAttribute('aria-hidden','true'); stage.setAttribute('inert','');
     stage.style.cssText='position:fixed;left:-100000px;top:0;pointer-events:none;z-index:-1;';
-    if (parityMode==='translated') {
+    if (parityMode==='translated' || parityMode==='independent') {
       // The SVG is width:100% in the real card. A fixed-position wrapper with
       // auto width otherwise shrink-wraps to ~300px and changes font metrics.
       // Reproduce the actual containing block's content width, not the old
@@ -1828,7 +1829,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     if (!current) return unsupported('text-stage-invalidated');
     const checked=checkMeasuredTextReserve(reserve,current,contextKey);
     if (checked.textReserve!=='fits') return checked;
-    let textStyleParity;
+    let textStyleParity,referenceEntries;
     if (referenceSvg) {
       if (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root)
         return unsupported('text-stage-reference-invalid');
@@ -1849,18 +1850,18 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
         return JSON.stringify(parts);
       };
       const tolerance=1e-9, close=(x,y)=>Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
-      const same=(a,b,translated=false)=>a.length===b.length && a.every((entry,i)=>{
+      const same=(a,b,translated=false,independent=false)=>a.length===b.length && a.every((entry,i)=>{
         const other=b[i],x=entry.box,y=other && other.box;
         const ma=JSON.parse(entry.fingerprint).at(-1),mb=other && JSON.parse(other.fingerprint).at(-1);
         return other && entry.text===other.text && parityFingerprint(entry.fingerprint)===parityFingerprint(other.fingerprint) && y &&
           ['a','b','c','d'].every(k=>close(ma[k],mb[k])) &&
           (translated || (close(ma.e,mb.e) && close(ma.f,mb.f))) &&
-          close(x.x+(translated?mb.e-ma.e:0),y.x) && close(x.y+(translated?mb.f-ma.f:0),y.y) &&
-          close(x.width,y.width) && close(x.height,y.height);
+          (independent || (close(x.x+(translated?mb.e-ma.e:0),y.x) && close(x.y+(translated?mb.f-ma.f:0),y.y) &&
+          close(x.width,y.width) && close(x.height,y.height)));
       });
-      const translated=parityMode==='translated';
-      if (!same(active.entries,current.entries,translated)) {
-        const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]],translated));
+      const translated=parityMode!=='identical',independent=parityMode==='independent';
+      if (!same(active.entries,current.entries,translated,independent)) {
+        const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]],translated,independent));
         const a=active.entries[index], b=current.entries[index];
         const aStyles=a && new Map(JSON.parse(parityFingerprint(a.fingerprint))[0]);
         const bStyles=b && new Map(JSON.parse(parityFingerprint(b.fingerprint))[0]);
@@ -1884,17 +1885,22 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       if (!sameScreen(referenceBeforeCleanup,screen(referenceSvg),allMatrix)) return unsupported('text-stage-viewport-unproven');
       const provenance=textMeasurementProvenance.get(active);
       const after=provenance && captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
-      if (!after || !after.entries || !same(active.entries,after.entries) || !same(current.entries,after.entries,translated) || active.fontEpoch!==after.fontEpoch)
+      if (!after || !after.entries || !same(active.entries,after.entries) || !same(current.entries,after.entries,translated,independent) || active.fontEpoch!==after.fontEpoch)
         return unsupported('text-stage-style-mismatch');
-      textStyleParity=translated?'translated-text-only':'identical-baseline-only';
+      referenceEntries=after.entries;
+      textStyleParity=independent?'independent-text-measurements-only':translated?'translated-text-only':'identical-baseline-only';
     }
     // Position and dimension can each differ by the parity tolerance.
     const pad=textStyleParity ? 4e-9 : 0;
     const boxes=current.entries.map(e=>({x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}));
-    const textRecords=includeTextRecords ? current.entries.map((e,i)=>({text:e.text,x:e.node.getAttribute('x'),y:e.node.getAttribute('y'),
-      className:e.node.getAttribute('class'),matrix:JSON.parse(e.fingerprint).at(-1),box:boxes[i]})) : undefined;
+    const records=entries=>entries.map(e=>({text:e.text,x:e.node.getAttribute('x'),y:e.node.getAttribute('y'),
+      className:e.node.getAttribute('class'),matrix:JSON.parse(e.fingerprint).at(-1),
+      box:{x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}}));
+    const textRecords=includeTextRecords ? records(current.entries) : undefined;
+    const referenceTextRecords=includeTextRecords && referenceEntries ? records(referenceEntries) : undefined;
     return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
-      textCount:current.entries.length,boxes,...(textStyleParity?{textStyleParity}:{}),...(textRecords?{textRecords}:{})};
+      textCount:current.entries.length,boxes,...(textStyleParity?{textStyleParity}:{}),...(textRecords?{textRecords}:{}),
+      ...(referenceTextRecords?{referenceTextRecords}:{})};
   } catch (_) { return unsupported('text-stage-unavailable'); }
   finally { if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove(); }
 }
@@ -3690,6 +3696,8 @@ function markLayoutTextUnproven(owner,parent,code='text-slots-and-paint-unproven
     owner._layoutPanel.apply.disabled=true;
     owner._layoutPanel.status.textContent=code==='volume-label-overflow' || code==='volume-label-pipe-contact'
       ? (de?'Das Volumenetikett passt nicht sicher in die Darstellung.':'The volume label does not fit safely in the diagram.')
+      : code==='volume-slots-staged-only'
+      ? (de?'Volumenetikett am Kandidaten geprüft; übriger Text und Zeichnung sind noch nicht vollständig geprüft.':'Candidate volume label checked; remaining text and paint validation is not complete yet.')
       : (de?'Text und Zeichnung sind noch nicht vollständig geprüft.':'Text and paint validation is not complete yet.');
   }
   if (owner._layoutStatus?.status==='pending') {
@@ -3789,9 +3797,17 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass)])===key;}catch(_){return false;}};
     const finish=result=>{
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
-      const volume=result?.textStyleParity==='translated-text-only'
-        ? inspectMeasuredVolumeSlots(card,candidate,result.textRecords) : {reason:'volume-text-unproven'};
-      const code=['volume-label-overflow','volume-label-pipe-contact'].includes(volume.reason)?volume.reason:'text-slots-and-paint-unproven';
+      const independent=result?.textStyleParity==='independent-text-measurements-only';
+      const volume=independent ? inspectMeasuredVolumeSlots(card,candidate,result.textRecords) : {reason:'volume-text-unproven'};
+      // The legacy reference's exact pipe inventory is not established. Its
+      // independently measured canonical slot can reject an overflow, but an
+      // empty route inventory must never be treated as a paint proof.
+      const reference=independent ? inspectMeasuredVolumeSlots(card,{model:diagramModel(card._cfg),routes:{}},result.referenceTextRecords)
+        : {reason:'volume-text-unproven'};
+      const negative=['volume-label-overflow','volume-label-pipe-contact'];
+      const code=negative.includes(volume.reason)?volume.reason:reference.reason==='volume-label-overflow'?reference.reason
+        : volume.reason==='volume-slots-staged-only' && reference.reason==='volume-slots-staged-only'
+        ? 'volume-slots-staged-only':'text-slots-and-paint-unproven';
       layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
     };
     Promise.resolve().then(()=>{
@@ -3806,7 +3822,7 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       if (!rect || ![rect.width,rect.height].every(Number.isFinite) || rect.width<=0 || rect.height<=0)
         return {status:'unsupported',reason:'text-stage-viewport-unproven'};
       job.width=rect.width;job.height=rect.height;
-      return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'translated',true);
+      return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'independent',true);
     })
       .then(finish,finish);
     return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
