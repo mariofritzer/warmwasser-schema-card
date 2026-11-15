@@ -74,9 +74,13 @@
         const realMount=root.querySelector('#real-mount'); realMount.replaceChildren(realSvg);
         const originalIds=[...realSvg.querySelectorAll('[id]')].map(n=>n.id);
         assert(originalIds.length>0,'Real card SVG has no definition IDs');
-        const realStage=await stageLegacyHeatingTextCandidate(mount,realSvg.outerHTML,'smoke-theme-1',1,n=>n===1);
-        assert(has(realStage,'text-stage-style-and-paint-validation-required') && realStage.textCount>0,`Real card staging: ${realStage.reason}`);
-        assert(mount.childNodes.length===0 && originalIds.join('|')===[...realSvg.querySelectorAll('[id]')].map(n=>n.id).join('|'),'Real card IDs or staging cleanup changed');
+        const realStage=await stageLegacyHeatingTextCandidate(realMount,realSvg.outerHTML,'smoke-theme-1',1,n=>n===1,realSvg);
+        assert(has(realStage,'text-stage-style-and-paint-validation-required') && realStage.textCount>0 && realStage.textStyleParity==='identical-baseline-only',`Real card text parity: ${realStage.reason} ${JSON.stringify(realStage.mismatch || {})}`);
+        assert(realMount.children.length===1 && originalIds.join('|')===[...realSvg.querySelectorAll('[id]')].map(n=>n.id).join('|'),'Real card IDs or staging cleanup changed');
+        const altered=realSvg.cloneNode(true); altered.querySelector('text').setAttribute('font-size','33');
+        const mismatch=await stageLegacyHeatingTextCandidate(realMount,altered.outerHTML,'smoke-theme-1',1,n=>n===1,realSvg);
+        assert(has(mismatch,'text-stage-style-mismatch'),`Altered card text style: ${mismatch.reason}`);
+        assert(realMount.children.length===1,'Mismatched stage was not cleaned up');
         realMount.replaceChildren();
         output.textContent='PASS — real SVG, fonts.ready, transform, stroke, Shadow DOM, theme, overflow, stale state, connected staging and real card ID namespaces';
       } catch (error) {

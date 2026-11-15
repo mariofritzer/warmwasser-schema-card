@@ -1725,7 +1725,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg) {
   const unsupported=reason=>({status:'unsupported',reason});
   let stage,svg;
   try {
@@ -1735,6 +1735,8 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     const doc=parent.ownerDocument, root=parent.getRootNode();
     if (!doc || !root || !root.host || !root.host.isConnected || typeof root.querySelectorAll!=='function')
       return unsupported('text-stage-unavailable');
+    if (referenceSvg && (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root))
+      return unsupported('text-stage-reference-invalid');
     const template=doc.createElement('template');
     template.innerHTML=candidateHtml;
     const children=Array.from(template.content.children);
@@ -1758,8 +1760,55 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
     const checked=checkMeasuredTextReserve(reserve,current,contextKey);
     if (checked.textReserve!=='fits') return checked;
+    let textStyleParity;
+    if (referenceSvg) {
+      if (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root)
+        return unsupported('text-stage-reference-invalid');
+      const active=await measureLegacyHeatingSvgText(referenceSvg,contextKey);
+      if (!isCurrent(generation) || !parent.isConnected || !intact() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
+        return unsupported('text-stage-invalidated');
+      if (!active.entries || checkMeasuredTextReserve(active,active,contextKey).textReserve!=='fits' ||
+          checkMeasuredTextReserve(current,current,contextKey).textReserve!=='fits') return unsupported('text-stage-parity-unavailable');
+      const parityFingerprint=value=>{
+        const parts=JSON.parse(value);
+        // The staging container deliberately disables pointer interaction and
+        // is inert; these inherited properties do not change text painting.
+        parts[0]=parts[0].filter(([name])=>name!=='pointer-events' && name!=='interactivity');
+        parts.pop(); // Compare the numeric matrix separately with bounded tolerance.
+        return JSON.stringify(parts);
+      };
+      const tolerance=1e-9, close=(x,y)=>Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
+      const same=(a,b)=>a.length===b.length && a.every((entry,i)=>{
+        const other=b[i],x=entry.box,y=other && other.box;
+        const ma=JSON.parse(entry.fingerprint).at(-1),mb=other && JSON.parse(other.fingerprint).at(-1);
+        return other && entry.text===other.text && parityFingerprint(entry.fingerprint)===parityFingerprint(other.fingerprint) && y &&
+          ['a','b','c','d','e','f'].every(k=>close(ma[k],mb[k])) &&
+          ['x','y','width','height'].every(k=>close(x[k],y[k]));
+      });
+      if (!same(active.entries,current.entries)) {
+        const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]]));
+        const a=active.entries[index], b=current.entries[index];
+        const aStyles=a && new Map(JSON.parse(parityFingerprint(a.fingerprint))[0]);
+        const bStyles=b && new Map(JSON.parse(parityFingerprint(b.fingerprint))[0]);
+        const properties=aStyles && bStyles ? [...new Set([...aStyles.keys(),...bStyles.keys()])].filter(k=>aStyles.get(k)!==bStyles.get(k)) : [];
+        return {status:'unsupported',reason:'text-stage-style-mismatch',mismatch:{index,properties,
+          activeBox:a && a.box,stageBox:b && b.box,
+          activeMatrix:a && JSON.parse(a.fingerprint).at(-1),stageMatrix:b && JSON.parse(b.fingerprint).at(-1)}};
+      }
+      // Recheck the visible SVG after removing the staged sibling: structural
+      // selectors such as :last-child must not alter the on-screen styles.
+      stage.remove(); stage=null;
+      if (!isCurrent(generation) || !referenceSvg.isConnected || referenceSvg.parentNode!==parent) return unsupported('text-stage-invalidated');
+      const provenance=textMeasurementProvenance.get(active);
+      const after=provenance && captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
+      if (!after || !after.entries || !same(active.entries,after.entries) || !same(current.entries,after.entries) || active.fontEpoch!==after.fontEpoch)
+        return unsupported('text-stage-style-mismatch');
+      textStyleParity='identical-baseline-only';
+    }
+    // Position and dimension can each differ by the parity tolerance.
+    const pad=textStyleParity ? 2e-9 : 0;
     return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
-      textCount:current.entries.length,boxes:current.entries.map(e=>({...e.box}))};
+      textCount:current.entries.length,boxes:current.entries.map(e=>({x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad})),...(textStyleParity?{textStyleParity}:{})};
   } catch (_) { return unsupported('text-stage-unavailable'); }
   finally { if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove(); }
 }
@@ -2986,10 +3035,23 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
   // Internal scope is checked before layout syntax. A public integration must
   // explicitly decide its error precedence and user-facing diagnostics.
   if (!supported) return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
-  // Fixed singleton IDs only. No manual port sides or indexed list identities
-  // are advertised until their placement and routing contracts are proven.
-  const capabilities = { components: { fm: 'fm', ...(config.wp ? { wp: 'wp' } : {}) }, ports: {},
-    inactive: { components: config.wp ? {} : { wp: 'wp' }, ports: {} } };
+  // Only the physical sides already drawn by the symbol, with a matching
+  // routing direction and stub, are supported. Auto selects that sole proven
+  // side; manual can pin it. Alternative sides need their own painted symbol,
+  // obstacle and complete batch-routing evidence before they can be offered.
+  const fixedPorts = { 'fm.supply': 'left', 'fm.return': 'right',
+    'wp.upper-supply': 'top', 'wp.lower-supply': 'left', 'wp.return': 'left' };
+  const ports = {}, inactivePorts = {};
+  for (const [ref, side] of Object.entries(fixedPorts)) {
+    const [id, name] = ref.split('.');
+    if (!model.components[id]) { inactivePorts[ref] = [side]; continue; }
+    const port = model.components[id].ports[name], geometry = diagramPortGeometry(model, ref);
+    if (!port || port.direction !== side || geometry.side !== side || !geometry.stub)
+      return { status: 'unsupported', errors: [{ code: 'unproven-port-geometry', path: `layout.ports.${ref}` }] };
+    ports[ref] = [side];
+  }
+  const capabilities = { components: { fm: 'fm', ...(config.wp ? { wp: 'wp' } : {}) }, ports,
+    inactive: { components: config.wp ? {} : { wp: 'wp' }, ports: inactivePorts } };
   const validation = validateLayoutV2(layout, capabilities);
   if (validation.errors.length) return { status: 'invalid', errors: validation.errors };
   for (const [id, position] of Object.entries(layout.components || {})) {

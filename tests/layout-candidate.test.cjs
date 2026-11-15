@@ -28,7 +28,7 @@ for (const wp of [false, true]) test(`fresh FM${wp ? '/WP' : ''} candidate valid
 
 test('unproven identities and port overrides are rejected', () => {
   const { resolve } = fixture();
-  const result = resolve({ version: 2, components: { wp: { x: 1, y: 2 } }, ports: { 'fm.supply': { mode: 'auto' } } });
+  const result = resolve({ version: 2, components: { wp: { x: 1, y: 2 } }, ports: { 'fm.unproved': { mode: 'auto' } } });
   assert.equal(result.status, 'invalid');
   assert.deepEqual(Array.from(result.errors, e => e.code), ['unknown-id']);
   assert.equal(result.model, undefined);
@@ -196,4 +196,42 @@ test('internal commit is transactional and never persists layout', () => {
   card.setConfig(raw);
   assert.equal(card._layoutCandidate, null);
   assert.equal(card._model.components.fm.origin.x, x);
+});
+
+for (const wp of [false, true]) test(`proven canonical ports support auto and manual with full FM${wp ? '/WP' : ''} batch`, () => {
+  const { card, resolve } = fixture(wp ? { wp: { betrieb: 'sensor.wp' } } : {});
+  const { x, y } = card._model.components.fm.origin;
+  const common = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  const base = resolve(common);
+  const ports = { 'fm.supply': { mode: 'manual', side: 'left' }, 'fm.return': { mode: 'auto' },
+    'wp.upper-supply': { mode: 'manual', side: 'top' }, 'wp.lower-supply': { mode: 'manual', side: 'left' }, 'wp.return': { mode: 'auto' } };
+  const layout = { ...common, ports }, before = JSON.stringify(layout), result = resolve(layout);
+  assert.equal(result.status, 'candidate', JSON.stringify(result.errors));
+  assert.deepEqual(Array.from(Object.keys(result.routes)).sort(), Array.from(Object.keys(base.routes)).sort());
+  assert.equal(Object.keys(result.routes).length, wp ? 7 : 2);
+  assert.equal(JSON.stringify(result.routes), JSON.stringify(base.routes));
+  assert.equal(JSON.stringify(result.model), JSON.stringify(base.model));
+  assert.equal(result.inactive.length, wp ? 0 : 3);
+  assert.equal(JSON.stringify(layout), before);
+});
+
+test('manual port sides outside the drawn geometry fail closed, including dormant WP', () => {
+  for (const extra of [{}, { wp: { betrieb: 'sensor.wp' } }]) {
+    const { card, resolve } = fixture(extra);
+    const { x, y } = card._model.components.fm.origin;
+    for (const id of ['fm.supply', 'fm.return', 'wp.upper-supply', 'wp.lower-supply', 'wp.return']) {
+      const result = resolve({ version: 2, components: { fm: { x: x + 30, y: y + 15 } }, ports: { [id]: { mode: 'manual', side: 'bottom' } } });
+      assert.equal(result.status, 'invalid', id); assert.ok(result.errors.some(e => e.code === 'invalid-side')); assert.equal(result.model, undefined);
+    }
+  }
+});
+
+test('port contracts use the same routed preflight and leave legacy output unchanged', () => {
+  const { raw, card } = fixture({ wp: { betrieb: 'sensor.wp' } });
+  const hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  card._hass = hass; const legacy = card._render(), { x, y } = card._model.components.fm.origin;
+  const base = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  const portLayout = { ...base, ports: { 'fm.supply': { mode: 'manual', side: 'left' }, 'wp.return': { mode: 'manual', side: 'left' } } };
+  assert.equal(context.preflight(raw, base, hass).html, context.preflight(raw, portLayout, hass).html);
+  assert.equal(card._render(), legacy);
 });

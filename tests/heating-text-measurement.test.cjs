@@ -119,6 +119,39 @@ test('staging measures a connected same-shadow candidate and always cleans up',a
   assert.equal(result.textCount,1);
   assert.equal(f.removed(),true);
 });
+test('identical baseline text parity is checked with and without the staged sibling',async()=>{
+  const f=stagingFixture(); f.ready();
+  const reference={...f.svg,parentNode:f.parent,parentElement:f.parent}, text={...f.node};
+  text.parentElement=reference; reference.querySelectorAll=()=>[text]; reference.contains=n=>n===text;
+  const result=await stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference);
+  assert.equal(result.reason,'text-stage-style-and-paint-validation-required');
+  assert.equal(result.textStyleParity,'identical-baseline-only');
+  assert.equal(f.removed(),true);
+  const near=stagingFixture(); near.ready();
+  const nearRef={...near.svg,parentNode:near.parent,parentElement:near.parent}, nearText={...near.node};
+  nearText.parentElement=nearRef; nearText.getBBox=()=>({x:5e-10,y:0,width:10,height:4});
+  nearRef.querySelectorAll=()=>[nearText]; nearRef.contains=n=>n===nearText;
+  const tolerant=await stage(near.parent,'<svg></svg>','theme-1',1,()=>true,nearRef);
+  assert.equal(tolerant.textStyleParity,'identical-baseline-only');
+  assert.ok(tolerant.boxes[0].x<0 && tolerant.boxes[0].width>10);
+  const far=stagingFixture(); far.ready();
+  const farRef={...far.svg,parentNode:far.parent,parentElement:far.parent}, farText={...far.node};
+  farText.parentElement=farRef; farText.getBBox=()=>({x:1e-6,y:0,width:10,height:4});
+  farRef.querySelectorAll=()=>[farText]; farRef.contains=n=>n===farText;
+  assert.equal((await stage(far.parent,'<svg></svg>','theme-1',1,()=>true,farRef)).reason,'text-stage-style-mismatch');
+  // Pairwise tolerances must not add up between staging, live and post-cleanup.
+  const drift=stagingFixture(); drift.ready();
+  const driftRef={...drift.svg,parentNode:drift.parent,parentElement:drift.parent}, driftText={...drift.node};
+  let reads=0; driftText.parentElement=driftRef;
+  driftText.getBBox=()=>{const d=++reads<=2 ? 0.9e-9 : 1.8e-9; return {x:d,y:d,width:10+d,height:4+d};};
+  driftRef.querySelectorAll=()=>[driftText]; driftRef.contains=n=>n===driftText;
+  assert.equal((await stage(drift.parent,'<svg></svg>','theme-1',1,()=>true,driftRef)).reason,'text-stage-style-mismatch');
+  const g=stagingFixture(); g.ready();
+  const changed={...g.svg,parentNode:g.parent,parentElement:g.parent}, other={...g.node,textContent:'different'};
+  other.parentElement=changed; changed.querySelectorAll=()=>[other]; changed.contains=n=>n===other;
+  assert.equal((await stage(g.parent,'<svg></svg>','theme-1',1,()=>true,changed)).reason,'text-stage-style-mismatch');
+  assert.equal(g.removed(),true);
+});
 test('staging discards stale generations after fonts resolve and cleans up',async()=>{
   const f=stagingFixture(); let generation=1;
   const pending=stage(f.parent,'<svg></svg>','theme-1',1,n=>n===generation);
