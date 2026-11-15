@@ -7,11 +7,13 @@ const vm = require('node:vm');
 // Minimal DOM: exercise the editor's actual form/button callbacks and emitted
 // events. This does not simulate Home Assistant's ha-form implementation.
 class Element {
-  constructor(tag = '') { this.tagName = tag; this.children = []; this.listeners = {}; }
+  constructor(tag = '') { this.tagName = tag; this.children = []; this.listeners = {}; this.style = {}; }
   appendChild(child) { this.children.push(child); return child; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   setAttribute(name, value) { (this.attributes ||= {})[name] = value; }
   replaceChildren(...children) { this.children = children; }
+  querySelector() { return null; }
+  getBoundingClientRect() { return this.rect || { left: 0, top: 0, width: 800, height: 600 }; }
   attachShadow() { return this.shadowRoot = new Element('shadow'); }
   emit(type, detail) { for (const fn of this.listeners[type] || []) fn({ detail, target: this, stopPropagation() {}, preventDefault() {}, ...(detail || {}) }); }
   set innerHTML(value) { this._html = value; this.children = []; }
@@ -23,10 +25,19 @@ class Host extends Element {
 }
 class CustomEvent { constructor(type, options) { this.type = type; Object.assign(this, options); } }
 const registry = new Map();
+const frames = new Map(); let nextFrame = 0;
+const observers = [];
+class ResizeObserverMock {
+  constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); }
+  observe(target) { this.target = target; }
+  disconnect() { this.disconnected = true; }
+}
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8'), {
-  HTMLElement: Host, CustomEvent, document: { createElement: tag => new Element(tag) },
+  HTMLElement: Host, CustomEvent, ResizeObserver: ResizeObserverMock, document: { createElement: tag => new Element(tag) },
   customElements: { get: name => registry.get(name), define: (name, ctor) => registry.set(name, ctor) },
   window: {}, console: { info() {} },
+  requestAnimationFrame: fn => { const id = ++nextFrame; frames.set(id, fn); return id; },
+  cancelAnimationFrame: id => frames.delete(id),
 });
 const Editor = registry.get('warmwasser-schema-card-editor');
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -261,4 +272,80 @@ test('visual refresh performs one live preflight render per valid draft', () => 
     assert.ok(ui.previewRoot._html.includes('<svg'));
     assert.equal(ui.apply.disabled, false);
   } finally { Card.prototype._render = render; }
+});
+
+test('pointer drag uses inverse screen matrix, coalesces moves and cancels stale frames', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel, x = Number(ui.inputs.x.value), y = Number(ui.inputs.y.value);
+  const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 0, f: 0 }) }),
+    getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+  ui.previewRoot.querySelector = () => svg;
+  ui.viewport.getBoundingClientRect = () => ({ left: 0, top: 0 }); ui.viewport.scrollLeft = 0; ui.viewport.scrollTop = 0;
+  ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
+  const pointer = (clientX, clientY) => ({ pointerId: 1, isPrimary: true, pointerType: 'touch', button: 0, clientX, clientY });
+  ui.overlay.emit('pointerdown', pointer(10, 20));
+  ui.overlay.emit('pointermove', pointer(30, 40)); ui.overlay.emit('pointermove', pointer(50, 60));
+  assert.equal(frames.size, 1);
+  const frame = [...frames.values()][0]; frames.clear(); frame();
+  assert.equal(Number(ui.inputs.x.value), x + 20); assert.equal(Number(ui.inputs.y.value), y + 20);
+  ui.overlay.emit('pointermove', pointer(70, 80));
+  ui.overlay.emit('pointerup', pointer(70, 80));
+  assert.equal(Number(ui.inputs.x.value), x + 30); assert.equal(Number(ui.inputs.y.value), y + 30);
+  assert.equal(frames.size, 0); assert.equal(editor._layoutDraft.history.length, 2);
+  ui.undo.emit('click'); assert.equal(Number(ui.inputs.x.value), x);
+  ui.overlay.emit('pointerdown', pointer(10, 20)); ui.overlay.emit('pointermove', pointer(50, 60));
+  const cancelledFrame = [...frames.values()][0]; frames.clear(); cancelledFrame();
+  assert.equal(Number(ui.inputs.x.value), x + 20);
+  ui.overlay.emit('pointercancel', pointer(50, 60)); assert.equal(Number(ui.inputs.x.value), x);
+  assert.equal(editor._layoutDraft.history.length, 2); // Redo branch is restored.
+  ui.overlay.emit('pointerdown', pointer(10, 20)); ui.overlay.emit('pointermove', pointer(50, 60));
+  const stale = [...frames.values()][0];
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  stale(); assert.equal(editor._layoutDraft.history.length, 1);
+});
+
+test('rebuild and disconnect cancel a drag and reject old animation frames', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const armDrag = () => {
+    const ui = editor._layoutPanel;
+    const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
+      getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+    ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+    ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
+    const event = { pointerId: 7, isPrimary: true, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 };
+    ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: 50 });
+    return { ui, stale: [...frames.values()][0] };
+  };
+  const original = Number(editor._layoutPanel.inputs.x.value);
+  const first = armDrag(), oldObserver = editor._layoutResizeObserver;
+  editor._build(); assert.equal(oldObserver.disconnected, true); assert.equal(editor._layoutDrag, null);
+  first.stale(); assert.equal(Number(editor._layoutPanel.inputs.x.value), original);
+  assert.equal(editor._layoutDraft.history.length, 1);
+  const second = armDrag(), secondObserver = editor._layoutResizeObserver;
+  editor.disconnectedCallback(); assert.equal(secondObserver.disconnected, true); assert.equal(editor._layoutDrag, null);
+  second.stale(); assert.equal(Number(editor._layoutPanel.inputs.x.value), original);
+  assert.equal(editor._layoutDraft.history.length, 1);
+  editor.connectedCallback(); assert.notEqual(editor._layoutResizeObserver, secondObserver);
+});
+
+test('resize repositions overlay and cancels active drag with stale transform', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel, observer = editor._layoutResizeObserver;
+  let width = 400;
+  const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
+    getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 10, top: 20, width, height: 300 }) };
+  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
+  const event = { pointerId: 8, isPrimary: true, pointerType: 'touch', clientX: 10, clientY: 20 };
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: 40 });
+  const stale = [...frames.values()][0];
+  width = 250; ui.viewport.rect = { left: 0, top: 0, width: 500, height: 400 };
+  observer.callback(); assert.equal(editor._layoutDrag, null); assert.equal(ui.overlay.style.width, '250px');
+  stale(); assert.equal(editor._layoutDraft.history.length, 1);
 });

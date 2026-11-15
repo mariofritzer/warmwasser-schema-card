@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>SVG text measurement smoke test</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+    button { padding: .6rem 1rem; } pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>SVG text measurement smoke test</h1>
+  <p>Runs locally with real browser fonts, SVG geometry and Shadow DOM. No card configuration is changed.</p>
+  <button id="run" type="button">Run tests / Tests ausführen</button>
+  <pre id="result" role="status" aria-live="polite">Ready / Bereit</pre>
+  <div id="host"></div>
+  <script src="../../warmwasser-schema-card.js"></script>
+  <script>
+  (() => {
+    const host=document.querySelector('#host'), root=host.attachShadow({mode:'open'});
+    root.innerHTML=`<style>
+      svg { display:block; width:400px; height:150px; }
+      .label { font: 20px sans-serif; fill:#fff; stroke:#000; stroke-width:2.5px; stroke-linejoin:round; paint-order:stroke; }
+    </style><svg viewBox="0 0 400 150" xmlns="http://www.w3.org/2000/svg" aria-label="Measurement fixture">
+      <g transform="translate(40 25) scale(1.5)"><text class="label" x="0" y="30">Warmwasser</text></g>
+    </svg>`;
+    const svg=root.querySelector('svg'), label=root.querySelector('text'), output=document.querySelector('#result');
+    const assert=(condition,message)=>{ if(!condition) throw new Error(message); };
+    const has=(result,reason)=>result && result.reason===reason;
+    document.querySelector('#run').addEventListener('click',async()=>{
+      output.textContent='Running / Läuft …';
+      label.textContent='Warmwasser'; label.style.fontWeight=''; host.style.display=''; host.style.textDecorationLine='';
+      try {
+        const reserve=await measureLegacyHeatingSvgText(svg,'smoke-theme-1');
+        assert(has(reserve,'text-inventory-validation-required'),`Initial measurement: ${reserve.reason}`);
+        assert(reserve.entries.length===1,'Expected one measured text element');
+        const measured=reserve.entries[0].box, raw=label.getBBox();
+        assert(measured.width>raw.width && measured.height>raw.height,'Transform/stroke enclosure missing');
+        assert(measured.x<40 && measured.x>30,'Root-coordinate translation missing');
+        let current=await measureLegacyHeatingSvgText(svg,'smoke-theme-1');
+        assert(checkMeasuredTextReserve(reserve,current,'smoke-theme-1').textReserve==='fits','Unchanged text does not fit');
+        assert(has(checkMeasuredTextReserve(reserve,current,'smoke-theme-2'),'text-reserve-invalidated'),'Theme key change accepted');
+        label.textContent='Warmwasser with a significantly longer value';
+        current=await measureLegacyHeatingSvgText(svg,'smoke-theme-1');
+        const overflow=checkMeasuredTextReserve(reserve,current,'smoke-theme-1');
+        const beforeStyles=new Map(JSON.parse(reserve.entries[0].fingerprint)[0]);
+        const afterStyles=new Map(JSON.parse(current.entries[0].fingerprint)[0]);
+        const differences=[...new Set([...beforeStyles.keys(),...afterStyles.keys()])].filter(k=>beforeStyles.get(k)!==afterStyles.get(k)).map(k=>`${k}: ${beforeStyles.get(k)} → ${afterStyles.get(k)}`);
+        assert(has(overflow,'text-reserve-overflow'),`Text overflow result: ${overflow.reason}; widths ${reserve.entries[0].box.width}/${current.entries[0].box.width}; styles ${differences.join(', ')}`);
+        label.textContent='Warmwasser';
+        current=await measureLegacyHeatingSvgText(svg,'smoke-theme-1');
+        label.textContent='changed after snapshot';
+        assert(has(checkMeasuredTextReserve(reserve,current,'smoke-theme-1'),'text-reserve-invalidated'),'Stale text snapshot accepted');
+        label.textContent='Warmwasser'; host.style.display='none';
+        assert(has(await measureLegacyHeatingSvgText(svg,'smoke-theme-1'),'text-effect-unproven'),'Hidden shadow host accepted');
+        host.style.display=''; host.style.textDecorationLine='underline';
+        assert(has(await measureLegacyHeatingSvgText(svg,'smoke-theme-1'),'text-effect-unproven'),'Ancestor underline accepted');
+        host.style.textDecorationLine=''; label.style.strokeWidth='10%';
+        assert(has(await measureLegacyHeatingSvgText(svg,'smoke-theme-1'),'text-effect-unproven'),'Percentage stroke accepted');
+        label.style.strokeWidth='';
+        output.textContent='PASS — real SVG, fonts.ready, transform, stroke, Shadow DOM, theme, overflow, stale state and hidden/effect checks';
+      } catch (error) {
+        output.textContent=`FAIL — ${error && error.message || error}`;
+      } finally { host.style.display=''; host.style.textDecorationLine=''; label.style.strokeWidth=''; }
+    });
+  })();
+  </script>
+</body>
+</html>

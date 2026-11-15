@@ -81,6 +81,7 @@
           reset();
           let ui = editor._layoutPanel;
           check(!!ui.previewRoot.querySelector('svg'), 'canonical SVG preview');
+          check(ui.overlay.getBoundingClientRect().width > 0 && getComputedStyle(ui.overlay).touchAction === 'none', 'interactive touch overlay');
           const x = Number(ui.inputs.x.value), y = Number(ui.inputs.y.value);
           ui.inputs.x.value = String(x + 30); ui.inputs.x.dispatchEvent(new Event('change', { bubbles: true }));
           ui.inputs.y.value = String(y + 15); ui.inputs.y.dispatchEvent(new Event('change', { bubbles: true }));

@@ -1517,6 +1517,148 @@ function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localB
 // the entire region is opaque or that intersecting it is visually safe.
 // Text bounds depend on rendered strings and fonts and are intentionally not
 // estimated from character count or these component bounds.
+// Conservative transformed bounds for a measured SVG text box. A finite,
+// nonsingular matrix maps text-local coordinates into root SVG coordinates.
+function transformMeasuredTextBox(box, matrix, strokeWidth) {
+  if (!box || !matrix || ![box.x,box.y,box.width,box.height,matrix.a,matrix.b,matrix.c,matrix.d,matrix.e,matrix.f,strokeWidth].every(Number.isFinite) ||
+      box.width<0 || box.height<0 || strokeWidth<0) return null;
+  const determinant=matrix.a*matrix.d-matrix.b*matrix.c;
+  if (!Number.isFinite(determinant) || determinant===0) return null;
+  const p=strokeWidth/2, xs=[box.x-p,box.x+box.width+p], ys=[box.y-p,box.y+box.height+p], points=[];
+  for (const x of xs) for (const y of ys) points.push({x:matrix.a*x+matrix.c*y+matrix.e,y:matrix.b*x+matrix.d*y+matrix.f});
+  if (points.some(q=>!Number.isFinite(q.x)||!Number.isFinite(q.y))) return null;
+  const x=Math.min(...points.map(q=>q.x)), y=Math.min(...points.map(q=>q.y));
+  const width=Math.max(...points.map(q=>q.x))-x, height=Math.max(...points.map(q=>q.y))-y;
+  return [x,y,width,height,x+width,y+height].every(Number.isFinite) ? {x,y,width,height} : null;
+}
+
+// A current measurement fits only the same ordered text inventory and the
+// exact font/style/transform fingerprint captured with the reservation.
+function checkMeasuredTextReserve(reserved, current, liveContextKey) {
+  const unsupported = reason => ({status:'unsupported',reason});
+  if (!reserved || !current || !Array.isArray(reserved.entries) || !Array.isArray(current.entries) ||
+      reserved.fontEpoch!==current.fontEpoch || typeof reserved.contextKey!=='string' || !reserved.contextKey ||
+      reserved.contextKey!==current.contextKey || current.contextKey!==liveContextKey || reserved.entries.length!==current.entries.length)
+    return unsupported('text-reserve-invalidated');
+  const first=textMeasurementProvenance.get(reserved), latest=textMeasurementProvenance.get(current);
+  if (!first || !latest || first.svg!==latest.svg || first.fonts!==latest.fonts ||
+      latest.svg.ownerDocument.fonts!==latest.fonts || latest.fonts.status!=='loaded' || latest.epoch.value!==current.fontEpoch)
+    return unsupported('text-reserve-invalidated');
+  // Re-measure synchronously. This is only a point-in-time diagnostic, never a
+  // durable authorization to commit or use a later animation frame.
+  const live=captureLegacyHeatingSvgText(latest.svg,current.contextKey,latest.fonts,latest.epoch);
+  if (!live.entries || live.fontEpoch!==current.fontEpoch || live.entries.length!==current.entries.length)
+    return unsupported('text-reserve-invalidated');
+  for (let i=0;i<reserved.entries.length;i++) {
+    const a=reserved.entries[i],b=current.entries[i],c=live.entries[i],r=a && a.box,q=b && b.box,t=c && c.box;
+    if (!a || !b || a.node!==b.node || !r || !q ||
+        !c || c.node!==b.node || c.fingerprint!==b.fingerprint || c.text!==b.text || !t ||
+        t.x!==q.x || t.y!==q.y || t.width!==q.width || t.height!==q.height ||
+        ![r.x,r.y,r.width,r.height,q.x,q.y,q.width,q.height].every(Number.isFinite) ||
+        r.width<0 || r.height<0 || q.width<0 || q.height<0 ||
+        ![r.x+r.width,r.y+r.height,q.x+q.width,q.y+q.height].every(Number.isFinite))
+      return unsupported('text-reserve-invalidated');
+  }
+  for (let i=0;i<reserved.entries.length;i++) {
+    const r=reserved.entries[i].box,q=current.entries[i].box;
+    if (q.x<r.x || q.y<r.y || q.x+q.width>r.x+r.width || q.y+q.height>r.y+r.height)
+      return unsupported('text-reserve-overflow');
+  }
+  for (let i=0;i<reserved.entries.length;i++)
+    if (reserved.entries[i].fingerprint!==current.entries[i].fingerprint) return unsupported('text-reserve-invalidated');
+  // Even a fitting text reservation says nothing about non-text paint.
+  return {status:'unsupported',reason:'non-text-paint-validation-required',textReserve:'fits'};
+}
+
+const heatingFontEpochs = new WeakMap();
+const textMeasurementProvenance = new WeakMap();
+async function measureLegacyHeatingSvgText(svg, contextKey) {
+  const unsupported = reason => ({status:'unsupported',reason});
+  try {
+    const doc=svg && svg.ownerDocument, fonts=doc && doc.fonts, view=doc && doc.defaultView;
+    if (typeof contextKey!=='string' || !contextKey || !svg || !svg.isConnected || !fonts || !fonts.ready || !view || typeof view.getComputedStyle!=='function' ||
+        typeof fonts.addEventListener!=='function' || typeof svg.querySelectorAll!=='function') return unsupported('text-measurement-unavailable');
+    let epoch=heatingFontEpochs.get(fonts);
+    if (!epoch) {
+      epoch={value:0};
+      fonts.addEventListener('loading',()=>epoch.value++);
+      fonts.addEventListener('loadingdone',()=>epoch.value++);
+      fonts.addEventListener('loadingerror',()=>epoch.value++);
+      heatingFontEpochs.set(fonts,epoch);
+    }
+    await fonts.ready;
+    return captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch);
+  } catch (_) { return unsupported('text-measurement-unavailable'); }
+}
+
+function captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch) {
+  const unsupported = reason => ({status:'unsupported',reason});
+  try {
+    const doc=svg && svg.ownerDocument, view=doc && doc.defaultView;
+    if (!doc || doc.fonts!==fonts || !view || typeof view.getComputedStyle!=='function') return unsupported('text-measurement-unavailable');
+    if (!svg.isConnected || fonts.status!=='loaded') return unsupported('text-measurement-unavailable');
+    const fontEpoch=epoch.value, root=svg.getScreenCTM(), det=root && root.a*root.d-root.b*root.c;
+    if (!root || root.is2D===false || ![root.a,root.b,root.c,root.d,root.e,root.f,det].every(Number.isFinite) || !det)
+      return unsupported('text-measurement-unavailable');
+    const inv={a:root.d/det,b:-root.b/det,c:-root.c/det,d:root.a/det,
+      e:(root.c*root.f-root.d*root.e)/det,f:(root.b*root.e-root.a*root.f)/det};
+    const entries=[];
+    for (const node of svg.querySelectorAll('text')) {
+      if (!node.isConnected || node.ownerDocument!==doc || !svg.contains(node)) return unsupported('text-measurement-unavailable');
+      if (node.children && node.children.length) return unsupported('text-effect-unproven');
+      const seen=new Set(); let ancestor=node, sawSvg=false;
+      while (ancestor) {
+        if (seen.has(ancestor)) return unsupported('text-measurement-unavailable');
+        seen.add(ancestor);
+        const effect=view.getComputedStyle(ancestor);
+        if (!effect || effect.display==='none' || effect.visibility==='hidden' || effect.visibility==='collapse' ||
+            effect.filter!=='none' || effect.clipPath!=='none' || effect.mask!=='none' ||
+            (effect.textShadow && effect.textShadow!=='none') ||
+            (effect.textDecorationLine && effect.textDecorationLine!=='none')) return unsupported('text-effect-unproven');
+        if (ancestor===svg) sawSvg=true;
+        const parent=ancestor.parentElement;
+        if (parent) ancestor=parent;
+        else {
+          const tree=typeof ancestor.getRootNode==='function' ? ancestor.getRootNode() : null;
+          ancestor=tree && tree.host || null;
+        }
+      }
+      if (!sawSvg) return unsupported('text-measurement-unavailable');
+      const style=view.getComputedStyle(node), m=node.getScreenCTM(), box=node.getBBox();
+      if (!style || !m || m.is2D===false || style.filter!=='none' || style.clipPath!=='none' || style.mask!=='none' ||
+          (style.vectorEffect && style.vectorEffect!=='none')) return unsupported('text-effect-unproven');
+      const length=typeof style.strokeWidth==='string' && style.strokeWidth.trim();
+      if (style.stroke!=='none' && (!length || !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(length))) return unsupported('text-effect-unproven');
+      const stroke=style.stroke==='none' ? 0 : Number.parseFloat(length);
+      if (!Number.isFinite(stroke) || stroke<0 || (stroke && style.strokeLinejoin!=='round')) return unsupported('text-effect-unproven');
+      if (typeof node.textContent!=='string' || (node.textContent.length && (!box || box.width===0 || box.height===0)))
+        return unsupported('text-measurement-unavailable');
+      const matrix={a:inv.a*m.a+inv.c*m.b,b:inv.b*m.a+inv.d*m.b,c:inv.a*m.c+inv.c*m.d,d:inv.b*m.c+inv.d*m.d,
+        e:inv.a*m.e+inv.c*m.f+inv.e,f:inv.b*m.e+inv.d*m.f+inv.f};
+      const transformed=transformMeasuredTextBox(box,matrix,stroke);
+      if (!transformed) return unsupported('text-measurement-unavailable');
+      if (!Number.isInteger(style.length) || typeof style.getPropertyValue!=='function') return unsupported('text-measurement-unavailable');
+      const computed=[];
+      for (let i=0;i<style.length;i++) {
+        const name=style[i];
+        if (typeof name!=='string') return unsupported('text-measurement-unavailable');
+        computed.push([name,style.getPropertyValue(name)]);
+      }
+      computed.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+      const fingerprint=JSON.stringify([computed,style.font,style.fontFamily,style.fontSize,style.fontWeight,style.fontStyle,
+        style.fontStretch,style.letterSpacing,style.wordSpacing,style.stroke,style.strokeWidth,style.strokeLinejoin,
+        style.direction,style.writingMode,style.textAnchor,style.textRendering,style.vectorEffect,
+        style.fontKerning,style.fontFeatureSettings,style.fontVariationSettings,style.fontVariant,
+        style.fontSynthesis,style.textTransform,style.textDecorationLine,matrix]);
+      entries.push(Object.freeze({node,text:node.textContent,fingerprint,box:Object.freeze(transformed)}));
+    }
+    if (!svg.isConnected || fonts.status!=='loaded' || epoch.value!==fontEpoch) return unsupported('text-measurement-invalidated');
+    const result=Object.freeze({status:'unsupported',reason:'text-inventory-validation-required',contextKey,fontEpoch,entries:Object.freeze(entries)});
+    textMeasurementProvenance.set(result,{svg,fonts,epoch});
+    return result;
+  } catch (_) { return unsupported('text-measurement-unavailable'); }
+}
+
 function inventoryLegacyHeatingDecorations(model, prepared, routes, compiled, localBridge, options = {}) {
   const unsupported = reason => ({status:'unsupported',reason});
   const shadows=[];
@@ -3335,6 +3477,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
+    this._endLayoutDrag(false);
     this._layoutDraft = null;
     const c = { ...config };
     if (Array.isArray(c.fuehler)) c.fuehler = c.fuehler.map((f) => (Array.isArray(f) ? aufraeumen({ name: f[0], entity: f[1], hoehe: f[2] }) : { ...f }));
@@ -3472,25 +3615,73 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     };
     const move = (dx, dy) => { const p = this._layoutUIPosition(); if (p) this._setLayoutUIPosition({ x: p.x + dx, y: p.y + dy }); };
     for (const [text, dx, dy, name] of [['←', -1, 0, label('Links', 'Left')], ['↑', 0, -1, label('Hoch', 'Up')], ['↓', 0, 1, label('Runter', 'Down')], ['→', 1, 0, label('Rechts', 'Right')]]) button(text, () => move(dx, dy), name);
-    const undo = button(label('Rückgängig', 'Undo'), () => { this._undoLayoutDraft(false); this._refreshLayoutUI(); });
-    const redo = button(label('Wiederholen', 'Redo'), () => { this._redoLayoutDraft(false); this._refreshLayoutUI(); });
-    const apply = button(label('Anwenden', 'Apply'), () => { this._applyLayoutDraft(); if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); });
+    const undo = button(label('Rückgängig', 'Undo'), () => { this._endLayoutDrag(true); this._undoLayoutDraft(false); this._refreshLayoutUI(); });
+    const redo = button(label('Wiederholen', 'Redo'), () => { this._endLayoutDrag(true); this._redoLayoutDraft(false); this._refreshLayoutUI(); });
+    const apply = button(label('Anwenden', 'Apply'), () => { this._endLayoutDrag(true); this._applyLayoutDraft(); if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); });
     panel.appendChild(controls);
     const status = document.createElement('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.appendChild(status);
+    const viewport = document.createElement('div'); viewport.className = 'layout-viewport';
     const preview = document.createElement('div'); preview.className = 'layout-preview'; preview.tabIndex = 0;
     preview.setAttribute('aria-label', label('Layout-Vorschau; Pfeiltasten bewegen die Komponente', 'Layout preview; arrow keys move the component'));
-    const previewRoot = preview.attachShadow({ mode: 'open' }); panel.appendChild(preview);
-    select.addEventListener('change', () => this._refreshLayoutUI());
+    const previewRoot = preview.attachShadow({ mode: 'open' }); viewport.appendChild(preview);
+    const overlay = document.createElement('div'); overlay.className = 'layout-drag-overlay';
+    overlay.setAttribute('aria-hidden', 'true'); viewport.appendChild(overlay); panel.appendChild(viewport);
+    overlay.addEventListener('pointerdown', event => this._startLayoutDrag(event));
+    overlay.addEventListener('pointermove', event => this._moveLayoutDrag(event));
+    overlay.addEventListener('pointerup', event => this._finishLayoutDrag(event));
+    overlay.addEventListener('pointercancel', event => { if (this._layoutDrag?.pointerId === event.pointerId) this._endLayoutDrag(true); });
+    overlay.addEventListener('lostpointercapture', event => { if (this._layoutDrag?.pointerId === event.pointerId) this._endLayoutDrag(true); });
+    select.addEventListener('change', () => { this._endLayoutDrag(true); this._refreshLayoutUI(); });
     panel.addEventListener('keydown', event => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
-        event.preventDefault(); if (event.shiftKey) this._redoLayoutDraft(false); else this._undoLayoutDraft(false); this._refreshLayoutUI(); return;
+        event.preventDefault(); this._endLayoutDrag(true); if (event.shiftKey) this._redoLayoutDraft(false); else this._undoLayoutDraft(false); this._refreshLayoutUI(); return;
       }
       if (event.target !== preview || event.ctrlKey || event.metaKey || event.altKey) return;
       const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
       if (direction) { event.preventDefault(); const step = event.shiftKey ? 10 : 1; move(direction[0] * step, direction[1] * step); }
     });
-    this._layoutPanel = { panel, select, inputs, undo, redo, apply, status, previewRoot };
-    parent.appendChild(panel); this._refreshLayoutUI();
+    this._layoutPanel = { panel, select, inputs, undo, redo, apply, status, previewRoot, viewport, overlay };
+    parent.appendChild(panel); this._refreshLayoutUI(); this._observeLayoutViewport();
+  }
+
+  connectedCallback() {
+    if (this._layoutPanel) this._observeLayoutViewport();
+  }
+
+  disconnectedCallback() {
+    this._endLayoutDrag(true);
+    this._layoutResizeObserver?.disconnect();
+    this._layoutResizeObserver = null;
+  }
+
+  _observeLayoutViewport() {
+    if (this._layoutResizeObserver || !this._layoutPanel || typeof ResizeObserver === 'undefined') return;
+    const ui = this._layoutPanel, size = () => {
+      const rect = ui.viewport.getBoundingClientRect(); return [rect.width, rect.height];
+    };
+    let last = size();
+    const observer = new ResizeObserver(() => {
+      if (this._layoutPanel !== ui || this._layoutResizeObserver !== observer) return;
+      const next = size();
+      if (next[0] === last[0] && next[1] === last[1]) return;
+      last = next;
+      // Screen-to-SVG transforms are frozen during a gesture. Resizing makes
+      // that transform stale, so cancel the gesture before repositioning.
+      this._endLayoutDrag(true);
+      this._positionLayoutOverlay();
+    });
+    this._layoutResizeObserver = observer;
+    observer.observe(ui.viewport);
+  }
+
+  _positionLayoutOverlay() {
+    const ui = this._layoutPanel;
+    if (!ui || this._layoutDrag) return;
+    const svg = ui.previewRoot.querySelector('svg');
+    if (!svg || !this._layoutUIPosition()) { ui.overlay.style.display = 'none'; return; }
+    const rect = svg.getBoundingClientRect(), parent = ui.viewport.getBoundingClientRect();
+    Object.assign(ui.overlay.style, { display: 'block', left: `${rect.left - parent.left + ui.viewport.scrollLeft}px`,
+      top: `${rect.top - parent.top + ui.viewport.scrollTop}px`, width: `${rect.width}px`, height: `${rect.height}px` });
   }
 
   _layoutUIPosition() {
@@ -3506,16 +3697,76 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     } catch (_) { return null; }
   }
 
-  _setLayoutUIPosition(position) {
+  _setLayoutUIPosition(position, coalesce = false) {
+    if (!coalesce && this._layoutDrag) this._endLayoutDrag(true);
     const ui = this._layoutPanel, draft = this._layoutDraft;
     if (!ui || !draft || !ui.select.value || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
     const current = draft.history[draft.index];
     // Do not silently replace malformed or unknown data with a fresh layout.
     if (!layoutObject(current) || current.version !== 2 || (current.components !== undefined && !layoutObject(current.components))) return;
     const existing = current.components?.[ui.select.value];
-    this._editLayoutDraft({ ...current, components: { ...(current.components || {}),
-      [ui.select.value]: { ...(layoutObject(existing) ? existing : {}), ...position } } }, false);
+    const next = { ...current, components: { ...(current.components || {}),
+      [ui.select.value]: { ...(layoutObject(existing) ? existing : {}), ...position } } };
+    if (coalesce && this._layoutDrag?.edited) draft.history[draft.index] = snapshotLayout(next);
+    else { this._editLayoutDraft(next, false); if (coalesce && this._layoutDrag) this._layoutDrag.edited = true; }
     this._refreshLayoutUI();
+  }
+
+  _startLayoutDrag(event) {
+    const ui = this._layoutPanel, draft = this._layoutDraft;
+    if (!ui || !draft || this._layoutDrag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const svg = ui.previewRoot.querySelector('svg'), position = this._layoutUIPosition();
+    const matrix = svg?.getScreenCTM();
+    if (!svg || !position || !matrix || !ui.select.value) return;
+    let inverse;
+    try { inverse = matrix.inverse(); ui.overlay.setPointerCapture(event.pointerId); }
+    catch (_) { return; }
+    if (![inverse.a, inverse.b, inverse.c, inverse.d, inverse.e, inverse.f].every(Number.isFinite)) {
+      try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return;
+    }
+    const point = (x, y) => ({ x: inverse.a * x + inverse.c * y + inverse.e, y: inverse.b * x + inverse.d * y + inverse.f });
+    this._layoutDrag = { pointerId: event.pointerId, point, start: point(event.clientX, event.clientY), position,
+      id: ui.select.value, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
+      frame: null, pending: null, edited: false };
+    event.preventDefault();
+  }
+
+  _moveLayoutDrag(event) {
+    const drag = this._layoutDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.pending = { x: event.clientX, y: event.clientY };
+    if (drag.frame === null) drag.frame = requestAnimationFrame(() => {
+      if (this._layoutDrag !== drag) return;
+      drag.frame = null; this._paintLayoutDrag(drag);
+    });
+    event.preventDefault();
+  }
+
+  _paintLayoutDrag(drag) {
+    if (this._layoutDrag !== drag || !drag.pending || this._layoutPanel?.select.value !== drag.id) return;
+    const point = drag.point(drag.pending.x, drag.pending.y); drag.pending = null;
+    const x = Math.round((drag.position.x + point.x - drag.start.x) * 10) / 10;
+    const y = Math.round((drag.position.y + point.y - drag.start.y) * 10) / 10;
+    if (Number.isFinite(x) && Number.isFinite(y) && (x !== drag.position.x || y !== drag.position.y || drag.edited))
+      this._setLayoutUIPosition({ x, y }, true);
+  }
+
+  _finishLayoutDrag(event) {
+    const drag = this._layoutDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.pending = { x: event.clientX, y: event.clientY };
+    if (drag.frame !== null) { cancelAnimationFrame(drag.frame); drag.frame = null; }
+    this._paintLayoutDrag(drag); this._endLayoutDrag(false); event.preventDefault();
+  }
+
+  _endLayoutDrag(restore) {
+    const drag = this._layoutDrag;
+    if (!drag) return;
+    this._layoutDrag = null;
+    if (drag.frame !== null) cancelAnimationFrame(drag.frame);
+    if (restore && this._layoutDraft) { this._layoutDraft.history = drag.history; this._layoutDraft.index = drag.index; }
+    try { this._layoutPanel?.overlay.releasePointerCapture(drag.pointerId); } catch (_) {}
+    if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
 
   _refreshLayoutUI({ preserveFocusedInput = false } = {}) {
@@ -3549,9 +3800,15 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       catch (_) { html = ''; }
     }
     ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
+    const svg = ui.previewRoot.querySelector('svg');
+    if (svg && this._layoutDrag?.viewBox) svg.setAttribute('viewBox', this._layoutDrag.viewBox);
+    if (!this._layoutDrag) this._positionLayoutOverlay();
   }
 
   _build() {
+    this._endLayoutDrag(true);
+    this._layoutResizeObserver?.disconnect();
+    this._layoutResizeObserver = null;
     if (!this._config) return;
     const L = this._L();
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
@@ -3565,7 +3822,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button.rm{border:none;background:none;color:var(--error-color,#db4437);padding:2px 6px}
       button.add{color:var(--primary-color)}
       .layout-editor{margin-top:20px;border:1px solid var(--divider-color,#ddd);padding:12px;border-radius:10px}
-      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-preview{width:100%;overflow:auto}
+      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;touch-action:none;cursor:grab}.layout-drag-overlay:active{cursor:grabbing}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
     if (this._config.verteiler) {
