@@ -107,6 +107,8 @@ function stagingFixture() {
     removeChild(element){element.isConnected=false;element.parentNode=null;element.parentElement=null;return element;},
     insertBefore(element){element.isConnected=true;element.parentNode=this;element.parentElement=this;this.lastInserted=element;return element;}};
   f.svg.localName='svg'; f.svg.namespaceURI='http://www.w3.org/2000/svg'; f.svg.id=''; f.svg.attributes=[];
+  f.svg.removeAttribute=()=>{};
+  f.svg.cloneNode=()=>({outerHTML:f.svg.outerHTML,removeAttribute(){}});
   f.svg.getRootNode=()=>root;
   f.svg.querySelectorAll=selector=>selector==='[id]'?[]:[f.node];
   f.node.localName='text'; f.node.namespaceURI='http://www.w3.org/2000/svg'; f.node.id=''; f.node.attributes=[];
@@ -252,9 +254,11 @@ test('candidate and reference mutations during font wait cannot become a new bas
 });
 test('target probe uses the measured node once and rolls back on success or failure',async()=>{
   const originalTargetCheck=context.api.setTargetCheck(()=>({reason:'layout-target-references-bound-only'}));
-  try {for(const outcome of ['accept','reject','throw','stale','mutate','reparent','reference-mutated','new-owner','clone-replaces-owner']) {
+  try {for(const outcome of ['accept','reject','throw','stale','mutate','reparent','reference-mutated','new-owner','clone-replaces-owner','rearm-mutation','commit','commit-reject','commit-stale','commit-cleanup-owner','commit-cleanup-mutate','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent']) {
     const f=stagingFixture();f.ready();f.style.height='150px';f.svg.style={};f.svg.outerHTML='<svg/>';
-    f.svg.ownerDocument.defaultView.MutationObserver=class {observe(){}takeRecords(){return [];}disconnect(){}};
+    if(outcome==='rearm-mutation')f.svg.removeAttribute=()=>{f.svg.outerHTML='<svg><path d="M0 0H999"/></svg>';};
+    const observers=[];
+    f.svg.ownerDocument.defaultView.MutationObserver=class {constructor(){this.records=[];observers.push(this);}observe(){}takeRecords(){return this.records.splice(0);}disconnect(){}};
     f.node.getAttribute=name=>({x:'137',y:'338',class:'wc wt wo'})[name];
     const reference={...f.svg,parentNode:f.parent,parentElement:f.parent,isConnected:true},text={...f.node};
     text.parentElement=reference;reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
@@ -294,12 +298,43 @@ test('target probe uses the measured node once and rolls back on success or fail
       }
       return outcome!=='reject';
     });
-    assert.equal(result.status,outcome==='accept'?'validated-target-probe':'unsupported');
+    const probeAccepted=['accept','commit','commit-reject','commit-stale','commit-cleanup-owner','commit-cleanup-mutate','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent'].includes(outcome);
+    assert.equal(result.status,probeAccepted?'validated-target-probe':'unsupported');
     assert.equal(calls,outcome==='clone-replaces-owner'?0:1);
     if(outcome==='clone-replaces-owner') {assert.equal(referenceRemovals,0);staged.held.release();}
+    if(outcome.startsWith('commit')) {
+      if(outcome==='commit-stale')fresh=false;
+      if(outcome==='commit-cleanup-owner' || outcome==='commit-cleanup-mutate') {
+        const wrapper=f.parent.child,remove=wrapper.remove;
+        wrapper.remove=function(){if(outcome==='commit-cleanup-owner'){owner=false;fresh=false;f.parent.insertBefore(replacement,null);}
+          else f.svg.outerHTML='<svg><path d="M0 0H999"/></svg>';return remove.call(this);};
+      }
+      let armed=false;
+      const consumed=staged.held.consume((node)=>{assert.equal(node,f.svg);if(armed){armed=false;observers.at(-1).records.push({type:'attributes'});}return outcome!=='commit-reject';});
+      const committed=['commit','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent'].includes(outcome);
+      assert.equal(consumed.status,committed?'committed-target':'unsupported');
+      if(committed) {
+        assert.equal(f.svg.parentNode,f.parent);assert.equal(reference.isConnected,false);
+        if(outcome==='commit-receipt-reparent') {
+          f.svg.id='wwNut';f.svg.parentNode={removeChild(child){rogueRemovals++;child.parentNode=null;child.isConnected=false;}};
+          assert.equal(consumed.rollback(),true);assert.equal(rogueRemovals,1);assert.equal(f.svg.isConnected,false);
+          assert.equal(reference.parentNode,f.parent);continue;
+        }
+        if(outcome==='commit-receipt-font')f.listeners.loadingdone();
+        if(outcome==='commit-receipt-dom')f.svg.outerHTML='<svg><path fill="red"/></svg>';
+        if(outcome==='commit-receipt-transient')observers.at(-1).records.push({type:'attributes'});
+        if(outcome==='commit-receipt-transient-late')armed=true;
+        assert.equal(consumed.consume(),outcome==='commit');assert.equal(consumed.consume(),false);
+        if(outcome==='commit')consumed.seal();else {assert.equal(consumed.rollback(),true);assert.equal(reference.parentNode,f.parent);}
+      }
+      else if(outcome==='commit-cleanup-owner') {assert.equal(f.parent.lastInserted,replacement);assert.equal(reference.isConnected,false);}
+      else {assert.equal(reference.parentNode,f.parent);staged.held.release();}
+      assert.equal(staged.held.consume(()=>true).status,'unsupported');continue;
+    }
     if(outcome==='reference-mutated') {assert.notEqual(f.parent.lastInserted,reference);assert.equal(f.parent.lastInserted.outerHTML,'<svg/>');}
     else if(outcome==='new-owner') {assert.equal(f.parent.lastInserted,replacement);assert.equal(reference.isConnected,false);}
     else {assert.equal(reference.parentNode,f.parent);assert.equal(reference.isConnected,true);}
+    if(outcome==='accept') {assert.equal(f.svg.isConnected,true);assert.equal(staged.held.validate(),true);staged.held.release();}
     assert.equal(f.svg.isConnected,false);
     if(outcome==='reparent')assert.equal(rogueRemovals,1);
     assert.equal(staged.held.probe(()=>true).status,'unsupported');

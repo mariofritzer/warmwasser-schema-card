@@ -6,8 +6,8 @@ const vm=require('node:vm');
 const registry=new Map();
 const context={HTMLElement:class {},customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={resolveLayoutCandidate,inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutSymbolPaint,inspectLayoutPipePaint,renderGeometry:(c,k)=>{c._model=k.model;layoutRenderRoutes.set(c,k);try{return c._render();}finally{layoutRenderRoutes.delete(c);}}};',context);
-const {resolveLayoutCandidate:resolve,inspectMeasuredLayoutTexts:inspect,inspectLayoutShadowPolicy:shadow,inspectLayoutSymbolPaint:symbols,inspectLayoutPipePaint:pipes,renderGeometry}=context.api;
+  '\nglobalThis.api={resolveLayoutCandidate,inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectCompleteSimpleFmPaint,renderGeometry:(c,k)=>{c._model=k.model;layoutRenderRoutes.set(c,k);try{return c._render();}finally{layoutRenderRoutes.delete(c);}}};',context);
+const {resolveLayoutCandidate:resolve,inspectMeasuredLayoutTexts:inspect,inspectLayoutShadowPolicy:shadow,inspectLayoutSymbolPaint:symbols,inspectLayoutPipePaint:pipes,inspectCompleteSimpleFmPaint:complete,renderGeometry}=context.api;
 function fixture(full=false,type='schicht') {
   const raw={speicher:{typ:type,volumen:500},fm:{pumpe:'sensor.fm',...(full?{temp:'sensor.fmtemp',durchfluss:'sensor.flow'}:{})},
     wp:{betrieb:'sensor.wp',...(full?{leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl'}:{})},
@@ -132,4 +132,19 @@ test('primary and domestic routes and every stub bind to the rendered batch',()=
   const forged={...candidate,routes:{...candidate.routes}},id=Object.keys(forged.routes)[0];
   forged.routes[id]={...forged.routes[id],path:'M0 0'};
   assert.equal(pipes(c,forged,html).reason,'layout-pipe-paint-unproven');
+});
+test('simple FM-only complete inventory classifies every visible shape',()=>{
+  const raw={speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}},c=new (registry.get('warmwasser-schema-card'))();
+  c.setConfig(raw);c._hass={language:'en',states:{'sensor.fm':{state:'on'}}};
+  const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:370,y:29}}}),html=renderGeometry(c,candidate);
+  const body=html.slice(html.indexOf('</defs>')+7,html.indexOf('</svg>')),matrix={a:1,b:0,c:0,d:1,e:0,f:0},shapes=[];
+  for(const match of body.matchAll(/<(path|rect|circle|line)\b([^>]*)\/?\s*>/g)) {
+    const attrs=Object.fromEntries([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+    shapes.push({localName:match[1],getAttribute:name=>attrs[name]??null,closest:()=>null,
+      getScreenCTM:()=>attrs.d?.startsWith('M430 30C424')?{...matrix,e:30,f:15}:matrix});
+  }
+  const svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
+  assert.equal(complete(c,candidate,svg).status,'complete');
+  shapes.push({localName:'circle',getAttribute:()=>null,closest:()=>null});
+  assert.equal(complete(c,candidate,svg).status,'unsupported');
 });

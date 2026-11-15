@@ -8,11 +8,12 @@ const context={HTMLElement:class {},AbortController,customElements:{get:n=>regis
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
   `\nglobalThis.api={layoutCandidateViewport,renderLayoutViewport,requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,
     setStage:fn=>{stageLegacyHeatingTextCandidate=fn;},setJob:(owner,job)=>layoutTextMeasurementJobs.set(owner,job),getJob:owner=>layoutTextMeasurementJobs.get(owner),
-    stubFinishChecks:()=>{const old=[inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutTargetReferences,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectMeasuredVolumeSlots];
+    stubFinishChecks:()=>{const old=[inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutTargetReferences,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectMeasuredVolumeSlots,inspectCompleteSimpleFmPaint];
       inspectMeasuredLayoutTexts=()=>({reason:'text-inventory-staged-only'});inspectLayoutShadowPolicy=()=>({reason:'layout-shadow-policy-bound-only'});
       inspectLayoutTargetReferences=()=>({reason:'layout-target-references-bound-only'});inspectLayoutSymbolPaint=()=>({reason:'layout-symbol-paint-bound-only'});
       inspectLayoutPipePaint=()=>({reason:'layout-pipe-paint-bound-only'});inspectMeasuredVolumeSlots=()=>({reason:'volume-slots-staged-only'});
-      return ()=>{[inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutTargetReferences,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectMeasuredVolumeSlots]=old;};}};`,context);
+      inspectCompleteSimpleFmPaint=()=>({status:'complete'});
+      return ()=>{[inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutTargetReferences,inspectLayoutSymbolPaint,inspectLayoutPipePaint,inspectMeasuredVolumeSlots,inspectCompleteSimpleFmPaint]=old;};}};`,context);
 const {layoutCandidateViewport:viewport,renderLayoutViewport:renderViewport,requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
 test('viewport contract rejects malformed, unrepresentable and degenerate dimensions',()=>{
   const parse=value=>viewport({getAttribute:()=>value});
@@ -128,6 +129,37 @@ test('Apply while pending reuses the same job and does not start a new preflight
   assert.equal(f.owner._applyLayoutDraft().status,'unsupported');
   assert.equal(preflights,1);assert.equal(f.calls[0].signal.aborted,true);
 });
+test('ready editor receipt is consumed once and rolls back a failed emit',()=>{
+  for(const fail of [false,true]) {
+    const f=fixture('editor');let consumes=0,seals=0,rollbacks=0,fires=0;
+    const receipt={consume:()=>{consumes++;return true;},seal:()=>{seals++;},rollback:()=>{rollbacks++;return true;}};
+    const job={ready:true,generation:{},current:()=>true,receipt,controller:{abort(){}},cleanup(){}};
+    context.api.setJob(f.owner,job);f.owner._fire=()=>{fires++;if(fail)throw Error('emit failed');};
+    if(fail) {
+      assert.throws(()=>f.owner._applyLayoutDraft(),/emit failed/);assert.equal(rollbacks,1);assert.ok(f.owner._layoutDraft);
+    } else {
+      assert.equal(f.owner._applyLayoutDraft().status,'applied');assert.equal(seals,1);assert.equal(f.owner._layoutDraft,null);
+      assert.equal(f.owner._applyLayoutDraft(),null);
+    }
+    assert.equal(consumes,1);assert.equal(fires,1);
+  }
+});
+test('receipt reentrancy cannot apply over a replacement owner job',()=>{
+  const f=fixture('editor'),replacement={pending:true};let fires=0;
+  const job={ready:true,generation:{},current:()=>true,receipt:{consume:()=>{context.api.setJob(f.owner,replacement);return true;}},
+    controller:{abort(){}},cleanup(){}};
+  context.api.setJob(f.owner,job);f.owner._fire=()=>{fires++;};
+  assert.equal(f.owner._applyLayoutDraft().status,'unsupported');assert.equal(context.api.getJob(f.owner),replacement);assert.equal(fires,0);
+});
+test('cancel rollback cannot overwrite status or Apply of a replacement job',()=>{
+  const f=fixture('editor'),replacement={pending:true};let cleanups=0,aborts=0;
+  f.owner._layoutPanel.status.textContent='new owner';f.owner._layoutPanel.apply.disabled=false;
+  const old={receipt:{rollback:()=>{context.api.setJob(f.owner,replacement);return true;}},
+    controller:{abort:()=>{aborts++;}},cleanup:()=>{cleanups++;}};
+  context.api.setJob(f.owner,old);cancel(f.owner);
+  assert.equal(context.api.getJob(f.owner),replacement);assert.equal(f.owner._layoutPanel.status.textContent,'new owner');
+  assert.equal(f.owner._layoutPanel.apply.disabled,false);assert.equal(cleanups,1);assert.equal(aborts,1);
+});
 test('late connected evidence is released when its owner is invalidated',async()=>{
   const f=fixture('editor');let resolveStage,releases=0;
   setStage(()=>new Promise(resolve=>{resolveStage=resolve;}));
@@ -171,6 +203,45 @@ test('reentrant target probe cannot delete or overwrite a replacement owner job'
     assert.equal(request(f.owner,f.card,'candidate').status,'pending');await new Promise(resolve=>setImmediate(resolve));
     assert.equal(context.api.getJob(f.owner),replacement);assert.equal(f.owner._layoutPanel.status.textContent,'new job untouched');
     assert.equal(f.owner._layoutPanel.apply.disabled,false);assert.equal(releases,1);
+  } finally {restoreChecks();}
+});
+test('independent owner transactions consume once, including synchronous editor echo',async()=>{
+  const restoreChecks=context.api.stubFinishChecks();
+  try {
+    for(const kind of ['editor','card']) {
+      const f=fixture(kind),raw={speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}};
+      f.card.setConfig(raw);f.card._hass={language:'en',states:{'sensor.fm':{state:'on'}}};f.owner._hass=f.card._hass;
+      if(kind==='editor') {f.owner._config=raw;f.owner._refreshLayoutUI=()=>{};}
+      const candidate={model:{components:{}},routes:{}};let targetConsumes=0,seals=0,rollbacks=0,echoes=0;
+      const receipt={status:'committed-target',validate:()=>true,consume:()=>{targetConsumes++;return true;},
+        seal:()=>{seals++;},rollback:()=>{rollbacks++;return true;}};
+      const held={validate:()=>true,probe:verify=>{assert.equal(verify({},[]),true);return {status:'validated-target-probe'};},
+        consume:verify=>{assert.equal(verify({},[]),true);return receipt;},release(){}};
+      setStage(async()=>({textStyleParity:'independent-text-measurements-only',textRecords:[],referenceTextRecords:[],held,
+        symbolStrokeProof:{reason:'layout-symbol-strokes-bound-only'},pipeStrokeProof:{reason:'layout-pipe-strokes-bound-only'}}));
+      assert.equal(request(f.owner,f.card,'candidate',candidate).status,'pending');await new Promise(resolve=>setImmediate(resolve));
+      if(kind==='editor') {
+        assert.equal(context.api.getJob(f.owner).ready,true);
+        f.owner._fire=()=>{echoes++;cancel(f.owner);};
+        assert.equal(f.owner._applyLayoutDraft().status,'applied');assert.equal(echoes,1);
+      } else assert.equal(f.card._layoutStatus.status,'rendered-candidate');
+      assert.equal(targetConsumes,1,kind);assert.equal(seals,1,kind);assert.equal(rollbacks,0,kind);
+      assert.equal(context.api.getJob(f.owner),undefined,kind);
+    }
+  } finally {restoreChecks();}
+});
+test('editor refresh failure rolls back the consumed target before clearing its job',async()=>{
+  const f=fixture('editor'),restoreChecks=context.api.stubFinishChecks();let rollbacks=0;
+  try {
+    f.card.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});f.owner._refreshLayoutUI=()=>{throw Error('refresh failed');};
+    const target={status:'committed-target',validate:()=>true,rollback:()=>{rollbacks++;return true;}};
+    const held={validate:()=>true,probe:verify=>{verify({},[]);return {status:'validated-target-probe'};},
+      consume:verify=>{verify({},[]);return target;},release(){}};
+    setStage(async()=>({textStyleParity:'independent-text-measurements-only',textRecords:[],referenceTextRecords:[],held,
+      symbolStrokeProof:{reason:'layout-symbol-strokes-bound-only'},pipeStrokeProof:{reason:'layout-pipe-strokes-bound-only'}}));
+    assert.equal(request(f.owner,f.card,'candidate',{model:{components:{}},routes:{}}).status,'pending');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(rollbacks,1);assert.equal(context.api.getJob(f.owner),undefined);assert.equal(f.owner._layoutPanel.apply.disabled,true);
   } finally {restoreChecks();}
 });
 test('real pending Editor path rejects a measured volume overflow and keeps a fitting label unapproved',async()=>{

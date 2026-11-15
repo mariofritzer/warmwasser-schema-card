@@ -1863,9 +1863,32 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
     if (replaced!==value) changes.push([el,name,replaced,attr.namespaceURI,value]);
   }
   // All references are validated before mutating the detached clone.
+  const attrKey=(name,namespace)=>`${namespace || ''}\u0000${name}`;
+  const expected=all.map(el=>({el,text:el.textContent,children:Array.from(el.childNodes || []),
+    attrs:new Map(Array.from(el.attributes,attr=>[attrKey(attr.name,attr.namespaceURI),attr.value]))}));
+  const states=new Map(expected.map(state=>[state.el,state]));
   const renamed=all.filter(el=>el.id).map(el=>[el,el.id,ids.get(el.id)]);
+  for (const [el,,replacement] of renamed) states.get(el).attrs.set(attrKey('id',null),replacement);
+  for (const [el,name,replacement,namespace] of changes) states.get(el).attrs.set(attrKey(name,namespace),replacement);
   for (const [el,,replacement] of renamed) el.setAttribute('id',replacement);
   for (const [el,name,value,namespace] of changes) namespace ? el.setAttributeNS(namespace,name,value) : el.setAttribute(name,value);
+  const verify=(rootStyle)=>{
+    try {
+      const now=[svg,...svg.querySelectorAll('*')];
+      if (now.length!==all.length || now.some((el,i)=>el!==all[i])) return false;
+      for (const state of expected) {
+        const el=state.el,children=Array.from(el.childNodes || []),attrs=new Map(Array.from(el.attributes,attr=>[attrKey(attr.name,attr.namespaceURI),attr.value]));
+        if (el.textContent!==state.text || children.length!==state.children.length || children.some((node,i)=>node!==state.children[i])) return false;
+        const expectedAttrs=new Map(state.attrs);
+        if (el===svg && rootStyle!==undefined) {
+          if (el.style?.cssText!==rootStyle) return false;
+          attrs.delete(attrKey('style',null));expectedAttrs.delete(attrKey('style',null));
+        }
+        if (attrs.size!==expectedAttrs.size || [...expectedAttrs].some(([key,value])=>attrs.get(key)!==value)) return false;
+      }
+      return true;
+    } catch (_) {return false;}
+  };
   let restored=false;
   const read=(el,name)=>Array.from(el.attributes).find(attr=>attr.name===name)?.value;
   const write=(el,name,value,namespace)=>namespace ? el.setAttributeNS(namespace,name,value) : el.setAttribute(name,value);
@@ -1890,13 +1913,13 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
       restored=true;return {status:'restored'};
     } catch (_) {return fail('text-stage-restore-unavailable');}
   };
-  return {status:'prepared',restore:targetRoot=>restore(targetRoot,false),discard:()=>restore(null,true)};
+  return {status:'prepared',verify,restore:targetRoot=>restore(targetRoot,false),discard:()=>restore(null,true)};
 }
 
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false,holdForFinalCheck=false,isOwner=isCurrent) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false,holdForFinalCheck=false,isOwner=isCurrent,invalidateTarget=()=>{}) {
   const unsupported=reason=>({status:'unsupported',reason});
   const wait=promise=>{
     if (!signal) return promise;
@@ -1937,8 +1960,9 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     const children=Array.from(template.content.children);
     if (children.length!==1 || template.content.childNodes.length!==1 || children[0].localName!=='svg' ||
         children[0].namespaceURI!=='http://www.w3.org/2000/svg') return unsupported('text-stage-invalid-candidate');
-    svg=children[0]; const namespaced=namespaceLegacyHeatingSvgIds(svg,root);
+    svg=children[0]; let namespaced=namespaceLegacyHeatingSvgIds(svg,root);
     if (namespaced.status!=='prepared') return namespaced;
+    if (fixedViewport && svg.hasAttribute?.('style')) return unsupported('text-stage-invalid-candidate');
     stage=doc.createElement('div');
     stage.setAttribute('aria-hidden','true'); stage.setAttribute('inert','');
     stage.style.cssText='position:fixed;left:-100000px;top:0;pointer-events:none;z-index:-1;';
@@ -2100,8 +2124,11 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
         if (!validate()) {const detail=lastReason;release();return {status:'unsupported',reason:'text-stage-invalidated',detail};}
         // A synchronous target probe uses the same measured node and always
         // rolls back before returning. It is not a commit or an Apply ticket.
-        const probe=verify=>{
-          if (typeof verify!=='function' || !validate()) return {status:'unsupported',reason:'target-probe-invalidated'};
+        let probed=false,consumed=false;
+        const transition=(verify,commit)=>{
+          if ((commit?(!probed || consumed):probed) || typeof verify!=='function' || !validate())
+            return {status:'unsupported',reason:'target-probe-invalidated'};
+          if(commit)consumed=true;else probed=true;
           let backup;
           try {backup=referenceSvg.cloneNode(true);if(backup.outerHTML!==referenceSnapshot.markup)return {status:'unsupported',reason:'target-probe-unproven'};}
           catch (_) {return {status:'unsupported',reason:'target-probe-unproven'};}
@@ -2110,12 +2137,12 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
           if (typeof isOwner!=='function' || !isOwner(generation) || !validate() || !isOwner(generation))
             return {status:'unsupported',reason:'target-probe-invalidated'};
           alive=false;structureObserver?.disconnect();
-          const next=referenceSvg.nextSibling;let referenceRemoved=false,result={status:'unsupported',reason:'target-probe-unproven'};
+          const next=referenceSvg.nextSibling;let referenceRemoved=false,targetSnapshot,result={status:'unsupported',reason:'target-probe-unproven'};
           try {
             parent.removeChild(referenceSvg);referenceRemoved=true;stage.removeChild(svg);
             if (namespaced.restore(root).status!=='restored') return result;
             parent.insertBefore(svg,next?.parentNode===parent?next:null);
-            const targetSnapshot=snapshot(svg);
+            targetSnapshot=snapshot(svg);
             const actual=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
             if (!isCurrent(generation) || !sameScreen(referenceInitial,screen(svg),allMatrix) || !actual.entries ||
                 !unchanged(svg,targetSnapshot) ||
@@ -2134,10 +2161,63 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
                 !isCurrent(generation) || !sameScreen(referenceInitial,screen(svg),allMatrix) || !unchanged(svg,targetSnapshot) ||
                 inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
                 !unchanged(svg,targetSnapshot)) return result;
-            result={status:'validated-target-probe'};return result;
+            if (commit) {
+              let rollbackAvailable=true,consumedReceipt=false,targetMutated=false;
+              const targetObserver=new doc.defaultView.MutationObserver(()=>{targetMutated=true;invalidateTarget();});
+              targetObserver.observe(svg,{attributes:true,childList:true,characterData:true,subtree:true});
+              const targetClean=()=>{if(targetObserver.takeRecords().length)targetMutated=true;return !targetMutated;};
+              const targetCurrent=()=>{
+                try {
+                  if (!targetClean() || !isOwner(generation) || !isCurrent(generation) || !svg.isConnected || svg.parentNode!==parent ||
+                      !unchanged(svg,targetSnapshot) || !sameScreen(referenceInitial,screen(svg),allMatrix)) return false;
+                  const live=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
+                  if (!live.entries || live.fontEpoch!==afterVerify.fontEpoch || !same(afterVerify.entries,live.entries) ||
+                      inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
+                      inspectStagedLayoutPipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
+                      inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
+                      inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
+                      verify(svg,records(live.entries))!==true || !isCurrent(generation) || !isOwner(generation) ||
+                      !targetClean() || !unchanged(svg,targetSnapshot) ||
+                      !sameScreen(referenceInitial,screen(svg),allMatrix) ||
+                      inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
+                      !isCurrent(generation) || !isOwner(generation) || !targetClean() || !unchanged(svg,targetSnapshot)) return false;
+                  return true;
+                } catch (_) {return false;}
+              };
+              const rollback=()=>{
+                if (!rollbackAvailable) return false;rollbackAvailable=false;targetObserver.disconnect();
+                try {
+                  // The candidate remains ours even if reparented. Remove it
+                  // first; never overwrite a newer owner while restoring.
+                  if (svg.parentNode || svg.isConnected) svg.remove();
+                  if (!isOwner(generation) || !parent.isConnected || parent.getRootNode()!==root) return false;
+                  const restore=unchanged(referenceSvg,referenceSnapshot)?referenceSvg:backup;
+                  if (restore.outerHTML!==referenceSnapshot.markup) return false;
+                  if (restore.parentNode || restore.isConnected) restore.remove();
+                  const ids=[restore,...restore.querySelectorAll('[id]')].map(el=>el.id).filter(Boolean);
+                  if (Array.from(root.querySelectorAll('[id]')).some(el=>ids.includes(el.id)) || !isOwner(generation)) return false;
+                  parent.insertBefore(restore,next?.parentNode===parent?next:null);
+                  return restore.isConnected && restore.outerHTML===referenceSnapshot.markup && sameScreen(referenceInitial,screen(restore),allMatrix);
+                } catch (_) {return false;}
+              };
+              const consume=()=>{
+                if (consumedReceipt || !targetCurrent()) return false;
+                consumedReceipt=true;targetObserver.disconnect();return true;
+              };
+              const seal=()=>{rollbackAvailable=false;targetObserver.disconnect();};
+              if (!targetCurrent()) {targetObserver.disconnect();return result;}
+              // Stage removal can reenter and can change selector matching.
+              // It must happen before the final target/owner proof.
+              stage?.remove();stage=null;
+              if (!targetCurrent()) {targetObserver.disconnect();return result;}
+              result={status:'committed-target',rollback,validate:targetCurrent,consume,seal};
+            } else result={status:'validated-target-probe'};
+            return result;
           } catch (_) {return result;}
           finally {
             try {
+              if (commit && result.status==='committed-target') {stage?.remove();stage=null;}
+              else {
               if (svg.parentNode || svg.isConnected) svg.remove();
               const owns=typeof isOwner==='function' && isOwner(generation);
               let restoredReference=referenceSvg;
@@ -2153,13 +2233,50 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
               } else if (referenceRemoved) {
                 result.status='unsupported';restoredReference=null;
               }
-              stage?.remove();stage=null;
               if (!restoredReference?.isConnected || restoredReference.parentNode!==parent || restoredReference.outerHTML!==referenceSnapshot.markup ||
                   !sameScreen(referenceInitial,screen(restoredReference),allMatrix)) result.status='unsupported';
-            } catch (_) {result.status='unsupported';}
+              if (result.status==='validated-target-probe' && restoredReference===referenceSvg && isCurrent(generation) && isOwner(generation)) {
+                // Restore isolation on the same detached SVG, then start a new
+                // observation window and remeasure before retaining evidence.
+                // Only the root style and the explicit ID/reference rewrite
+                // may differ from the last validated target snapshot.
+                if (!unchanged(svg,targetSnapshot) || !unchanged(referenceSvg,referenceSnapshot)) throw Error('target changed');
+                const style=svg.style.cssText,styleFree=svg.cloneNode(true);
+                if (!unchanged(svg,targetSnapshot)) throw Error('target changed');
+                styleFree.removeAttribute('style');
+                if (!unchanged(svg,targetSnapshot)) throw Error('target changed');
+                svg.removeAttribute('style');
+                const withoutStyle=snapshot(svg);
+                if (withoutStyle.markup!==styleFree.outerHTML || withoutStyle.nodes.length!==targetSnapshot.nodes.length ||
+                    withoutStyle.nodes.some((node,i)=>node!==targetSnapshot.nodes[i])) throw Error('unexpected style removal');
+                namespaced=namespaceLegacyHeatingSvgIds(svg,root);
+                if (namespaced.status!=='prepared' || !namespaced.verify()) result.status='unsupported';
+                else {
+                  svg.style.cssText=style;
+                  if (!namespaced.verify(style)) throw Error('unexpected style change');
+                  const isolated=snapshot(svg);stage.append(svg);
+                  if (!unchanged(svg,isolated) || !namespaced.verify(style) || !unchanged(referenceSvg,referenceSnapshot) ||
+                      !isCurrent(generation) || !isOwner(generation)) throw Error('unexpected staging change');
+                  candidateSnapshot=isolated;structureMutated=false;
+                  structureObserver=new doc.defaultView.MutationObserver(()=>{structureMutated=true;});
+                  const options={attributes:true,childList:true,characterData:true,subtree:true};
+                  structureObserver.observe(svg,options);structureObserver.observe(referenceSvg,options);
+                  alive=true;
+                  if (!validate()) {alive=false;structureObserver.disconnect();result.status='unsupported';}
+                }
+              }
+              if (result.status!=='validated-target-probe') {stage?.remove();stage=null;}
+              }
+            } catch (_) {
+              if (commit) result.rollback?.();
+              result.status='unsupported';alive=false;structureObserver?.disconnect();
+              try {if(svg && svg.parentNode!==stage)svg.remove();stage?.remove();} catch (_) {}
+              stage=null;
+            }
           }
         };
-        held={validate,release,probe,get reason(){return lastReason;},get detail(){return lastDetail;}};
+        const probe=verify=>transition(verify,false),consume=verify=>transition(verify,true);
+        held={validate,release,probe,consume,get reason(){return lastReason;},get detail(){return lastDetail;}};
       }
     }
     // Position and dimension can each differ by the parity tolerance.
@@ -4214,6 +4331,53 @@ function inspectLayoutPipePaint(card,candidate,html) {
       unresolved:['remaining-decorative-paint','commit-freshness']};
   } catch (_) { return fail(); }
 }
+// A deliberately narrow complete paint inventory for the first experimental
+// end-to-end path. Every visible shape is accounted for; wider configurations
+// remain unsupported until their own complete inventories exist.
+function inspectCompleteSimpleFmPaint(card,candidate,svg) {
+  const fail=()=>({status:'unsupported',reason:'layout-complete-paint-unproven'});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if (!c || !m?.routingScope?.fm || c.typ!=='schicht' || c.wp || !c.fm || c.fm.temp || c.fm.durchfluss ||
+        (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') || !svg?.isConnected) return fail();
+    if (Object.keys(m.components).sort().join(',')!==['domestic-boundary','fm','tank','tank-feet'].sort().join(',')) return fail();
+    const shapes=Array.from(svg.querySelectorAll('path,rect,circle,line')).filter(el=>!el.closest('defs')),
+      paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect');
+    if (shapes.length!==paths.length+rects.length || rects.length!==14) return fail();
+    const cls=el=>el.getAttribute('class')||'',plain=paths.filter(el=>!['w0','w1','w2','w3','wa'].includes(cls(el)));
+    const tank=m.components.tank,fm=m.components.fm,o=tank.origin,b=tank.bounds;
+    const expectedPaths=[`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
+      `M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`,
+      'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'];
+    if (plain.length!==3 || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
+    const match=(el,x,y,w,h)=>el.getAttribute('x')===String(x) && el.getAttribute('y')===String(y) &&
+      el.getAttribute('width')===String(w) && el.getAttribute('height')===String(h);
+    const tankRects=rects.filter(el=>match(el,o.x,o.y,130,360)),fmRects=rects.filter(el=>match(el,fm.origin.x,fm.origin.y,110,90));
+    if (tankRects.length!==3 || fmRects.length!==2 || rects.filter(el=>cls(el)==='wk').length!==6 ||
+        rects.filter(el=>match(el,o.x+14,o.y+30,7,300)).length!==1 ||
+        rects.filter(el=>match(el,93,362,11,22)).length!==1 || rects.filter(el=>match(el,170,362,11,22)).length!==1) return fail();
+    if (tankRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
+        tankRects.filter(el=>el.getAttribute('fill')==='url(#wwCyl)').length!==1 ||
+        tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1 ||
+        fmRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
+        fmRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1) return fail();
+    const matrix=svg.getScreenCTM(),det=matrix && matrix.a*matrix.d-matrix.b*matrix.c;
+    if (!matrix || !Number.isFinite(det) || !det) return fail();
+    const delta={x:fm.origin.x-fm.baseOrigin.x,y:fm.origin.y-fm.baseOrigin.y},droplet=plain.find(el=>el.getAttribute('d')===expectedPaths[2]);
+    for(const el of [...rects,...plain]) {
+      const a=el.getScreenCTM();if(!a || a.is2D===false) return fail();
+      const rel={a:(matrix.d*a.a-matrix.c*a.b)/det,b:(-matrix.b*a.a+matrix.a*a.b)/det,
+        c:(matrix.d*a.c-matrix.c*a.d)/det,d:(-matrix.b*a.c+matrix.a*a.d)/det,
+        e:(matrix.d*(a.e-matrix.e)-matrix.c*(a.f-matrix.f))/det,
+        f:(-matrix.b*(a.e-matrix.e)+matrix.a*(a.f-matrix.f))/det};
+      const x=el===droplet?delta.x:0,y=el===droplet?delta.y:0;
+      if (![rel.a-1,rel.b,rel.c,rel.d-1,rel.e-x,rel.f-y].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8)) return fail();
+    }
+    const a={x:o.x-2,y:o.y-2,width:b.width+4,height:b.height+4},d={x:fm.origin.x-2,y:fm.origin.y-2,width:fm.bounds.width+4,height:fm.bounds.height+4};
+    if (a.x<=d.x+d.width && a.x+a.width>=d.x && a.y<=d.y+d.height && a.y+a.height>=d.y) return fail();
+    return {status:'complete',scope:'simple-fm-schicht'};
+  } catch (_) {return fail();}
+}
 function layoutRelevantHassKey(card,hass) {
   if (!card || !hass || !hass.states || !Array.isArray(card._ents)) return null;
   return JSON.stringify([sprache(card._cfg,hass),...card._ents.map(e=>{
@@ -4252,7 +4416,11 @@ function markLayoutTextUnproven(owner,parent,code='text-slots-and-paint-unproven
 function cancelLayoutTextMeasurement(owner) {
   const job=owner && layoutTextMeasurementJobs.get(owner);
   if (!job) return;
-  layoutTextMeasurementJobs.delete(owner); job.controller.abort(); job.cleanup();
+  if (job.canceling) return;job.canceling=true;
+  if (!job.applying) {try {job.receipt?.rollback?.();} catch (_) {}}
+  job.controller.abort(); job.cleanup();job.held?.release?.();
+  if (layoutTextMeasurementJobs.get(owner)!==job) return;
+  layoutTextMeasurementJobs.delete(owner);
   markLayoutTextUnproven(owner,job.parent);
 }
 // The candidate's viewBox is also the fixed aspect-ratio contract of the
@@ -4301,10 +4469,13 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
     if (hassKey===null) return unsupported('text-measurement-unavailable');
     const draftKey=layoutMeasurementDraftKey(owner);
     if (draftKey===null) return unsupported('text-measurement-unavailable');
+    const candidateIntegrity=candidate ? layoutCandidateIntegrity(candidate) : null;
+    if (candidate && candidateIntegrity===null) return unsupported('text-measurement-unavailable');
     const key=JSON.stringify([html,card._cfg,owner._config || null,hassKey,draftKey]);
     const previous=layoutTextMeasurementJobs.get(owner);
     if (previous && previous.parent===parent && previous.key===key)
-      return {status:'pending',viewport:previous.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
+      return previous.ready ? {status:'ready-candidate',viewport:previous.viewport,errors:[]} :
+        {status:'pending',viewport:previous.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
     cancelLayoutTextMeasurement(owner);
     const template=doc.createElement('template');template.innerHTML=html;
     const svgs=template.content.querySelectorAll('svg');
@@ -4337,12 +4508,13 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       return unsupported('text-measurement-unavailable');
     }
     resize.observe(host);
-    const current=token=>{try{return token===generation && layoutTextMeasurementJobs.get(owner)===job && !controller.signal.aborted &&
+    const current=token=>{try{return token===generation && layoutTextMeasurementJobs.get(owner)===job && !job.canceling && !controller.signal.aborted &&
       owner.isConnected && parent.isConnected && (owner._layoutPanel?.previewRoot || owner._box)===parent &&
+      (!candidate || layoutCandidateIntegrity(candidate)===candidateIntegrity) &&
       JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass),layoutMeasurementDraftKey(owner)])===key;}catch(_){return false;}};
     job.current=current;
     const finish=result=>{
-      const held=result?.held;
+      const held=result?.held;let targetReceipt;
       try {
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
       const independent=result?.textStyleParity==='independent-text-measurements-only' && held?.validate?.()===true;
@@ -4368,21 +4540,53 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
         : 'text-slots-and-paint-unproven';
       if (independent && (!current(generation) || held.validate()!==true)) code='text-slots-and-paint-unproven';
       if (code==='text-inventory-staged-only') {
-        const probe=held.probe?.((_svg,actualRecords)=>{
+        let complete=false;
+        const verifyTarget=(_svg,actualRecords)=>{
           const actualText=inspectMeasuredLayoutTexts(card,candidate,actualRecords);
           const actualSymbols=inspectLayoutSymbolPaint(card,candidate,actualRecords,html);
           const actualRefs=inspectLayoutTargetReferences(parent,html);
           const actualVolume=card._cfg.volumen!==null && card._cfg.volumen!==undefined && card._cfg.volumen!==''
             ? inspectMeasuredVolumeSlots(card,candidate,actualRecords).reason==='volume-slots-staged-only' : true;
+          complete=inspectCompleteSimpleFmPaint(card,candidate,_svg).status==='complete';
           return actualText.reason==='text-inventory-staged-only' && actualSymbols.reason==='layout-symbol-paint-bound-only' &&
             actualRefs.reason==='layout-target-references-bound-only' && actualVolume;
-        });
+        };
+        const probe=held.probe?.(verifyTarget);
         if (probe?.status!=='validated-target-probe') code='text-slots-and-paint-unproven';
+        else if (complete && held.validate() && current(generation)) {
+          const target=held.consume?.((svg,records)=>verifyTarget(svg,records) && complete);
+          targetReceipt=target;
+          if (target?.status==='committed-target' && target.validate?.() && current(generation)) {
+            if (owner===card) {
+              if (target.consume() && current(generation)) {
+                const previous={model:card._model,candidate:card._layoutCandidate,status:card._layoutStatus};
+                try {
+                  card._model=candidate.model;card._layoutCandidate=candidate;
+                  card._layoutStatus={status:'rendered-candidate',errors:[]};
+                  if (!current(generation) || layoutTextMeasurementJobs.get(owner)!==job) {job.cleanup();return;}
+                  target.seal();layoutTextMeasurementJobs.delete(owner);job.cleanup();
+                  card._box?.querySelector?.('[data-layout-status]')?.remove?.();return;
+                } catch (error) {
+                  if (layoutTextMeasurementJobs.get(owner)===job) {
+                    card._model=previous.model;card._layoutCandidate=previous.candidate;card._layoutStatus=previous.status;target.rollback();
+                  }
+                  throw error;
+                }
+              }
+              target.rollback();
+            } else {
+              job.pending=false;job.ready=true;job.receipt=target;
+              owner._refreshLayoutUI();return;
+            }
+          } else target?.rollback?.();
+          code='text-slots-and-paint-unproven';
+        }
       }
       if (!current(generation) || layoutTextMeasurementJobs.get(owner)!==job) {job.cleanup();return;}
       layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
       } catch (_) {
         if(layoutTextMeasurementJobs.get(owner)===job) {
+          try {(job.receipt || targetReceipt)?.rollback?.();} catch (_) {}
           layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent);
         } else job.cleanup();
       } finally {held?.release?.();}
@@ -4400,7 +4604,7 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
         return {status:'unsupported',reason:'text-stage-viewport-unproven'};
       job.width=rect.width;job.height=rect.height;
       return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'independent',true,true,
-        ()=>layoutTextMeasurementJobs.get(owner)===job);
+        ()=>layoutTextMeasurementJobs.get(owner)===job,invalidate);
     })
       .then(finish,finish);
     return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
@@ -5148,6 +5352,29 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const job=layoutTextMeasurementJobs.get(this);
     if (job?.pending && job.current?.(job.generation))
       return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
+    if (job?.ready) {
+      if (!job.current?.(job.generation) || !job.receipt?.consume?.() ||
+          !job.current?.(job.generation) || layoutTextMeasurementJobs.get(this)!==job) {
+        if (layoutTextMeasurementJobs.get(this)===job) cancelLayoutTextMeasurement(this);
+        return {status:'unsupported',errors:[{code:'text-measurement-invalidated',path:'layout'}]};
+      }
+      const copy=value=>Array.isArray(value)?value.map(copy):layoutObject(value)
+        ? Object.fromEntries(Object.entries(value).map(([key,item])=>[key,copy(item)])) : value;
+      const previous=this._config,draft=this._layoutDraft,layout=draft.history[draft.index];
+      this._config={...previous,layout:copy(layout)};this._layoutDraft=null;job.applying=true;
+      try {
+        this._fire();job.receipt.seal();
+        if(layoutTextMeasurementJobs.get(this)===job) {layoutTextMeasurementJobs.delete(this);job.cleanup();}
+        return {status:'applied'};
+      } catch(error) {
+        job.applying=false;
+        if(layoutTextMeasurementJobs.get(this)===job) {
+          this._config=previous;this._layoutDraft=draft;job.receipt.rollback();
+          layoutTextMeasurementJobs.delete(this);job.cleanup();
+        }
+        throw error;
+      }
+    }
     if (job) cancelLayoutTextMeasurement(this);
     const state = this._layoutDraftState();
     if (!state || state.status !== 'rendered-candidate') return state;
@@ -5604,11 +5831,11 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const ui = this._layoutPanel;
     if (!ui || !this._layoutDraft) return;
     const previousJob=layoutTextMeasurementJobs.get(this);
-    const currentPending=previousJob?.pending && previousJob.current?.(previousJob.generation);
-    const state = currentPending
+    const currentJob=(previousJob?.pending || previousJob?.ready) && previousJob.current?.(previousJob.generation);
+    const state = currentJob
       ? {layout:this._layoutDraft.history[this._layoutDraft.index],canUndo:this._layoutDraft.index>0,
-        canRedo:this._layoutDraft.index+1<this._layoutDraft.history.length,status:'pending',
-        viewport:previousJob.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]}
+        canRedo:this._layoutDraft.index+1<this._layoutDraft.history.length,status:previousJob.ready?'ready-candidate':'pending',
+        viewport:previousJob.viewport,errors:previousJob.ready?[]:[{code:'text-measurement-pending',path:'layout'}]}
       : this._layoutDraftState(true), checked = state;
     let ids = [], hitBoxes = [], modelIds = {}, separated = false;
     try {
@@ -5620,7 +5847,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         separated = cfg.typ === 'getrennt';
         modelIds = { ...(separated ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
         ids = Object.keys(modelIds);
-        const candidate = checked.status === 'rendered-candidate' ? cachedLayoutCandidate(this, this._config, cfg, state.layout) : null;
+        const candidate = ['rendered-candidate','ready-candidate'].includes(checked.status) ? cachedLayoutCandidate(this, this._config, cfg, state.layout) : null;
         const shown = candidate?.status === 'candidate' ? candidate.model : base;
         hitBoxes = ids.map(id => {
           const component = shown.components[modelIds[id]], b = component.bounds;
@@ -5658,9 +5885,9 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       // fires. Leave that field alone until it is committed or cancelled.
       if (!(preserveFocusedInput && p && this.shadowRoot?.activeElement === input)) input.value = p ? String(p[axis]) : '';
     }
-    ui.undo.disabled = !state.canUndo; ui.redo.disabled = !state.canRedo; ui.apply.disabled = checked.status !== 'rendered-candidate';
+    ui.undo.disabled = !state.canUndo; ui.redo.disabled = !state.canRedo; ui.apply.disabled = !['rendered-candidate','ready-candidate'].includes(checked.status);
     ui.rebind.hidden = !this._layoutDraftNeedsRebind;
-    ui.unchecked = checked.status !== 'rendered-candidate';
+    ui.unchecked = !['rendered-candidate','ready-candidate'].includes(checked.status);
     const de = sprache(this._config, this._hass) === 'de';
     const layout = state.layout;
     const emptyDraft = layoutObject(layout) && layout.version === 2 &&
@@ -5668,7 +5895,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       ['components', 'ports'].every(key => layout[key] === undefined || (layoutObject(layout[key]) && Object.keys(layout[key]).length === 0));
     const neutralDefault = emptyDraft && ids.length > 0 && checked.status === 'unsupported' && checked.errors?.[0]?.code !== 'unsupported-configuration';
     ui.status.textContent = checked.status === 'pending' ? (de ? 'Textprüfung läuft.' : 'Text validation is pending.')
-      : checked.status === 'rendered-candidate' ? (de ? 'Entwurf geprüft' : 'Draft validated')
+      : ['rendered-candidate','ready-candidate'].includes(checked.status) ? (de ? 'Entwurf geprüft' : 'Draft validated')
       : checked.status === 'unbound' ? (de ? 'Die Konfiguration hat sich geändert. Entwurf für diese Karte bestätigen oder verwerfen.' : 'Configuration changed. Confirm this draft for this card or discard it.')
       : (neutralDefault || checked.errors?.[0]?.code === 'unmoved-candidate') ? (de ? 'Komponente bewegen, um einen Entwurf zu prüfen.' : 'Move a component to validate the draft.')
       : checked.errors?.[0]?.code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Vorschau.' : 'A current sensor value does not fit the preview.')
@@ -5698,7 +5925,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       }
     }
     const job=layoutTextMeasurementJobs.get(this),slot=ui.previewRoot.querySelector('[data-layout-viewport]'),reference=slot?.querySelector?.('svg');
-    const preserve=checked.status==='pending' && job && job===previousJob && job.pending &&
+    const preserve=['pending','ready-candidate'].includes(checked.status) && job && job===previousJob && (job.pending || job.ready) &&
       job.current?.(job.generation) && reference?.isConnected && reference.parentNode===slot && viewport &&
       reference.getAttribute('viewBox')===viewport.viewBox &&
       job.viewport?.viewBox===viewport.viewBox && !viewportRejected && !this._layoutDrag;
