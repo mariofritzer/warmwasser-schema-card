@@ -443,6 +443,23 @@ test('invalid layout keeps a marked draft while canonical preview remains visibl
   assert.ok(ui.previewRoot._html.includes('<svg')); assert.match(ui.status.textContent, /overlap/);
 });
 
+test('rejected drag viewport keeps canonical viewBox and reports unsupported', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui=editor._layoutPanel, writes=[];
+  ui.previewRoot.querySelector=()=>({setAttribute:(name,value)=>writes.push([name,value])});
+  editor._positionLayoutOverlay=()=>{};
+  editor._layoutDrag={viewBox:'0 0 10 10',viewport:{x:0,y:0,width:10,height:10,viewBox:'0 0 10 10'}};
+  editor._layoutDraftState=()=>({layout:{version:2,components:{}},canUndo:false,canRedo:false,status:'rendered-candidate',
+    html:'<svg viewBox="0 -30 486 430"></svg>'});
+  editor._refreshLayoutUI();
+  assert.equal(ui.apply.disabled,true);
+  assert.match(ui.status.textContent,/viewport is not supported/i);
+  assert.match(ui.previewRoot._html,/<svg viewBox="0 -30 486 430"/);
+  assert.deepEqual(writes,[]);
+});
+
 test('reattached editor preserves dirty history but requires explicit rebind', () => {
   const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
   editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };

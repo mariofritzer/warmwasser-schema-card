@@ -25,6 +25,7 @@
     <button id="volume-short">Normal volume pending check</button>
     <button id="viewport-events">Viewport reflow diagnostics</button>
     <button id="viewport-contract">Fixed viewport prototype</button>
+    <button id="viewport-real">Card + editor viewport check</button>
     <button id="smoke">Run smoke checks</button>
   </div>
   <p id="result" role="status"></p>
@@ -175,6 +176,37 @@
           result.textContent=`PASS prototype only; no card text or paint approval: ${JSON.stringify(observations)}`;
         } catch(error) {result.textContent=`FAIL fixed viewport prototype: ${error.message}`;}
         finally {slot.remove();}
+      });
+      document.getElementById('viewport-real').addEventListener('click', async()=>{
+        let container;
+        try {
+          volume(500);
+          const draft=copy(editor._layoutDraft.history[editor._layoutDraft.index]);
+          const saved={...copy(config),layout:draft};
+          container=document.createElement('div');container.style.cssText='position:fixed;left:-10000px;top:0;width:320px';document.body.append(container);
+          const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;
+            container.replaceChildren(card);card.setConfig(copy(saved));card.hass=hass;return card;};
+          let card=mount();const observations=[];
+          const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          for(const width of [320,420,320,420]) {
+            container.style.width=`${width}px`;editor._layoutPanel.viewport.style.width=`${width}px`;await frame();
+            const hosts=[card.shadowRoot.querySelector('[data-layout-viewport]'),editor._layoutPanel.previewRoot.querySelector('[data-layout-viewport]')];
+            if(hosts.some(x=>!x)) throw new Error('missing card/editor host');
+            const data=hosts.map(host=>{const box=host.getBoundingClientRect(),svg=host.querySelector('svg');
+              return {width:box.width,height:box.height,viewBox:svg.getAttribute('viewBox')};});
+            if(data.some(x=>!Number.isFinite(x.width) || !Number.isFinite(x.height) || x.width<=0 || x.height<=0) || data[0].viewBox!==data[1].viewBox)
+              throw new Error('invalid or inconsistent card/editor viewport');
+            observations.push(data);
+          }
+          const prior=card.shadowRoot.querySelector('[data-layout-viewport]').getBoundingClientRect();
+          const priorBox=card.shadowRoot.querySelector('[data-layout-viewport] svg').getAttribute('viewBox');
+          card=mount();await frame();const host=card.shadowRoot.querySelector('[data-layout-viewport]'),after=host?.getBoundingClientRect();
+          if(!after || after.width!==prior.width || after.height!==prior.height || host.querySelector('svg').getAttribute('viewBox')!==priorBox)
+            throw new Error('saved-layout reload changed the viewport');
+          if(!editor._layoutPanel.apply.disabled) throw new Error('unproven text was enabled');
+          result.textContent=`PASS real hosts and reload; no text/paint approval: ${JSON.stringify(observations)}`;
+        } catch(error) {result.textContent=`FAIL real viewport: ${error.message}`;}
+        finally {container?.remove();if(editor?._layoutPanel) editor._layoutPanel.viewport.style.width='';}
       });
       document.getElementById('smoke').addEventListener('click', smoke);
       window.layoutHarness = { reset, separated, temperature, wp, smoke, viewportEvents, get editor() { return editor; }, get config() { return copy(config); } };

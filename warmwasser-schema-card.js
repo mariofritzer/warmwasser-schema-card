@@ -1747,7 +1747,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical') {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false) {
   const unsupported=reason=>({status:'unsupported',reason});
   const wait=promise=>{
     if (!signal) return promise;
@@ -1803,6 +1803,12 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       if (style.boxSizing==='border-box') width-=px(style.paddingLeft)+px(style.paddingRight)+px(style.borderLeftWidth)+px(style.borderRightWidth);
       if (!Number.isFinite(width) || width<=0) return unsupported('text-stage-viewport-unproven');
       stage.style.cssText+=`width:${width}px;box-sizing:content-box;margin:0;padding:0;border:0;`;
+      if (fixedViewport) {
+        const height=px(style.height);
+        if (!Number.isFinite(height) || height<=0) return unsupported('text-stage-viewport-unproven');
+        stage.style.cssText+=`height:${height}px;`;
+        svg.style.cssText='position:absolute;inset:0;width:100%;height:100%;';
+      }
     }
     stage.append(svg); parent.append(stage);
     const intact=()=>stage.isConnected && stage.parentNode===parent && svg.parentNode===stage && svg.getRootNode()===root &&
@@ -3714,6 +3720,22 @@ function layoutCandidateViewport(svg) {
       ![x+width,y+height,ratio].every(Number.isFinite)) return null;
   return Object.freeze({x,y,width,height,viewBox:`${x} ${y} ${width} ${height}`});
 }
+function renderLayoutViewport(html,viewport) {
+  if (typeof html!=='string' || !viewport) return null;
+  const verified=layoutCandidateViewport({getAttribute:()=>viewport.viewBox});
+  if (!verified || ['x','y','width','height'].some(key=>verified[key]!==viewport[key])) return null;
+  const start=html.indexOf('<svg viewBox="'), end=html.indexOf('</svg>',start);
+  if (start<0 || end<0 || html.indexOf('<svg',start+4)>=0) return null;
+  const close=html.indexOf('>',start);
+  if (close<0 || close>end) return null;
+  const original=html.slice(start,close+1).match(/^<svg viewBox="([^"]+)"/);
+  const bounds=layoutCandidateViewport({getAttribute:()=>original?.[1]});
+  if (!bounds || viewport.x>bounds.x || viewport.y>bounds.y ||
+      viewport.x+viewport.width<bounds.x+bounds.width || viewport.y+viewport.height<bounds.y+bounds.height) return null;
+  const open=`<svg viewBox="${viewport.viewBox}" style="position:absolute;inset:0;width:100%;height:100%;">`;
+  const slot=`<div data-layout-viewport style="position:relative;width:100%;aspect-ratio:${viewport.width}/${viewport.height};max-height:860px;">`;
+  return html.slice(0,start)+slot+open+html.slice(close+1,end+6)+'</div>'+html.slice(end+6);
+}
 function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
   const unsupported=code=>({status:'unsupported',errors:[{code,path:'layout'}]});
   try {
@@ -3757,7 +3779,7 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       mutation.observe(node,{attributes:true,attributeFilter:['class','style','hidden','dir']});
     if (doc.head) mutation.observe(doc.head,{childList:true,subtree:true,attributes:true,characterData:true});
     const rect=host.getBoundingClientRect();job.width=rect.width;job.height=rect.height;
-    if (![job.width,job.height].every(Number.isFinite) || job.width<=0 || job.height<=0) {
+    if (![job.width,job.height].every(Number.isFinite) || job.width<0 || job.height<0) {
       cancelLayoutTextMeasurement(owner);
       return unsupported('text-measurement-unavailable');
     }
@@ -3774,9 +3796,17 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
     };
     Promise.resolve().then(()=>{
       if (!current(generation)) return {status:'unsupported',reason:'text-stage-invalidated'};
-      const reference=parent.querySelector('svg');
+      const slot=parent.querySelector('[data-layout-viewport]');
+      const reference=slot?.querySelector('svg');
       if (!reference || owner._layoutDrag) return {status:'unsupported',reason:'text-stage-reference-invalid'};
-      return stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,reference,controller.signal,true,'translated');
+      // On first mount the outer card may have had zero height when the job
+      // was queued. Establish the baseline after the fixed host is rendered,
+      // before any asynchronous measurement or observer delivery.
+      const rect=host.getBoundingClientRect();
+      if (!rect || ![rect.width,rect.height].every(Number.isFinite) || rect.width<=0 || rect.height<=0)
+        return {status:'unsupported',reason:'text-stage-viewport-unproven'};
+      job.width=rect.width;job.height=rect.height;
+      return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'translated',true);
     })
       .then(finish,finish);
     return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
@@ -4093,13 +4123,14 @@ class WarmwasserSchemaCard extends HTMLElement {
     const previous = { html: this._box.innerHTML, model: this._model, candidate: this._layoutCandidate, status: this._layoutStatus };
     try {
       const tpl = document.createElement('template');
-      let nextModel = this._model, nextCandidate = this._layoutCandidate, nextStatus = this._layoutStatus, html;
+      let nextModel = this._model, nextCandidate = this._layoutCandidate, nextStatus = this._layoutStatus, html, viewport;
       const enabled = this._layoutFeatureEnabled();
       const selectedLayout = enabled && (this._layoutDraft || this._savedLayout);
       if (selectedLayout) {
         // Re-evaluate with current live values, allowing a previously unsafe
         // label to recover without losing the saved layout or inactive entries.
         const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, selectedLayout.value, this);
+        viewport = result.viewport;
         nextStatus = { status: result.status, errors: result.errors || [] };
         if (result.status === 'rendered-candidate') {
           nextCandidate = result.candidate; nextModel = result.candidate.model; html = result.html;
@@ -4110,6 +4141,7 @@ class WarmwasserSchemaCard extends HTMLElement {
         nextStatus = { status: result.status, errors: result.errors || [] };
       } else if (nextCandidate) {
         const result = renderLayoutCandidate(this, nextCandidate);
+        viewport = result.viewport;
         if (result.status === 'rendered-candidate') html = result.html;
         else { nextCandidate = null; nextModel = diagramModel(this._cfg); }
       }
@@ -4117,6 +4149,17 @@ class WarmwasserSchemaCard extends HTMLElement {
         const model = this._model;
         try { this._model = nextModel; html = this._render(); }
         finally { this._model = model; }
+      }
+      if (enabled && viewport) {
+        const wrapped=renderLayoutViewport(html,viewport);
+        if (wrapped) html=wrapped;
+        else {
+          cancelLayoutTextMeasurement(this);
+          nextStatus={status:'unsupported',errors:[{code:'text-stage-viewport-unproven',path:'layout'}]};
+          nextCandidate=null;nextModel=diagramModel(this._cfg);
+          const model=this._model;
+          try {this._model=nextModel;html=this._render();} finally {this._model=model;}
+        }
       }
       const notice = this._savedLayout ? savedLayoutNotice(nextStatus, sprache(this._cfg, this._hass), !enabled) : '';
       if (notice) html += `<div role="status" aria-live="polite"${nextStatus?.status==='pending'?' data-layout-status':''} style="padding:8px 12px;color:var(--secondary-text-color)">${esc(notice)}</div>`;
@@ -4465,7 +4508,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       status: 'unbound', errors: [{ code: 'draft-needs-rebind', path: 'layout' }] };
     const checked = preflightLayoutRender(this._config, layout, this._hass, this);
     return { layout, canUndo: index > 0, canRedo: index + 1 < history.length,
-      status: checked.status, errors: checked.errors || [], ...(includePreview ? { html: checked.html } : {}) };
+      status: checked.status, errors: checked.errors || [], ...(includePreview ? { html: checked.html, viewport: checked.viewport } : {}) };
   }
 
   _editLayoutDraft(layout, evaluate = true) {
@@ -4899,8 +4942,6 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _startLayoutDrag(event) {
     const ui = this._layoutPanel, draft = this._layoutDraft;
     if (!ui || !draft || this._layoutDraftNeedsRebind || this._layoutDrag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
-    // A pending measurement must not outlive the start of a drag.
-    cancelLayoutTextMeasurement(this);
     const svg = ui.previewRoot.querySelector('svg');
     const matrix = svg?.getScreenCTM();
     if (!svg || !matrix) return;
@@ -4915,10 +4956,13 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const hits = (ui.hitBoxes || []).filter(box => start.x >= box.x && start.x <= box.x + box.width && start.y >= box.y && start.y <= box.y + box.height);
     // Empty or ambiguous space must not move an arbitrary component.
     if (hits.length !== 1) { try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return; }
+    // A pending measurement must not outlive the start of a drag.
+    cancelLayoutTextMeasurement(this);
     const hit = hits[0]; ui.select.value = hit.id;
     ui.preview.focus?.({ preventScroll: true });
     this._layoutDrag = { pointerId: event.pointerId, point, start, position: { x: hit.originX, y: hit.originY },
       id: hit.id, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
+      viewport: ui.previewRoot.querySelector('[data-layout-viewport]') ? layoutCandidateViewport(svg) : null,
       frame: null, pending: null, edited: false };
     this._refreshLayoutUI(); event.preventDefault();
   }
@@ -5041,9 +5085,21 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       try { const card = new WarmwasserSchemaCard(); card.setConfig(this._config); card._hass = this._hass; html = card._render(); }
       catch (_) { html = ''; }
     }
+    let viewportRejected=false;
+    const viewport=this._layoutDrag ? this._layoutDrag.viewport : checked.viewport;
+    if (html && viewport) {
+      const wrapped=renderLayoutViewport(html,viewport);
+      if (wrapped) html=wrapped;
+      else {
+        cancelLayoutTextMeasurement(this);ui.apply.disabled=true;ui.unchecked=true;viewportRejected=true;
+        ui.status.textContent=de?'Dieser Viewport wird nicht unterstützt.':'This viewport is not supported.';
+        try {const card=new WarmwasserSchemaCard();card.setConfig(this._config);card._hass=this._hass;html=card._render();}
+        catch (_) {html='';}
+      }
+    }
     ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
     const svg = ui.previewRoot.querySelector('svg');
-    if (svg && this._layoutDrag?.viewBox) svg.setAttribute('viewBox', this._layoutDrag.viewBox);
+    if (svg && !viewportRejected && this._layoutDrag?.viewBox) svg.setAttribute('viewBox', this._layoutDrag.viewBox);
     this._positionLayoutOverlay();
   }
 

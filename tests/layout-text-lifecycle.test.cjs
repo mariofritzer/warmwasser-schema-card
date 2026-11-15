@@ -6,13 +6,25 @@ const vm=require('node:vm');
 const registry=new Map();
 const context={HTMLElement:class {},AbortController,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={layoutCandidateViewport,requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,setStage:fn=>{stageLegacyHeatingTextCandidate=fn;}};',context);
-const {layoutCandidateViewport:viewport,requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
+  '\nglobalThis.api={layoutCandidateViewport,renderLayoutViewport,requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,setStage:fn=>{stageLegacyHeatingTextCandidate=fn;}};',context);
+const {layoutCandidateViewport:viewport,renderLayoutViewport:renderViewport,requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
 test('viewport contract rejects malformed, unrepresentable and degenerate dimensions',()=>{
   const parse=value=>viewport({getAttribute:()=>value});
   assert.equal(parse('0 -30 518 445').viewBox,'0 -30 518 445');
   assert.equal(parse('0, -30, 518, 445').viewBox,'0 -30 518 445');
   for(const value of ['0,,0 100 100','0, ,0 100 100',',0 0 100 100','0 0 100 100,','0 0 0 20','0 0 1e309 2','0x10 0 20 20','1e308 0 1 20','0 0 5e-324 1e308']) assert.equal(parse(value),null,value);
+});
+test('candidate and fallback use the same fixed host and viewBox',()=>{
+  const v=viewport({getAttribute:()=>'-10 -30 518 445'});
+  const fallback=renderViewport('<div>header</div><svg viewBox="0 -30 486 430"><text>fallback</text></svg>',v);
+  const candidate=renderViewport('<div>header</div><svg viewBox="-10 -30 518 445"><text>candidate</text></svg>',v);
+  for(const html of [fallback,candidate]) {
+    assert.match(html,/data-layout-viewport/);assert.match(html,/aspect-ratio:518\/445/);
+    assert.match(html,/<svg viewBox="-10 -30 518 445" style="position:absolute/);
+  }
+  assert.equal(renderViewport('<svg viewBox="0 0 10 10"></svg><svg></svg>',v),null);
+  assert.equal(renderViewport('<svg viewBox="-100 -30 600 445"></svg>',v),null);
+  assert.equal(renderViewport('<svg viewBox="0 0 10 10"></svg>',{...v,width:'100;position:fixed'}),null);
 });
 function fixture(kind='card') {
   const handlers=new Map(),mutations=[],resizes=[],calls=[];
@@ -24,11 +36,12 @@ function fixture(kind='card') {
     const box=doc.lastHTML.match(/<svg viewBox="([^"]+)"/)?.[1] || '0 -30 600 500';
     return [{outerHTML:`<svg viewBox="${box}"></svg>`,getAttribute:()=>box}];
   }},set innerHTML(v){doc.lastHTML=v;}})};
-  const host={isConnected:true,parentElement:null,ownerDocument:doc,getRootNode:()=>({}),getBoundingClientRect(){return {width:this.width,height:100};},width:200};
+  const host={isConnected:true,parentElement:null,ownerDocument:doc,getRootNode:()=>({}),getBoundingClientRect(){return {width:this.width,height:this.height};},width:200,height:100};
   let box='0 -30 486 430';
   const root={host,querySelectorAll:()=>[]},parent={isConnected:true,ownerDocument:doc,getRootNode:()=>root};
-  const reference={isConnected:true,parentNode:parent,getAttribute:()=>box,setAttribute:(_name,value)=>{box=value;}};
-  parent.querySelector=()=>reference;
+  const slot={querySelector:()=>reference};
+  const reference={isConnected:true,parentNode:slot,getAttribute:()=>box,setAttribute:(_name,value)=>{box=value;}};
+  parent.querySelector=selector=>selector==='[data-layout-viewport]' ? slot : reference;
   const card=new (registry.get('warmwasser-schema-card'))();card.isConnected=true;card._cfg={sprache:'en'};card._ents=['sensor.a'];card._hass={language:'en',states:{}};card._box=parent;card._update=()=>{};card._layoutFeatureEnabled=()=>true;
   const owner=kind==='card'?card:new (registry.get('warmwasser-schema-card-editor'))();
   if(kind==='editor') {owner.isConnected=true;owner._config={};owner._hass=card._hass;owner._layoutPanel={previewRoot:parent,overlay:{},apply:{disabled:false},status:{textContent:''}};owner._layoutDraft={history:[{version:2}],index:0};owner._positionLayoutOverlay=()=>{owner.overlayUpdates=(owner.overlayUpdates||0)+1;};}
@@ -55,6 +68,15 @@ test('cancellation before the pending microtask does not alter either viewport',
     const f=fixture(kind);request(f.owner,f.card,'candidate');cancel(f.owner);
     await new Promise(resolve=>setImmediate(resolve));
     assert.equal(f.calls.length,0);assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
+  }
+});
+test('first mount establishes a nonzero resize baseline after the fixed host exists',async()=>{
+  for(const kind of ['card','editor']) {
+    const f=fixture(kind);f.host.height=0;
+    assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+    f.host.height=100;await Promise.resolve();
+    assert.equal(f.calls.length,1);f.resizes[0].fn([]);assert.equal(f.calls[0].signal.aborted,false);
+    f.host.height=101;f.resizes[0].fn([]);assert.equal(f.calls[0].signal.aborted,true);
   }
 });
 test('font or repeated resize aborts without changing the visible viewport',async()=>{

@@ -134,6 +134,7 @@ for (const withWp of [false, true]) test(`guarded saved FM${withWp ? '/WP' : ''}
   const hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
   card.hass = hass;
   assert.equal(card._layoutStatus.status, 'rendered-candidate', JSON.stringify(card._layoutStatus));
+  assert.match(card._box.html, /data-layout-viewport/);
   assert.equal(card._model.components.fm.origin.x, base.x + 30);
   if (withWp) assert.equal(card._model.components.wp.origin.x, 360);
   assert.equal(JSON.stringify(card._cfg.layout), JSON.stringify(JSON.parse(rawBefore).layout));
