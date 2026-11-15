@@ -6,8 +6,8 @@ const vm=require('node:vm');
 const registry=new Map();
 const context={HTMLElement:class {},customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={resolveLayoutCandidate,inspectMeasuredLayoutTexts,renderGeometry:(c,k)=>{c._model=k.model;layoutRenderRoutes.set(c,k);try{return c._render();}finally{layoutRenderRoutes.delete(c);}}};',context);
-const {resolveLayoutCandidate:resolve,inspectMeasuredLayoutTexts:inspect,renderGeometry}=context.api;
+  '\nglobalThis.api={resolveLayoutCandidate,inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutSymbolPaint,inspectLayoutPipePaint,renderGeometry:(c,k)=>{c._model=k.model;layoutRenderRoutes.set(c,k);try{return c._render();}finally{layoutRenderRoutes.delete(c);}}};',context);
+const {resolveLayoutCandidate:resolve,inspectMeasuredLayoutTexts:inspect,inspectLayoutShadowPolicy:shadow,inspectLayoutSymbolPaint:symbols,inspectLayoutPipePaint:pipes,renderGeometry}=context.api;
 function fixture(full=false) {
   const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm',...(full?{temp:'sensor.fmtemp',durchfluss:'sensor.flow'}:{})},
     wp:{betrieb:'sensor.wp',...(full?{leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl'}:{})},
@@ -56,6 +56,8 @@ test('overlap and pipe, corner and bridge envelopes reject measured labels',()=>
   const temp=overlap.find(r=>r.x==='418' && r.className==='wc wt'),flow=overlap.find(r=>r.x==='418' && r.className==='wc');
   flow.box={...temp.box};
   assert.equal(inspect(c,candidate,overlap).reason,'text-overlap');
+  flow.box={...temp.box,x:temp.box.x+temp.box.width+1.5};
+  assert.equal(inspect(c,candidate,overlap).reason,'text-overlap','one-unit reserves touch');
   for(const shape of ['pipe','corner','bridge']) {
     const copy={...candidate,routes:{...candidate.routes}},key=Object.keys(copy.routes)[0];
     const route={...copy.routes[key],points:[{x:10,y:10},{x:20,y:10}],crossings:[]};
@@ -77,4 +79,49 @@ test('foreign body and connector stub envelopes reject measured labels',()=>{
   const stub={...candidate,model:structuredClone(candidate.model)};
   stub.model.components.wp.ports.return.stub={x:50,y:-108,width:12,height:12};
   assert.equal(inspect(c,stub,records).reason,'text-obstacle-contact');
+});
+test('shadow policy binds each rendered filter and exact model region but never approves paint',()=>{
+  const {c,candidate}=fixture(),html=renderGeometry(c,candidate),result=shadow(c,candidate,html);
+  assert.equal(result.status,'unsupported');assert.equal(result.reason,'layout-shadow-policy-bound-only');
+  assert.equal(result.shadows.length,3);assert.equal(result.allowedOverlap,'decorative-shadow');
+  const fm=result.shadows.find(s=>s.owner==='fm');
+  assert.equal(fm.x,337);assert.equal(fm.y,2);assert.equal(fm.width,176);assert.equal(fm.height,144);
+  assert.equal(shadow(c,candidate,html.replace('stdDeviation="4"','stdDeviation="5"')).reason,'layout-shadow-policy-unproven');
+  assert.equal(shadow(c,candidate,html.replace('filter="url(#wwShadow)"','')).reason,'layout-shadow-policy-unproven');
+  const invalid={...candidate,model:structuredClone(candidate.model)};invalid.model.components.fm.origin.x=Infinity;
+  assert.equal(shadow(c,invalid,html).reason,'layout-shadow-policy-unproven');
+});
+test('visible droplet, rotating fan, LED and domestic arrows exclude text boxes',()=>{
+  const {c,candidate,records}=fixture(),html=renderGeometry(c,candidate),result=symbols(c,candidate,records,html);
+  assert.equal(result.reason,'layout-symbol-paint-bound-only');assert.equal(result.symbols.length,5);
+  for(const icon of result.symbols) {
+    const changed=records.map(r=>({...r,box:{...r.box}}));
+    changed[0].box={x:icon.x,y:icon.y,width:1,height:1};
+    assert.equal(symbols(c,candidate,changed,html).reason,'text-obstacle-contact',icon.id);
+  }
+  assert.equal(symbols(c,candidate,records,html.replace('M430 30C424','M430 31C424')).reason,'layout-symbol-paint-unproven');
+});
+test('primary and domestic routes and every stub bind to the rendered batch',()=>{
+  const {c,candidate}=fixture(),html=renderGeometry(c,candidate),result=pipes(c,candidate,html);
+  assert.equal(result.reason,'layout-pipe-paint-bound-only');assert.equal(result.routes,9);assert.equal(result.stubs,13);
+  const route=Object.values(candidate.routes)[0];
+  assert.equal(pipes(c,candidate,html.replace(`d="${route.path}" class="w0"`,'d="M0 0" class="w0"')).reason,'layout-pipe-paint-unproven');
+  assert.equal(pipes(c,candidate,html.replace(`d="${route.path}" class="w0"`,`d="${route.path}" class="w0" transform="translate(50)"`)).reason,'layout-pipe-paint-unproven');
+  assert.equal(pipes(c,candidate,html.replace('class="wk"','class="missing"')).reason,'layout-pipe-paint-unproven');
+  let moved=html,late='';
+  for(const layer of ['w1','w2']) {
+    const start=moved.indexOf(`<path d="${route.path}" class="${layer}"`),end=moved.indexOf('/>',start)+2;
+    assert.ok(start>=0 && end>start);late+=moved.slice(start,end);moved=moved.slice(0,start)+moved.slice(end);
+  }
+  moved=moved.replace('</svg>',`${late}</svg>`);
+  assert.equal(pipes(c,candidate,moved).reason,'layout-pipe-paint-unproven');
+  assert.equal(pipes(c,candidate,html.replace('</svg>','<path d="M0 0H999" class="w3"/></svg>')).reason,'layout-pipe-paint-unproven');
+  assert.equal(pipes(c,candidate,html.replace('</svg>','<path d="M0 0H999" class="w0 wx"/></svg>')).reason,'layout-pipe-paint-unproven');
+  assert.equal(pipes(c,candidate,html.replace('</svg>','<rect x="0" y="0" width="2" height="2" class="wk wx"/></svg>')).reason,'layout-pipe-paint-unproven');
+  c._hass.states['sensor.fm'].state='off';
+  assert.equal(pipes(c,candidate,html).reason,'layout-pipe-paint-unproven');
+  c._hass.states['sensor.fm'].state='on';
+  const forged={...candidate,routes:{...candidate.routes}},id=Object.keys(forged.routes)[0];
+  forged.routes[id]={...forged.routes[id],path:'M0 0'};
+  assert.equal(pipes(c,forged,html).reason,'layout-pipe-paint-unproven');
 });

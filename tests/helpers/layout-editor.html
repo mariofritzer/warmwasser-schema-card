@@ -61,14 +61,38 @@
       };
       const realTextStage=stageLegacyHeatingTextCandidate;
       const realTextInventory=inspectMeasuredLayoutTexts;
+      const realShadowPolicy=inspectLayoutShadowPolicy;
+      const realTargetReferences=inspectLayoutTargetReferences;
+      const realSymbolPaint=inspectLayoutSymbolPaint;
+      const realPipePaint=inspectLayoutPipePaint;
       inspectMeasuredLayoutTexts=(...args)=>{
         const checked=realTextInventory(...args);
         result.textContent+=` | candidate inventory: ${checked.reason}${checked.count===undefined?'':` (${checked.count})`}${checked.detail ? ` ${JSON.stringify(checked.detail)}` : ''}`;
         return checked;
       };
+      inspectLayoutShadowPolicy=(...args)=>{
+        const checked=realShadowPolicy(...args);
+        result.textContent+=` | shadow policy: ${checked.reason}${checked.shadows ? ` (${checked.shadows.length})` : ''}`;
+        return checked;
+      };
+      inspectLayoutTargetReferences=(...args)=>{
+        const checked=realTargetReferences(...args);
+        result.textContent+=` | target references: ${checked.reason}`;
+        return checked;
+      };
+      inspectLayoutSymbolPaint=(...args)=>{
+        const checked=realSymbolPaint(...args);
+        result.textContent+=` | symbol paint: ${checked.reason}${checked.symbols ? ` (${checked.symbols.length})` : ''}`;
+        return checked;
+      };
+      inspectLayoutPipePaint=(...args)=>{
+        const checked=realPipePaint(...args);
+        result.textContent+=` | pipe paint: ${checked.reason}${checked.routes ? ` (${checked.routes} routes, ${checked.stubs} stubs)` : ''}`;
+        return checked;
+      };
       stageLegacyHeatingTextCandidate=async (...args)=>{
         const checked=await realTextStage(...args);
-        result.textContent+=` | stage: ${checked.reason}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}`;
+        result.textContent+=` | stage: ${checked.reason}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}${checked.symbolStrokeProof ? ` ${checked.symbolStrokeProof.reason}` : ''}${checked.pipeStrokeProof ? ` ${checked.pipeStrokeProof.reason}` : ''}`;
         return checked;
       };
       function install(nextConfig) {

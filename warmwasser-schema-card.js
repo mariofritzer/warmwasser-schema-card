@@ -1682,6 +1682,74 @@ function captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch) {
 }
 
 let heatingTextStageSequence=0;
+// The symbol AABBs below assume an unstroked droplet and bounded strokes on
+// the fan, LED and water arrows. Inherited host SVG styles can violate those
+// assumptions even when the card stylesheet itself is unchanged.
+function inspectStagedLayoutSymbolStrokes(svg) {
+  const fail=()=>({status:'unsupported',reason:'layout-symbol-stroke-unproven'});
+  try {
+    const view=svg?.ownerDocument?.defaultView;
+    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
+    const all=Array.from(svg.querySelectorAll('path,circle'));
+    const droplets=all.filter(el=>el.localName==='path' && [
+      'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z',
+      'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'].includes(el.getAttribute('d')));
+    const circles=radius=>all.filter(el=>el.localName==='circle' && el.getAttribute('cx')===(radius===42?'390':'434') &&
+      el.getAttribute('cy')===(radius===42?'226':'353') && el.getAttribute('r')===String(radius));
+    const arrows=all.filter(el=>el.localName==='path' && el.getAttribute('class')==='wa');
+    const fan=circles(42),led=circles(5);
+    if (droplets.length!==1 || arrows.length!==2 || fan.length!==led.length || fan.length>1) return fail();
+    const rects=Array.from(svg.querySelectorAll('rect'));
+    const displays=(x,y,width,height)=>rects.filter(el=>el.localName==='rect' && el.getAttribute('x')===String(x) &&
+      el.getAttribute('y')===String(y) && el.getAttribute('width')===String(width) && el.getAttribute('height')===String(height));
+    const fmDisplay=displays(392,62,52,34),wpDisplay=displays(342,282,96,46);
+    const hasFmDisplay=droplets[0].getAttribute('d').startsWith('M430 22');
+    if (fmDisplay.length!==(hasFmDisplay?1:0) || wpDisplay.length!==fan.length) return fail();
+    const bounded=(el,max,required)=>{
+      const s=view.getComputedStyle(el),v=s?.strokeWidth;
+      if (!s || (s.vectorEffect && s.vectorEffect!=='none') || typeof v!=='string' ||
+          !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(v.trim())) return false;
+      const width=Number.parseFloat(v);
+      return Number.isFinite(width) && width>=0 && width<=max && (!required || s.stroke!=='none');
+    };
+    const droplet=view.getComputedStyle(droplets[0]);
+    if (!droplet || droplet.stroke!=='none' || (droplet.vectorEffect && droplet.vectorEffect!=='none') ||
+        arrows.some(el=>!bounded(el,1.6,true)) || fan.some(el=>!bounded(el,3,true)) || led.some(el=>!bounded(el,1,true)) ||
+        [...fmDisplay,...wpDisplay].some(el=>!bounded(el,1,true))) return fail();
+    return {status:'unsupported',reason:'layout-symbol-strokes-bound-only'};
+  } catch (_) { return fail(); }
+}
+function inspectStagedLayoutPipeStrokes(svg) {
+  const fail=()=>({status:'unsupported',reason:'layout-pipe-stroke-unproven'});
+  try {
+    const view=svg?.ownerDocument?.defaultView;
+    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
+    const paths=Array.from(svg.querySelectorAll('path'));
+    const controlled=new Set(['w0','w1','w2','w3','wk']);
+    for (const el of svg.querySelectorAll('[class]')) {
+      const raw=el.getAttribute('class') || '',tokens=raw.trim().split(/\s+/),used=tokens.filter(token=>controlled.has(token));
+      if (used.length && (used.length!==1 || raw!==used[0] || el.localName!==(used[0]==='wk'?'rect':'path'))) return fail();
+    }
+    const byClass=name=>paths.filter(el=>el.getAttribute('class')===name);
+    const layers=['w0','w1','w2'].map(byClass),stubs=Array.from(svg.querySelectorAll('rect')).filter(el=>el.getAttribute('class')==='wk');
+    if (![4,9].includes(layers[0].length) || layers.some(group=>group.length!==layers[0].length) ||
+        stubs.length!==(layers[0].length===4?6:13)) return fail();
+    const rootMatrix=svg.getScreenCTM(),keys=['a','b','c','d','e','f'];
+    if (!rootMatrix || rootMatrix.is2D===false || !keys.every(k=>Number.isFinite(rootMatrix[k]))) return fail();
+    const bounded=(el,max,round)=>{
+      const s=view.getComputedStyle(el),v=s?.strokeWidth;
+      const matrix=el.getScreenCTM();
+      if (!s || s.stroke==='none' || (s.vectorEffect && s.vectorEffect!=='none') || typeof v!=='string' ||
+          !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(v.trim()) ||
+          !matrix || matrix.is2D===false || !keys.every(k=>Number.isFinite(matrix[k]) && Math.abs(matrix[k]-rootMatrix[k])<=1e-9) ||
+          (round && (s.strokeLinecap!=='round' || s.strokeLinejoin!=='round'))) return false;
+      const width=Number.parseFloat(v);return Number.isFinite(width) && width>=0 && width<=max;
+    };
+    if (layers.some((group,i)=>group.some(el=>!bounded(el,[10,7,2][i],true))) ||
+        stubs.some(el=>!bounded(el,.8,false)) || byClass('w3').some(el=>!bounded(el,10,false))) return fail();
+    return {status:'unsupported',reason:'layout-pipe-strokes-bound-only'};
+  } catch (_) { return fail(); }
+}
 function namespaceLegacyHeatingSvgIds(svg,root) {
   const fail=reason=>({status:'unsupported',reason});
   const all=[svg,...svg.querySelectorAll('*')], existing=new Set(Array.from(root.querySelectorAll('[id]'),el=>el.id));
@@ -1829,7 +1897,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     if (!current) return unsupported('text-stage-invalidated');
     const checked=checkMeasuredTextReserve(reserve,current,contextKey);
     if (checked.textReserve!=='fits') return checked;
-    let textStyleParity,referenceEntries;
+    let textStyleParity,referenceEntries,symbolStrokeProof,pipeStrokeProof;
     if (referenceSvg) {
       if (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root)
         return unsupported('text-stage-reference-invalid');
@@ -1878,6 +1946,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
           !sameScreen(stageInitial,stageBeforeCleanup,allMatrix) ||
           !sameScreen(referenceBeforeCleanup,stageBeforeCleanup,linearMatrix))
         return unsupported('text-stage-viewport-unproven');
+      if (independent) {symbolStrokeProof=inspectStagedLayoutSymbolStrokes(svg);pipeStrokeProof=inspectStagedLayoutPipeStrokes(svg);}
       // Recheck the visible SVG after removing the staged sibling: structural
       // selectors such as :last-child must not alter the on-screen styles.
       stage.remove(); stage=null;
@@ -1900,7 +1969,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     const referenceTextRecords=includeTextRecords && referenceEntries ? records(referenceEntries) : undefined;
     return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
       textCount:current.entries.length,boxes,...(textStyleParity?{textStyleParity}:{}),...(textRecords?{textRecords}:{}),
-      ...(referenceTextRecords?{referenceTextRecords}:{})};
+      ...(referenceTextRecords?{referenceTextRecords}:{}),...(symbolStrokeProof?{symbolStrokeProof}:{}),...(pipeStrokeProof?{pipeStrokeProof}:{})};
   } catch (_) { return unsupported('text-stage-unavailable'); }
   finally { if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove(); }
 }
@@ -3703,7 +3772,7 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
     const add=(owner,x,y,css,text,slot)=>items.push({owner,x:String(x),y:String(y),css,text:String(text),slot});
     // The manufacturer row ends before the separate droplet at x=421.
     add('fm',352,32,'wt',c.hersteller,{x:346,y:18,width:74,height:22});
-    add('fm',352,92,null,c.name_fm,{x:346,y:70,width:45,height:30});
+    add('fm',352,92,null,c.name_fm,{x:346,y:69,width:45,height:31});
     const f=freshWaterState(c,fm,false,S,ON,NUM);
     if (fm?.temp) add('fm',418,fm.durchfluss?77:84,'wc wt',f.fmTempText,{x:393,y:62,width:50,height:34});
     if (fm?.durchfluss) add('fm',418,fm.temp?90:84,'wc',f.fmFlowText,{x:393,y:62,width:50,height:34});
@@ -3723,8 +3792,8 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
     }
     const cold=diagramPort(m,m.connections['domestic-cold'].from),hot=diagramPort(m,m.connections['domestic-hot'].to);
     const boundary=m.components['domestic-boundary'],offset=boundary.origin.y-boundary.baseOrigin.y;
-    add(null,cold.x-8,-14+offset,'we',c.text_tw_kalt ?? L.kalt,{x:cold.x-138,y:-31+offset,width:131,height:20});
-    add(null,hot.x+8,-14+offset,null,c.text_tw_warm ?? L.warm,{x:hot.x+7,y:-31+offset,width:131,height:20});
+    add(null,cold.x-8,-14+offset,'we',c.text_tw_kalt ?? L.kalt,{x:cold.x-138,y:-31+offset,width:132,height:20});
+    add(null,hot.x+8,-14+offset,null,c.text_tw_warm ?? L.warm,{x:hot.x+6,y:-31+offset,width:132,height:20});
     if (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') {
       const tank=m.components.tank;
       add('tank',137,338,'wc wt wo',`${c.volumen} l`,{x:tank.baseOrigin.x+27,y:tank.baseOrigin.y+6,width:76,height:tank.bounds.height-12});
@@ -3736,7 +3805,9 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
       if (item.owner && (!component || ![dx,dy].every(Number.isFinite))) return fail('text-inventory-unproven');
       const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.css && r.text===item.text);
       if (matches.length!==1) return fail('text-inventory-unproven');
-      const {box:q,matrix:t}=matches[0],s=item.slot,slot={x:s.x+dx,y:s.y+dy,width:s.width,height:s.height};
+      const {box:measured,matrix:t}=matches[0],s=item.slot,slot={x:s.x+dx,y:s.y+dy,width:s.width,height:s.height};
+      // Keep one SVG unit of visible separation from text, strokes and stubs.
+      const q=measured && {x:measured.x-1,y:measured.y-1,width:measured.width+2,height:measured.height+2};
       if (!q || !t || ![q.x,q.y,q.width,q.height,t.a,t.b,t.c,t.d,t.e,t.f].every(Number.isFinite) || q.width<0 || q.height<0 ||
           Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 || Math.abs(t.d-1)>1e-8 ||
           Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven');
@@ -3771,6 +3842,159 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
     if(boxes.some(box=>obstacles.some(o=>(!o.owner || o.owner!==box.owner) && hit(box,o)))) return fail('text-obstacle-contact');
     return {status:'unsupported',reason:'text-inventory-staged-only',count:boxes.length};
   } catch (_) { return fail('text-inventory-unproven'); }
+}
+
+// The configured shadow is decorative: it may overlap text, pipes and other
+// symbols. Bind the actual renderer's filter and its finite clipped regions;
+// this is not a proof of the remaining SVG paint or permission to commit.
+function inspectLayoutShadowPolicy(card,candidate,html) {
+  const fail=()=>({status:'unsupported',reason:'layout-shadow-policy-unproven'});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech'].includes(c.typ) || typeof html!=='string') return fail();
+    const filter='<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter>';
+    const expectedCount=c.wp?3:2;
+    if (html.split(filter).length!==2 || (html.match(/<filter\b/g)||[]).length!==1 ||
+        (html.match(/\bfilter\s*=/g)||[]).length!==expectedCount ||
+        (html.match(/filter="url\(#wwShadow\)"/g)||[]).length!==expectedCount) return fail();
+    const specs=[['tank',130,360,'65" ry="22','wwTemp'],['fm',110,90,'12','wwRed'],...(c.wp?[['wp',120,222,'14','wwRed']]:[])];
+    const shadows=[];
+    for (const [id,width,height,rx,fill] of specs) {
+      const b=m.components[id],o=b?.origin,box=b?.bounds;
+      if (!o || !box || box.x!==0 || box.y!==0 || box.width!==width || box.height!==height ||
+          ![o.x,o.y].every(Number.isFinite)) return fail();
+      const rendered=`<rect x="${o.x}" y="${o.y}" width="${width}" height="${height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`;
+      if (html.split(rendered).length!==2) return fail();
+      const shadow={owner:id,x:o.x-.3*width,y:o.y-.3*height,width:1.6*width,height:1.6*height};
+      if (![shadow.x,shadow.y,shadow.width,shadow.height,shadow.x+shadow.width,shadow.y+shadow.height].every(Number.isFinite)) return fail();
+      shadows.push(shadow);
+    }
+    return {status:'unsupported',reason:'layout-shadow-policy-bound-only',shadows,
+      allowedOverlap:'decorative-shadow',unresolved:['svg-paint','style-reference-binding','commit-freshness']};
+  } catch (_) { return fail(); }
+}
+
+// Validate the actual target Shadow Root, not the namespaced measurement
+// clone. A later commit must repeat this check synchronously; this snapshot
+// alone never authorizes rendering.
+function inspectLayoutTargetReferences(parent,html) {
+  const fail=()=>({status:'unsupported',reason:'layout-target-references-unproven'});
+  try {
+    const doc=parent?.ownerDocument,root=parent?.getRootNode(),view=doc?.defaultView;
+    if (!parent?.isConnected || !root?.host?.isConnected || !Array.isArray(root.adoptedStyleSheets) ||
+        root.adoptedStyleSheets.length || typeof view?.CSSStyleSheet!=='function') return fail();
+    const styles=Array.from(root.querySelectorAll('style,link'));
+    if (styles.length!==1 || styles[0].localName!=='style' || styles[0].textContent!==CSS || !styles[0].sheet ||
+        styles[0].disabled===true || styles[0].sheet.disabled!==false ||
+        ![null,'','all'].includes(styles[0].getAttribute('media')) ||
+        !['','all'].includes(styles[0].sheet.media?.mediaText)) return fail();
+    const expected=new view.CSSStyleSheet();
+    if (typeof expected.replaceSync!=='function') return fail();
+    expected.replaceSync(CSS);
+    const actualRules=Array.from(styles[0].sheet.cssRules,r=>r.cssText),expectedRules=Array.from(expected.cssRules,r=>r.cssText);
+    if (actualRules.length!==expectedRules.length || actualRules.some((s,i)=>s!==expectedRules[i])) return fail();
+    const template=doc.createElement('template');template.innerHTML=html;
+    const svgs=template.content.querySelectorAll('svg');
+    if (svgs.length!==1) return fail();
+    const svg=svgs[0],elements=[svg,...svg.querySelectorAll('[id]')],ids=elements.map(el=>el.id).filter(Boolean);
+    if (!ids.includes('wwNut') || new Set(ids).size!==ids.length) return fail();
+    const slot=parent.querySelector('[data-layout-viewport]'),reference=slot?.querySelector('svg');
+    if (!reference?.isConnected || reference.getRootNode()!==root || reference.parentNode!==slot) return fail();
+    for(const el of root.querySelectorAll('[id]')) if (!reference.contains(el) && el!==reference && ids.includes(el.id)) return fail();
+    if (namespaceLegacyHeatingSvgIds(svg,root).status!=='prepared') return fail();
+    return {status:'unsupported',reason:'layout-target-references-bound-only',
+      unresolved:['inherited-style-freshness','svg-paint','commit-freshness']};
+  } catch (_) { return fail(); }
+}
+
+// Bounded symbol/text interactions in the non-separated FM/WP renderer.
+// Display text and the valve's M are intentionally painted over their own
+// display/motor background. Shadows are handled separately as decorative.
+function inspectLayoutSymbolPaint(card,candidate,records,html) {
+  const fail=reason=>({status:'unsupported',reason});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech'].includes(c.typ) || !Array.isArray(records) || typeof html!=='string')
+      return fail('layout-symbol-paint-unproven');
+    const fm=m.components.fm,wp=m.components.wp,boundary=m.components['domestic-boundary'];
+    if (!fm || !boundary || !!wp!==!!c.wp) return fail('layout-symbol-paint-unproven');
+    const delta=b=>({x:b.origin.x-b.baseOrigin.x,y:b.origin.y-b.baseOrigin.y}),f=delta(fm);
+    const icons=[{id:'fm-droplet',x:421+f.x,y:20+f.y,width:18,height:38}];
+    const droplet=c.fm?.temp || c.fm?.durchfluss ? 'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
+      : 'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z';
+    if (html.split(droplet).length!==2) return fail('layout-symbol-paint-unproven');
+    if (wp) {
+      const w=delta(wp);
+      if (html.split('<circle cx="390" cy="226" r="42"').length!==2 ||
+          html.split('<circle cx="434" cy="353" r="5"').length!==2) return fail('layout-symbol-paint-unproven');
+      icons.push({id:'wp-fan',x:346.5+w.x,y:182.5+w.y,width:87,height:87},
+        {id:'wp-led',x:428.5+w.x,y:347.5+w.y,width:11,height:11});
+    }
+    const cold=diagramPort(m,m.connections['domestic-cold'].from),hot=diagramPort(m,m.connections['domestic-hot'].to);
+    const dy=boundary.origin.y-boundary.baseOrigin.y;
+    const coldPath=`M${cold.x-4}${-23+dy}l4 4 4-4`,hotPath=`M${hot.x-4}${-19+dy}l4-4 4 4`;
+    if (html.split(coldPath).length!==2 || html.split(hotPath).length!==2) return fail('layout-symbol-paint-unproven');
+    icons.push({id:'domestic-cold-arrow',x:cold.x-4.8,y:-23.8+dy,width:9.6,height:5.6},
+      {id:'domestic-hot-arrow',x:hot.x-4.8,y:-23.8+dy,width:9.6,height:5.6});
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    if (icons.some(a=>![a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite)) ||
+        records.some(r=>!r?.box || ![r.box.x,r.box.y,r.box.width,r.box.height,r.box.x+r.box.width,r.box.y+r.box.height].every(Number.isFinite)))
+      return fail('layout-symbol-paint-unproven');
+    if (records.some(r=>icons.some(icon=>hit({x:r.box.x-1,y:r.box.y-1,width:r.box.width+2,height:r.box.height+2},icon))))
+      return fail('text-obstacle-contact');
+    return {status:'unsupported',reason:'layout-symbol-paint-bound-only',symbols:icons,
+      unresolved:['remaining-decorative-paint','commit-freshness']};
+  } catch (_) { return fail('layout-symbol-paint-unproven'); }
+}
+
+function inspectLayoutPipePaint(card,candidate,html) {
+  const fail=()=>({status:'unsupported',reason:'layout-pipe-paint-unproven'});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech'].includes(c.typ) || typeof html!=='string' || !candidate.routes) return fail();
+    const controlled=new Set(['w0','w1','w2','w3','wk']);
+    for (const match of html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bclass\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi)) {
+      const raw=match[2],value=(raw[0]==='"' || raw[0]==="'")?raw.slice(1,-1):raw;
+      const used=value.trim().split(/\s+/).filter(token=>controlled.has(token));
+      if (used.length && (used.length!==1 || value!==used[0] || match[1]!== (used[0]==='wk'?'rect':'path'))) return fail();
+    }
+    const ids=['fm-supply','fm-return',...(c.wp?['wp-upper-supply','wp-lower-supply','wp-upper-return','wp-lower-return','wp-valve-return']:[])];
+    if (Object.keys(candidate.routes).length!==ids.length || ids.some(id=>!candidate.routes[id])) return fail();
+    const recomputed=routeDiagramConnections(m,ids),pick=r=>({status:r?.status,path:r?.path,points:r?.points,crossings:r?.crossings,paintOrder:r?.paintOrder});
+    if (ids.some(id=>candidate.routes[id].status!=='routed' || JSON.stringify(pick(candidate.routes[id]))!==JSON.stringify(pick(recomputed[id])))) return fail();
+    const {S,ON,NUM}=sensorReader(card._hass),F=c.farben,L=T[sprache(c,card._hass)],point=ref=>diagramPort(m,ref);
+    const water=freshWaterState(c,c.fm,false,S,ON,NUM),heat=heatPumpState(c,L,F,S,ON,NUM),groups={};
+    const primaryPipe=(id,_legacy,color,on,duration)=>{groups[id]=rohr(candidate.routes[id].path,color,on,duration);return '';};
+    renderPrimaryPipes({primaryPipe,FM:true,WP:!!c.wp,model:m,point,F,fm_on:water.fm_on,c,SPLIT:false,
+      y_bo:m.geometry.bo,y_bu:m.geometry.bu,CK:heat.CK,wpO:heat.wpO,tO:heat.tO,wpU:heat.wpU,tU:heat.tU,
+      wp_on:heat.wp_on,y_ro:m.geometry.ro,y_ru:m.geometry.ru,CW:heat.CW,HK:false,QS:false,W:heat.W,ON,QT:heat.QT});
+    if (Object.keys(groups).length!==ids.length || ids.some(id=>typeof groups[id]!=='string')) return fail();
+    const ordered=[...ids].sort((a,b)=>candidate.routes[a].paintOrder-candidate.routes[b].paintOrder);
+    const dc=point(m.connections['domestic-cold'].from),de=point(m.connections['domestic-cold'].to),
+      dh=point(m.connections['domestic-hot'].from),dw=point(m.connections['domestic-hot'].to);
+    const domestic=renderDomesticPipes({TW:true,ZK:false,model:m,point,dc,de,dh,dw,F,zirk_on:false,zapf:water.zapf});
+    const fragment=ordered.map(id=>groups[id]).join('')+domestic;
+    if (!fragment || html.split(fragment).length!==2) return fail();
+    for (const layer of ['w0','w1','w2','w3'])
+      if ((html.match(new RegExp(`class="${layer}"`,'g'))||[]).length!==(fragment.match(new RegExp(`class="${layer}"`,'g'))||[]).length) return fail();
+    const boundary=m.components['domestic-boundary'],offset=boundary.origin.y-boundary.baseOrigin.y;
+    const markers=[`<path d="M${dc.x-4}${-23+offset}l4 4 4-4" class="wa"/>`,
+      `<path d="M${dw.x-4}${-19+offset}l4-4 4 4" class="wa"/>`,
+      `<text x="${dc.x-8}" y="${-14+offset}"`,`<text x="${dw.x+8}" y="${-14+offset}"`];
+    if (c.wp) {const v=m.components.valve;markers.push(`<line x1="${v.origin.x+34}" y1="${v.origin.y+14}" x2="${v.origin.x+16}"`);}
+    for (const [id,rx,fill] of [['tank','65" ry="22','wwTemp'],['fm','12','wwRed'],...(c.wp?[['wp','14','wwRed']]:[])]) {
+      const b=m.components[id];markers.push(`<rect x="${b.origin.x}" y="${b.origin.y}" width="${b.bounds.width}" height="${b.bounds.height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`);
+    }
+    let last=html.indexOf(fragment)+fragment.length;
+    for(const mark of markers) {const i=html.indexOf(mark,last);if(i<0 || html.indexOf(mark,i+1)>=0) return fail();last=i+mark.length;}
+    const refs=['fm.supply','fm.return','fm.cold-water','fm.hot-water',m.connections['fm-supply'].from,m.connections['fm-return'].to];
+    if(c.wp) refs.push('wp.upper-supply','wp.lower-supply','wp.return',m.connections['wp-upper-supply'].to,
+      m.connections['wp-upper-return'].from,m.connections['wp-lower-supply'].to,m.connections['wp-lower-return'].from);
+    if (new Set(refs).size!==refs.length || (html.match(/class="wk"/g)||[]).length!==refs.length) return fail();
+    for(const ref of refs) if(html.split(stub(...diagramStub(m,ref))).length!==2) return fail();
+    return {status:'unsupported',reason:'layout-pipe-paint-bound-only',routes:ids.length+2,stubs:refs.length,
+      unresolved:['remaining-decorative-paint','commit-freshness']};
+  } catch (_) { return fail(); }
 }
 function layoutRelevantHassKey(card,hass) {
   if (!card || !hass || !hass.states || !Array.isArray(card._ents)) return null;
@@ -3892,6 +4116,12 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
       const independent=result?.textStyleParity==='independent-text-measurements-only';
       const textInventory=independent ? inspectMeasuredLayoutTexts(card,candidate,result.textRecords) : {reason:'text-inventory-unproven'};
+      const shadowPolicy=independent ? inspectLayoutShadowPolicy(card,candidate,html) : {reason:'layout-shadow-policy-unproven'};
+      const targetReferences=independent ? inspectLayoutTargetReferences(parent,html) : {reason:'layout-target-references-unproven'};
+      const symbolPaint=independent && result.symbolStrokeProof?.reason==='layout-symbol-strokes-bound-only'
+        ? inspectLayoutSymbolPaint(card,candidate,result.textRecords,html) : {reason:'layout-symbol-paint-unproven'};
+      const pipePaint=independent && result.pipeStrokeProof?.reason==='layout-pipe-strokes-bound-only'
+        ? inspectLayoutPipePaint(card,candidate,html) : {reason:'layout-pipe-paint-unproven'};
       const volume=independent ? inspectMeasuredVolumeSlots(card,candidate,result.textRecords) : {reason:'volume-text-unproven'};
       // The legacy reference's exact pipe inventory is not established. Its
       // independently measured canonical slot can reject an overflow, but an
@@ -3900,8 +4130,10 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
         : {reason:'volume-text-unproven'};
       const negative=['volume-label-overflow','volume-label-pipe-contact','text-slot-overflow','text-overlap','text-obstacle-contact'];
       const code=negative.includes(volume.reason)?volume.reason:reference.reason==='volume-label-overflow'?reference.reason
-        : negative.includes(textInventory.reason)?textInventory.reason
-        : textInventory.reason==='text-inventory-staged-only' ? 'text-inventory-staged-only'
+        : negative.includes(textInventory.reason)?textInventory.reason:negative.includes(symbolPaint.reason)?symbolPaint.reason
+        : textInventory.reason==='text-inventory-staged-only' && shadowPolicy.reason==='layout-shadow-policy-bound-only' &&
+          targetReferences.reason==='layout-target-references-bound-only' && symbolPaint.reason==='layout-symbol-paint-bound-only' &&
+          pipePaint.reason==='layout-pipe-paint-bound-only' ? 'text-inventory-staged-only'
         : 'text-slots-and-paint-unproven';
       layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
     };
