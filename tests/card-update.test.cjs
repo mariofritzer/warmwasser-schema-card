@@ -60,6 +60,31 @@ test('only top-level layout is excluded from entity collection and update keys',
   assert.equal(calls, 2);
 });
 
+test('a unit-only HA update rerenders the actual heating label', () => {
+  const card=cardWithCommit();
+  card.setConfig({speicher:{typ:'schicht'},heizkreise:[{wmz:'sensor.energy'}]});
+  const hass=unit=>({language:'en',states:{'sensor.energy':{state:'1',attributes:{unit_of_measurement:unit}}}});
+  card.hass=hass('kWh'); assert.ok(card._box.html.includes('1 kWh'));
+  card.hass=hass('MWh'); assert.ok(card._box.html.includes('1 MWh'));
+});
+
+test('a newly present empty state rerenders the actual SG label', () => {
+  const card=cardWithCommit();
+  card.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'switch.wp',sg_ready:'sensor.sg'}});
+  card.hass={language:'en',states:{'switch.wp':{state:'on',attributes:{}}}};
+  assert.ok(card._box.html.includes('SG unknown</text>'));
+  card.hass={language:'en',states:{'switch.wp':{state:'on',attributes:{}},'sensor.sg':{state:'',attributes:{}}}};
+  assert.ok(card._box.html.includes('SG </text>'));
+  assert.ok(!card._box.html.includes('SG unknown</text>'));
+});
+
+test('different entity tuples cannot collide through separators', () => {
+  const card=cardWithCommit();let calls=0;card._render=()=>String(++calls);
+  card.setConfig({custom:{a:'sensor.one',b:'sensor.two'}});
+  const hass=(a,b)=>({language:'en',states:{'sensor.one':{state:a},'sensor.two':{state:b}}});
+  card.hass=hass('a|b','c');card.hass=hass('a','b|c');assert.equal(calls,2);
+});
+
 test('a committed layout falls back as a whole when a live label overflows', () => {
   const card = cardWithCommit();
   card.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm', temp: 'sensor.temp' } });

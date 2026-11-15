@@ -3851,7 +3851,14 @@ class WarmwasserSchemaCard extends HTMLElement {
 
   _update() {
     if (!this._cfg || !this._hass) return;
-    const key = sprache(this._cfg, this._hass) + '|' + this._ents.map((e) => this._hass.states[e]?.state).join('|');
+    // Units participate in rendered labels even when the entity state itself
+    // is unchanged. Structured encoding also prevents delimiter collisions.
+    const key = JSON.stringify([sprache(this._cfg,this._hass),...this._ents.map(e=>{
+      const entity=this._hass.states[e];
+      // sensorReader.S distinguishes a missing entity from a present entity
+      // whose state is empty, undefined or null.
+      return [!!entity,typeof entity?.state,String(entity?.state),String(entity?.attributes?.unit_of_measurement || '')];
+    })]);
     if (key === this._key) return;
     if (!this._box) this._init();
     const previous = { html: this._box.innerHTML, model: this._model, candidate: this._layoutCandidate, status: this._layoutStatus };
@@ -4004,7 +4011,10 @@ class WarmwasserSchemaCard extends HTMLElement {
         minY = Math.min(minY, -30 + dy); maxY = Math.max(maxY, unten + dy);
       }
     }
-    if (model.layoutSeparatedPreview && routes) for (const route of Object.values(routes)) for (const p of route.points) {
+    // Every internal layout preview must include its routed paint envelope,
+    // including non-separated tanks. Canonical and unrelated legacy renders
+    // retain their existing viewBox. Sixteen units covers stroke and bridges.
+    if ((model.layoutSeparatedPreview || layoutRenderRoutes.get(this)?.model === model) && routes) for (const route of Object.values(routes)) for (const p of route.points) {
       minX = Math.min(minX, p.x - 16); maxX = Math.max(maxX, p.x + 16);
       minY = Math.min(minY, p.y - 16); maxY = Math.max(maxY, p.y + 16);
     }
