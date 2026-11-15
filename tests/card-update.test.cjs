@@ -15,7 +15,7 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-ca
 const Card = registry.get('warmwasser-schema-card');
 function cardWithCommit() {
   const card = new Card();
-  card._init = () => { card._box = { replaceChildren(content) { this.html = content.html; } }; };
+  card._init = () => { card._box = { get innerHTML() { return this.html || ''; }, set innerHTML(value) { this.html = value; }, replaceChildren(content) { this.html = content.html; } }; };
   return card;
 }
 
@@ -58,4 +58,39 @@ test('only top-level layout is excluded from entity collection and update keys',
   assert.equal(calls, 1);
   card.hass = { language: 'en', states: { 'sensor.layout_only': { state: '2' }, 'sensor.other': { state: '2' }, 'sensor.outside': { state: '1' } } };
   assert.equal(calls, 2);
+});
+
+test('a committed layout falls back as a whole when a live label overflows', () => {
+  const card = cardWithCommit();
+  card.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm', temp: 'sensor.temp' } });
+  card.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.temp': { state: '42' } } };
+  const { x, y } = card._model.components.fm.origin;
+  const layout = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  assert.equal(card._commitLayoutCandidate(layout).status, 'committed-candidate');
+  assert.equal(card._model.components.fm.origin.x, x + 30);
+  card.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.temp': { state: '1000000000' } } };
+  assert.equal(card._layoutCandidate, null);
+  assert.equal(card._model.components.fm.origin.x, x);
+  assert.ok(card._box.html.includes('<svg'));
+});
+
+
+test('failed candidate commit restores DOM and retries the old model', () => {
+  const card = cardWithCommit();
+  card.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  card.hass = hass;
+  const oldModel = card._model, oldHtml = card._box.html;
+  const { x, y } = oldModel.components.fm.origin;
+  const layout = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  card._fitDistributorText = () => { throw new Error('measurement error'); };
+  assert.equal(card._commitLayoutCandidate(layout).errors[0].code, 'commit-failed');
+  assert.equal(card._model, oldModel);
+  assert.equal(card._box.html, oldHtml);
+  assert.equal(card._key, null);
+  let retried = false;
+  card._fitDistributorText = () => { retried = true; };
+  card.hass = hass;
+  assert.equal(retried, true);
+  assert.equal(card._box.html, oldHtml);
 });

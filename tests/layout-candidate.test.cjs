@@ -174,3 +174,26 @@ test('preflight rejects incomplete routed output without exposing HTML', () => {
     assert.equal(JSON.stringify({ raw, layout, hass }), before);
   } finally { Card.prototype._render = original; }
 });
+
+test('internal commit is transactional and never persists layout', () => {
+  const { raw, card } = fixture();
+  card._hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  card._update = () => {};
+  const original = card._model, configBefore = JSON.stringify(card._cfg);
+  const { x, y } = original.components.fm.origin;
+  const layout = { version: 2, components: { fm: { x: x + 30, y: y + 15 } } };
+  assert.equal(card._commitLayoutCandidate(layout).status, 'committed-candidate');
+  const committed = card._model;
+  assert.equal(committed.components.fm.origin.x, x + 30);
+  assert.equal(card._commitLayoutCandidate({ version: 1 }).status, 'invalid');
+  assert.equal(card._model, committed);
+  assert.equal(JSON.stringify(card._cfg), configBefore);
+  assert.equal(raw.layout, undefined);
+  card._update = () => { throw new Error('DOM failed'); };
+  assert.equal(card._commitLayoutCandidate(layout).errors[0].code, 'commit-failed');
+  assert.equal(card._model, committed);
+  card._hass = null;
+  card.setConfig(raw);
+  assert.equal(card._layoutCandidate, null);
+  assert.equal(card._model.components.fm.origin.x, x);
+});

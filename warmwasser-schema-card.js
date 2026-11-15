@@ -1305,7 +1305,8 @@ function inspectLegacyHeatingRailBridge(prepared, route, options = {}) {
 }
 
 // Internal primitive only: the caller must supply every visible ordinary line.
-// Only proven local rail junctions are exempted; bridges remain unsupported.
+// Only proven local rail junctions are exempted; ordinary bridge envelopes
+// are checked against the full rail paint without an incidence exemption.
 function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
   const unsupported = reason => ({status:'unsupported', reason});
   const provenance = prepared && heatingRailProvenance.get(prepared);
@@ -1328,9 +1329,6 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
   }
   const compiled = compileDirectedJunctionBatch(routes, options);
   if (compiled.status !== 'routed') return compiled;
-  // Reject all bridges until their full painted shape and rail ordering are proven.
-  if (Object.values(compiled.routes).some(r => r.crossings.some(c => c.bridge)))
-    return unsupported('bridge-envelope-unproven');
   const half = options.halfWidth ?? 5, radius = options.radius ?? 8;
   const finiteBox = a => a && [a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite);
   if (!Number.isFinite(half) || !Number.isFinite(radius) ||
@@ -1338,6 +1336,12 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
   const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
     a.y <= b.y+b.height && a.y+a.height >= b.y;
   const boxes = [];
+  // The ordinary compiler already validates these full envelopes against all
+  // ordinary lines and obstacles; add them here against the wider rail paint.
+  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
+    const extent=(options.bridgeRadius ?? 6)+half, p=crossing.point;
+    boxes.push({x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent});
+  }
   for (const route of routes) {
     for (let i=0; i<route.points.length-1; i++) {
       const a=route.points[i], b=route.points[i+1];
@@ -1390,6 +1394,136 @@ function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
   if (prepared.rails.some((r,i) => prepared.rails.slice(i+1).some(s =>
       r.areas.some(a => s.areas.some(b => intersects(a,b)))))) return unsupported('rail-rail-contact');
   return {status:'clear'};
+}
+
+// Validate the legacy A11 crossing together with all supplied ordinary lines.
+// A caller must establish batch completeness and paint order before rendering.
+function checkLegacyHeatingBridgeBatch(prepared, routes, options = {}) {
+  const unsupported = reason => ({status:'unsupported', reason});
+  if (!Array.isArray(routes)) return unsupported('invalid-rail-batch');
+  const owners = routes.filter(r => r && r.id === 'heating-supply-0');
+  if (owners.length !== 1) return unsupported('legacy-bridge-owner-required');
+  const owner = owners[0], proof = inspectLegacyHeatingRailBridge(prepared, owner, options);
+  if (proof.reason !== 'complete-heating-batch-required' || !proof.localBridge) return proof;
+  const compiled = compileDirectedJunctionBatch(routes, options);
+  if (compiled.status !== 'routed') return compiled;
+  const others = routes.filter(r => r !== owner);
+  const rails = checkHeatingRailEnvelopes(prepared, others, options);
+  if (rails.status !== 'clear') return rails;
+  const {envelope} = proof.localBridge, half = options.halfWidth ?? 5, radius = options.radius ?? 8;
+  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
+    a.y <= b.y+b.height && a.y+a.height >= b.y;
+  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
+    const extent=(options.bridgeRadius ?? 6)+half, p=crossing.point;
+    const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
+    if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite) || intersects(box,envelope))
+      return unsupported('legacy-bridge-line-clearance');
+    if (prepared.rails.some(rail => rail.areas.some(area => intersects(box,area))))
+      return unsupported('rail-line-contact');
+  }
+  for (const route of others) {
+    for (let i=0; i<route.points.length-1; i++) {
+      const a=route.points[i], b=route.points[i+1];
+      const box={x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
+        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half};
+      if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite) || intersects(box,envelope))
+        return unsupported('legacy-bridge-line-clearance');
+    }
+    for (let i=1; i<route.points.length-1; i++) {
+      const p=route.points[i], extent=radius+half;
+      const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
+      if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite) || intersects(box,envelope))
+        return unsupported('legacy-bridge-line-clearance');
+    }
+  }
+  return {status:'clear', localBridge:proof.localBridge};
+}
+
+// Bind the complete canonical WP/one-circuit inventory to one model before
+// invoking the shared geometry checker. A clear geometry result alone is not
+// permission to render: paint order and animated paths still need validation.
+function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
+  const unsupported = reason => ({status:'unsupported', reason});
+  const ordinary = ['wp-upper-supply','wp-upper-return','wp-valve-return',
+    'wp-lower-supply','wp-lower-return','hk-supply','hk-return',
+    'heating-supply-0','heating-return-0'];
+  const rails = ['manifold-return','manifold-supply'];
+  const incidence = resolveLegacyWpHeatingIncidences(model);
+  if (incidence.status !== 'resolved') return unsupported('unproven-geometry');
+  try {
+    const keys = Object.keys(model.connections);
+    if (keys.length !== ordinary.length + rails.length || keys.some(id => !ordinary.includes(id) && !rails.includes(id)))
+      return unsupported('unproven-connection-inventory');
+    if (keys.some(id => model.connections[id].routingPolicy !== (rails.includes(id) ? 'manifold-rail'
+      : id.startsWith('wp-') ? 'external' : 'fixed'))) return unsupported('unproven-connection-inventory');
+    const upper = {
+      'wp-upper-supply':['wp.upper-supply','tank.wp-supply'],
+      'wp-upper-return':['tank.wp-return','valve.upper'],
+      'wp-valve-return':['valve.wp','wp.return']
+    };
+    if (Object.entries(upper).some(([id,[from,to]]) => {
+      const edge = model.connections[id];
+      return !edge || edge.id !== id || edge.from !== from || edge.to !== to || !Array.isArray(edge.via) || edge.via.length;
+    })) return unsupported('unproven-connection-inventory');
+    const upperPorts = {
+      'wp.upper-supply':['top','supply'], 'tank.wp-supply':['right','supply'],
+      'tank.wp-return':['right','return'], 'valve.upper':['top','return'],
+      'valve.wp':['right','return'], 'wp.return':['left','return'],
+      'wp.lower-supply':['left','supply'], 'tank.lower-supply':['right','supply'],
+      'tank.lower-return':['right','return'], 'valve.lower':['bottom','return'],
+      'heating-circuit-0.supply':['top','supply'], 'heating-circuit-0.return':['top','return']
+    };
+    if (Object.entries(upperPorts).some(([ref,[direction,role]]) => {
+      const [id,name] = ref.split('.'), c = model.components[id], p = c && c.ports[name];
+      return !p || p.id !== name || p.medium !== 'heating-water' || p.direction !== direction || p.role !== role ||
+        !Number.isFinite(c.origin.x+p.x) || !Number.isFinite(c.origin.y+p.y);
+    })) return unsupported('unproven-port-geometry');
+    if (!Array.isArray(routes) || routes.length !== ordinary.length ||
+        ordinary.some(id => routes.filter(r => r && r.id === id).length !== 1))
+      return unsupported('incomplete-heating-batch');
+    const point = ref => {
+      const j = model.junctions[ref];
+      if (j) return j;
+      const dot = ref.lastIndexOf('.'), c = model.components[ref.slice(0,dot)], p = c.ports[ref.slice(dot+1)];
+      return {x:c.origin.x+p.x,y:c.origin.y+p.y};
+    };
+    for (const route of routes) {
+      const edge = model.connections[route.id];
+      if (!edge || edge.id !== route.id || !Array.isArray(edge.via) || !Array.isArray(route.nodes))
+        return unsupported('unproven-connection-inventory');
+      const refs = [edge.from,...edge.via,edge.to];
+      if (route.nodes.length !== refs.length || refs.some((ref,i) => {
+        const p = point(ref), n = route.nodes[i];
+        return !p || !n || n.ref !== ref || !Number.isFinite(p.x) || !Number.isFinite(p.y) || n.x !== p.x || n.y !== p.y;
+      })) return unsupported('route-model-mismatch');
+    }
+    const prepared = prepareLegacyWpHeatingRails(model, options);
+    if (prepared.reason !== 'rail-batch-validation-required') return prepared;
+    const checked = checkLegacyHeatingBridgeBatch(prepared, routes, options);
+    if (checked.status !== 'clear') return checked;
+    const outward = (p,q,side) => side === 'left' ? q.y===p.y && q.x<p.x
+      : side === 'right' ? q.y===p.y && q.x>p.x
+      : side === 'top' ? q.x===p.x && q.y<p.y : q.x===p.x && q.y>p.y;
+    for (const id of ordinary) {
+      const {from,to}=model.connections[id];
+      const route=routes.find(r => r.id===id), points=route.points;
+      if (points.length<2 || (upperPorts[from] && !outward(points[0],points[1],upperPorts[from][0])) ||
+          (upperPorts[to] && !outward(points.at(-1),points.at(-2),upperPorts[to][0])))
+        return unsupported('unproven-port-escape');
+    }
+    for (const junction of incidence.junctions) for (const leg of junction.incidences) {
+      if (rails.includes(leg.connectionId)) continue;
+      const route=routes.find(r => r.id===leg.connectionId), nodeIndex=route.nodes.findIndex(n => n.ref===junction.ref);
+      const vertex=route.points.findIndex(p => p.x===junction.x && p.y===junction.y);
+      const adjacent=leg.segmentIndex===nodeIndex ? route.points[vertex+1] : route.points[vertex-1];
+      if (vertex<0 || !adjacent || !outward(route.points[vertex],adjacent,leg.side))
+        return unsupported('unproven-junction-incidence');
+    }
+    // The supplied policy is not yet derived from all model bodies, labels and
+    // decorations. No rendering clearance can be inferred from this result.
+    return {status:'unsupported', reason:'heating-obstacle-and-paint-validation-required',
+      inventory:{ordinary:[...ordinary],rails:[...rails]}, localBridge:checked.localBridge};
+  } catch (_) { return unsupported('unproven-connection-inventory'); }
 }
 
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
@@ -2490,27 +2624,42 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
 // no complete text measurement or painted-envelope validation yet. Never
 // expose partial HTML on failure. A moved candidate takes the renderer's
 // all-routed branch, including its live-label checks.
-function preflightLayoutRender(rawConfig, layout, hass) {
-  if (!hass || !layoutObject(hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
-  const card = new WarmwasserSchemaCard();
-  try { card.setConfig(rawConfig); }
-  catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-configuration', path: 'config' }] }; }
-  const candidate = resolveLayoutCandidate(rawConfig, card._cfg, layout);
-  if (candidate.status !== 'candidate') return candidate;
-  const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
-  if (!moved) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
-  card._model = candidate.model; card._hass = hass;
+function renderLayoutCandidate(card, candidate) {
+  const previous = card._model;
   try {
+    card._model = candidate.model;
     const html = card._render();
-    // All compiled paths must occur with every base paint layer. The renderer
-    // selects routed or legacy primary paths as one batch, never per edge.
     const complete = Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
       html.includes(`<path d="${route.path}" class="${layer}"`)));
     if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
     return { status: 'rendered-candidate', html };
   } catch (error) {
     return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
+  } finally {
+    card._model = previous;
   }
+}
+
+function prepareLayoutCandidate(card, rawConfig, layout) {
+  if (!card._hass || !layoutObject(card._hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
+  const candidate = resolveLayoutCandidate(rawConfig, card._cfg, layout);
+  if (candidate.status !== 'candidate') return candidate;
+  const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
+  if (!moved) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
+  const rendered = renderLayoutCandidate(card, candidate);
+  return rendered.status === 'rendered-candidate' ? { ...rendered, candidate } : rendered;
+}
+
+function preflightLayoutRender(rawConfig, layout, hass) {
+  if (!hass || !layoutObject(hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
+  const card = new WarmwasserSchemaCard();
+  try { card.setConfig(rawConfig); }
+  catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-configuration', path: 'config' }] }; }
+  card._hass = hass;
+  const result = prepareLayoutCandidate(card, rawConfig, layout);
+  // Keep the existing preflight API free of mutable candidate models.
+  if (result.status === 'rendered-candidate') return { status: result.status, html: result.html };
+  return result;
 }
 
 class WarmwasserSchemaCard extends HTMLElement {
@@ -2549,12 +2698,45 @@ class WarmwasserSchemaCard extends HTMLElement {
     c.verteiler = normalizeDistributor(config.verteiler, config.heizkreise);
     c.energie = (config.energie || []).filter((e) => e && isEnt(e.entity));
     this._cfg = c;
+    // Snapshot identity inputs so an internal commit uses this card's config.
+    this._layoutIdentityConfig = Object.fromEntries(['fuehler', 'heizkreise'].map(field =>
+      [field, Array.isArray(config[field]) ? config[field].map(item => Array.isArray(item) ? [...item] : layoutObject(item) ? { ...item } : item) : []]));
+    this._layoutCandidate = null;
     this._model = diagramModel(c);
     // Layout values are geometry/configuration, never entity subscriptions.
     const { layout: _layout, ...entityConfig } = c;
     this._ents = [...new Set(collect(entityConfig, []))];
     this._key = null;
     if (this._hass) this._update();
+  }
+
+  // Internal only: no config event or persistence. A failed preparation leaves
+  // the currently rendered model untouched. setConfig always clears it.
+  _commitLayoutCandidate(layout) {
+    const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, layout);
+    if (result.status !== 'rendered-candidate') return result;
+    // Snapshot before patching: patch and text fitting can both throw after
+    // changing the DOM. Event handlers are delegated on the shadow root.
+    const previous = { candidate: this._layoutCandidate, model: this._model,
+      html: this._box ? this._box.innerHTML : '' };
+    this._layoutCandidate = result.candidate;
+    this._model = result.candidate.model;
+    this._key = null;
+    try { this._update(); }
+    catch (_) {
+      try {
+        if (this._box) this._box.innerHTML = previous.html;
+        this._layoutCandidate = previous.candidate; this._model = previous.model;
+      } catch (_) {
+        // If restoration itself fails, retain the candidate model and force
+        // the next update to repaint instead of asserting a false rollback.
+      }
+      this._key = null;
+      return { status: 'unsupported', errors: [{ code: 'commit-failed', path: 'layout' }] };
+    }
+    if (this._layoutCandidate !== result.candidate)
+      return { status: 'unsupported', errors: [{ code: 'render-failed', path: 'layout' }] };
+    return { status: 'committed-candidate' };
   }
 
   set hass(hass) {
@@ -2604,11 +2786,21 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (key === this._key) return;
     if (!this._box) this._init();
     const tpl = document.createElement('template');
-    tpl.innerHTML = this._render();
+    if (this._layoutCandidate) {
+      // Live values can invalidate label bounds after a successful commit.
+      // Fall back as a whole rather than paint a partial routed diagram.
+      const result = renderLayoutCandidate(this, this._layoutCandidate);
+      if (result.status === 'rendered-candidate') tpl.innerHTML = result.html;
+      else {
+        this._layoutCandidate = null;
+        this._model = diagramModel(this._cfg);
+        tpl.innerHTML = this._render();
+      }
+    } else tpl.innerHTML = this._render();
     if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
     else this._box.replaceChildren(tpl.content);
-    this._key = key;
     this._fitDistributorText();
+    this._key = key;
   }
 
   _click(ev) {

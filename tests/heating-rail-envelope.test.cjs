@@ -65,14 +65,14 @@ test('only the correct named incidence permits a local straight contact', () => 
   }
 });
 
-test('corner envelopes and bridges are not assumed clear', () => {
+test('corner and bridge envelopes are checked against rails', () => {
   const p=prepare(fixture());
   const corner=line({id:'corner',points:[{x:180,y:390},{x:180,y:405},{x:160,y:405}],nodes:[{ref:'a',x:180,y:390},{ref:'b',x:160,y:405}]});
   assert.equal(corner.status,'routed');
   assert.equal(check(p,[corner]).reason,'rail-line-contact');
   const h=line({id:'h',points:[{x:10,y:100},{x:100,y:100}],nodes:[{ref:'h1',x:10,y:100},{ref:'h2',x:100,y:100}]});
   const v=line({id:'v',points:[{x:50,y:50},{x:50,y:150}],nodes:[{ref:'v1',x:50,y:50},{ref:'v2',x:50,y:150}]});
-  assert.equal(check(p,[h,v]).reason,'bridge-envelope-unproven');
+  assert.equal(check(p,[h,v]).status,'clear');
 });
 
 test('return primary cap contact is local and does not exempt the supply rail', () => {
