@@ -1150,6 +1150,9 @@ function compilePipeRoutes(routes, options = {}) {
   return {status:'routed',routes:result,paintOrder:rs.map(r => r.id)};
 }
 
+// Only models built by the internal routed-layout candidate factory may use
+// its separately validated supply-tee placement. Legacy models stay strict.
+const routedWpHeatingModels=new WeakSet();
 // Extract only incidences proven by the canonical one-circuit WP/HK recipes.
 // This is metadata, not a complete geometry, collision exemption or routing opt-in.
 function resolveLegacyWpHeatingIncidences(model) {
@@ -1200,7 +1203,7 @@ function resolveLegacyWpHeatingIncidences(model) {
           pin.x!==hs.x || pout.x!==hs.x || pin.y!==hs.y-44 || pout.y!==hs.y-24) return unsupported();
     }
     // The renderer's fixed bends and bridges place local legs on these axes.
-    if (!(s.x===295 && r.x===240 && ps.x===295 && pr.x===312 && ws.y===s.y && ts.y===s.y && tr.y===r.y &&
+    if (!(s.x===295 && r.x===240 && ps.x===295 && pr.x===312 && ws.y===s.y && (routedWpHeatingModels.has(model) || ts.y===s.y) && tr.y===r.y &&
       ws.x>s.x && ts.x<254 && tr.x<r.x && vr.x===262 && r.y>vr.y && s.y<model.geometry.ym-9 && ps.y>399 && pr.y>381 && r.y<348 &&
       sl.y===bs.y && bs.y===ps.y && ps.y===sr.y && sl.x<bs.x && bs.x<ps.x && ps.x<sr.x &&
       rl.y===br.y && br.y===pr.y && pr.y===rr.y && rl.x<br.x && br.x<pr.x && pr.x<rr.x &&
@@ -1517,7 +1520,8 @@ function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localB
       const p=route.points[i], extent=radius+half;
       const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
       if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
-      if (bodies.some(body=>hit(box,body))) return unsupported('model-body-corner-contact');
+      const collision=bodies.find(body=>hit(box,body));
+      if (collision) return {status:'unsupported',reason:'model-body-corner-contact',connectionId:route.id,bodyId:collision.id,vertex:i};
     }
   }
   for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
@@ -2168,9 +2172,9 @@ function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,co
 // their waypoint bounds inflated by their radius and the actual 5px stroke.
 function internalHeatingPaintBounds(routes, rails, bridge, options) {
   if (!Array.isArray(routes) || !Array.isArray(rails) || !bridge?.envelope || !options || typeof options !== 'object') return null;
-  const radius = options.radius ?? 8, bridgeRadius = options.bridgeRadius ?? 6;
-  const half = Math.max(5, options.halfWidth ?? 5);
-  if (![radius, bridgeRadius, half].every(n => Number.isFinite(n) && n >= 0)) return null;
+  const radius = options.radius ?? 8, bridgeRadius = options.bridgeRadius ?? 6, requestedHalf = options.halfWidth ?? 5;
+  if (![radius, bridgeRadius, requestedHalf, bridge.radius].every(n => Number.isFinite(n) && n >= 0)) return null;
+  const half = Math.max(5, requestedHalf);
   const margin = half + Math.max(radius, bridgeRadius, bridge.radius);
   if (!Number.isFinite(margin)) return null;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -3433,10 +3437,63 @@ function resolveSeparatedLayout(config, layout) {
   return best || { status: 'unsupported', errors: [failure] };
 }
 
+// Internal, deliberately narrow WP+one-pump layout candidate. The WP may move
+// in both axes; its lower-supply tee follows the actual moved port. Every
+// connection is then generated and validated as one complete batch. This is
+// not a public capability until text, shadows and paint ordering are proven.
+function resolveWpHeatingLayoutCandidate(config,layout,model) {
+  const unsupported=(code,path='layout')=>({status:'unsupported',errors:[{code,path}]});
+  try {
+    const capabilities={components:{wp:'wp'},ports:{},inactive:{components:{},ports:{}}};
+    const validation=validateLayoutV2(layout,capabilities);
+    if (validation.errors.length) return {status:'invalid',errors:validation.errors};
+    const position=layout.components && layout.components.wp;
+    if (!position) return unsupported('unmoved-candidate','layout.components.wp');
+    const wp=model.components.wp;
+    if (position.x===wp.origin.x && position.y===wp.origin.y) return unsupported('unmoved-candidate','layout.components.wp');
+    wp.origin.x=position.x; wp.origin.y=position.y;
+    model.junctions['supply-tee'].y=wp.origin.y+wp.ports['lower-supply'].y;
+    routedWpHeatingModels.add(model);
+    const incidence=resolveLegacyWpHeatingIncidences(model);
+    if (incidence.status!=='resolved') return unsupported('unproven-geometry','layout.components.wp');
+    const resolve=ref=>{
+      const j=model.junctions[ref]; if (j) return {...j,ref};
+      const dot=ref.lastIndexOf('.'),id=ref.slice(0,dot),c=model.components[id],p=c.ports[ref.slice(dot+1)];
+      return {...p,x:c.origin.x+p.x,y:c.origin.y+p.y,ref,owner:id};
+    };
+    const side=(ref,id,index)=>incidence.junctions.find(j=>j.ref===ref).incidences.find(i=>i.connectionId===id && i.segmentIndex===index).side;
+    const policy={radius:4}, routes=[];
+    for (const [id,edge] of Object.entries(model.connections)) {
+      if (id.startsWith('manifold-')) continue;
+      const nodes=[edge.from,...edge.via,edge.to].map(resolve),from={...nodes[0]},to={...nodes.at(-1)};
+      if (model.junctions[from.ref]) from.direction=side(from.ref,id,0);
+      if (model.junctions[to.ref]) to.direction=side(to.ref,id,nodes.length-2);
+      const junctions=nodes.slice(1,-1).map((n,i)=>({...n,incomingSide:side(n.ref,id,i),outgoingSide:side(n.ref,id,i+1)}));
+      const role=id.includes('supply') || id.startsWith('heating-pump-') ? 'supply' : 'neutral';
+      let points=null;
+      if (id==='hk-return') {
+        const a=nodes[0],b=nodes.at(-1),turnY=b.y+30;
+        points=[{x:a.x,y:a.y},{x:a.x,y:turnY},{x:b.x,y:turnY},{x:b.x,y:b.y}];
+      } else if (id.startsWith('heating-pump-')) points=nodes.map(({x,y})=>({x,y}));
+      const route=points ? validateDirectedFixedPolyline({id,role,nodes,points},policy)
+        : routeDirectedJunctionConnection({id,role,from,to,junctions,lead:['wp-valve-return','wp-lower-supply'].includes(id)?20:12,clearance:13,compileOptions:policy});
+      if (route.status!=='routed') return unsupported(route.code || route.reason,`layout.connections.${id}`);
+      routes.push(route);
+    }
+    const checked=inspectCompleteLegacyWpHeatingBatch(model,routes,policy);
+    if (checked.reason!=='heating-decorations-and-paint-validation-required')
+      return unsupported(checked.code || checked.reason,'layout.connections');
+    return {status:'heating-candidate',model,routes,policy,capabilities,inactive:validation.inactive};
+  } catch (_) { return unsupported('unproven-geometry'); }
+}
+
 function resolveLayoutCandidate(rawConfig, config, layout) {
   const identity = layoutIdentityMap(rawConfig);
   if (identity.errors.length) return { status: 'invalid', errors: identity.errors };
   const model = diagramModel(config);
+  if (config.wp && config.heizkreise.length===1 && config.heizkreise[0].pumpe && !model.components.fm &&
+      model.components['heating-pump-0'] && ['schicht','trennblech'].includes(config.typ))
+    return resolveWpHeatingLayoutCandidate(config,layout,model);
   const supported = model.routingScope.fm && ['schicht', 'trennblech', 'getrennt'].includes(config.typ) &&
     config.fuehler.length === 0 && !config.weiche && !config.energie.length &&
     !!model.components.fm && (!config.wp || !!model.components.wp);
@@ -3601,6 +3658,15 @@ function cachedLayoutCandidate(owner, rawConfig, config, layout) {
 function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
   if (!card._hass || !layoutObject(card._hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
   const candidate = cachedLayoutCandidate(cacheOwner, rawConfig, card._cfg, layout);
+  if (candidate.status==='heating-candidate') {
+    const previous=card._model;
+    try {
+      card._model=candidate.model;
+      const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
+      const code=rendered.reason==='complete-card-text-shadow-paint-validation-required' ? 'heating-paint-not-validated' : rendered.reason;
+      return {status:'unsupported',errors:[{code:code || 'heating-render-failed',path:'layout'}]};
+    } finally { card._model=previous; }
+  }
   if (candidate.status !== 'candidate') return candidate;
   const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
   const sideChanged = candidate.model.layoutSeparatedPreview && (candidate.model.layoutValveRotation || ['hot-tank', 'buffer-tank', 'fm', ...(card._cfg.wp ? ['wp'] : [])].some(id =>

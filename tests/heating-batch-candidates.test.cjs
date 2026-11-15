@@ -244,4 +244,11 @@ test('internal paint bounds contain negative detours, wide rails, A11 bridges an
   assert.ok(bounds.x + bounds.width >= 1521); assert.ok(bounds.y + bounds.height >= 921);
   assert.equal(internalHeatingPaintBounds(routes, [{ areas: [{ x: 0, y: 0, width: Infinity, height: 1 }] }], bridge, {}), null);
   assert.equal(internalHeatingPaintBounds([{ points: [{ x: NaN, y: 0 }, { x: 1, y: 1 }] }], rails, bridge, {}), null);
+  for (const bad of [-1, '11', NaN, Infinity]) {
+    assert.equal(internalHeatingPaintBounds(routes, rails, { ...bridge, radius: bad }, {}), null);
+    assert.equal(internalHeatingPaintBounds(routes, rails, bridge, { halfWidth: bad }), null);
+    assert.equal(internalHeatingPaintBounds(routes, rails, bridge, { radius: bad }), null);
+    assert.equal(internalHeatingPaintBounds(routes, rails, bridge, { bridgeRadius: bad }), null);
+  }
+  assert.ok(internalHeatingPaintBounds(routes, rails, { ...bridge, radius: 0 }, { halfWidth: 0, radius: 0, bridgeRadius: 0 }));
 });

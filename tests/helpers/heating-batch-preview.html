@@ -6,7 +6,7 @@ body{font:16px system-ui;margin:2rem} button{padding:.5rem 1rem} svg{width:min(1
 </style></head><body>
 <h1>Internal heating batch preview</h1>
 <p>Internal preview using sample Home Assistant states with the HK pump on. Labels, shadows and paint order against the complete card remain unvalidated; routing is not enabled.</p>
-<button id="draw">Upper WP + HK / WP oben + HK</button> <button id="split">Split valve / Ventil geteilt</button> <button id="full">Full card experiment / Ganze Karte</button><p id="status" role="status">Ready / Bereit</p>
+<button id="draw">Upper WP + HK / WP oben + HK</button> <button id="split">Split valve / Ventil geteilt</button> <button id="full">Full card experiment / Ganze Karte</button> <button id="moved">Moved WP / WP verschoben</button><p id="status" role="status">Ready / Bereit</p>
 <svg id="preview" viewBox="0 0 486 616" xmlns="http://www.w3.org/2000/svg"></svg>
 <div id="full-card"></div>
 <script src="../../warmwasser-schema-card.js"></script><script>
@@ -52,4 +52,20 @@ function draw(fraction,full=false){
 document.querySelector('#draw').addEventListener('click',()=>draw(1));
 document.querySelector('#split').addEventListener('click',()=>draw(.25));
 document.querySelector('#full').addEventListener('click',()=>draw(1,true));
+document.querySelector('#moved').addEventListener('click',()=>{
+  const out=document.querySelector('#status'), svg=document.querySelector('#preview'),host=document.querySelector('#full-card');
+  try {
+    const Card=customElements.get('warmwasser-schema-card'),c=new Card();
+    const raw={speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizkreise:[{vorlauf:'sensor.vl',pumpe:'switch.hk'}]};
+    c.setConfig(raw); c._hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:'100',attributes:{}},'switch.hk':{state:'on',attributes:{}}}};
+    const candidate=resolveLayoutCandidate(raw,c._cfg,{version:2,components:{wp:{x:340,y:160}}});
+    if(candidate.status!=='heating-candidate') throw Error(candidate.errors?.[0]?.code || candidate.status);
+    c._model=candidate.model;
+    const result=renderInternalWpHeatingCandidate(c,candidate.routes,candidate.policy);
+    if(result.reason!=='complete-card-text-shadow-paint-validation-required' || !result.html)throw Error(result.reason);
+    svg.replaceChildren();if(!c._box)c._init();host.replaceChildren(c);c._box.innerHTML=result.html;
+    if(c._box.querySelectorAll('[data-preview-route]').length!==11 || !c._box.querySelector('.wp')) throw Error('incomplete moved card');
+    out.textContent='MOVED CARD EXPERIMENT — WP (340,160), 11 routes, 2 rails. Production layout remains unsupported.';
+  }catch(error){svg.replaceChildren();host.replaceChildren();out.textContent=`FAIL — ${error.message||error}`;}
+});
 </script></body></html>
