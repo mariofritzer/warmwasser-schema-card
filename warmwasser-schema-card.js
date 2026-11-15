@@ -1746,7 +1746,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false) {
   const unsupported=reason=>({status:'unsupported',reason});
   const wait=promise=>{
     if (!signal) return promise;
@@ -1842,8 +1842,11 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     }
     // Position and dimension can each differ by the parity tolerance.
     const pad=textStyleParity ? 2e-9 : 0;
+    const boxes=current.entries.map(e=>({x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}));
+    const textRecords=includeTextRecords ? current.entries.map((e,i)=>({text:e.text,x:e.node.getAttribute('x'),y:e.node.getAttribute('y'),
+      className:e.node.getAttribute('class'),matrix:JSON.parse(e.fingerprint).at(-1),box:boxes[i]})) : undefined;
     return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
-      textCount:current.entries.length,boxes:current.entries.map(e=>({x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad})),...(textStyleParity?{textStyleParity}:{})};
+      textCount:current.entries.length,boxes,...(textStyleParity?{textStyleParity}:{}),...(textRecords?{textRecords}:{})};
   } catch (_) { return unsupported('text-stage-unavailable'); }
   finally { if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove(); }
 }
@@ -3576,6 +3579,56 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
 // all-routed branch, including its live-label checks.
 const layoutRenderRoutes = new WeakMap();
 const layoutTextMeasurementJobs = new WeakMap();
+// This checks only measured volume labels; it is not a complete text or paint
+// proof. The 76px central slot lies strictly inside the 130px-wide, rx=65,
+// ry=22 tank outline, including its 1.5px contour, at least 6px from each end.
+function inspectMeasuredVolumeSlots(card,candidate,records) {
+  const fail=reason=>({status:'unsupported',reason});
+  try {
+    if (!card?._cfg || !candidate?.model || !candidate.routes || !Array.isArray(records)) return fail('volume-text-unproven');
+    const cfg=card._cfg,model=candidate.model,L=T[sprache(cfg,card._hass)],visible=v=>v!==null && v!==undefined && v!=='';
+    const specs=cfg.typ==='getrennt'
+      ? [{id:'hot-tank',y:38,value:cfg.volumen_ww,prefix:L.ww},{id:'buffer-tank',y:338,value:cfg.volumen,prefix:L.puffer}]
+      : [{id:'tank',y:338,value:cfg.volumen,prefix:null}];
+    const boxes=[];
+    for (const spec of specs.filter(s=>visible(s.value))) {
+      const c=model.components[spec.id],b=c?.bounds,o=c?.origin,base=c?.baseOrigin;
+      if (!b || !o || !base || b.x!==0 || b.y!==0 || b.width!==130 || !Number.isFinite(b.height) || b.height<44 ||
+          ![o.x,o.y,base.x,base.y].every(Number.isFinite)) return fail('volume-text-unproven');
+      const expected=spec.prefix ? `${spec.prefix} · ${spec.value} l` : `${spec.value} l`;
+      const matches=records.filter(r=>r && r.text===expected && r.x==='137' && r.y===String(spec.y) && r.className==='wc wt wo');
+      if (matches.length!==1) return fail('volume-text-unproven');
+      const r=matches[0],m=r.matrix,q=r.box,dx=o.x-base.x,dy=o.y-base.y,eps=1e-8;
+      if (!m || !q || ![m.a,m.b,m.c,m.d,m.e,m.f,q.x,q.y,q.width,q.height].every(Number.isFinite) ||
+          Math.abs(m.a-1)>eps || Math.abs(m.b)>eps || Math.abs(m.c)>eps || Math.abs(m.d-1)>eps ||
+          Math.abs(m.e-dx)>eps || Math.abs(m.f-dy)>eps || q.width<0 || q.height<0 ||
+          ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('volume-text-unproven');
+      const slot={x:o.x+27,y:o.y+6,width:76,height:b.height-12};
+      if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
+        return fail('volume-label-overflow');
+      boxes.push(q);
+    }
+    if (!boxes.length) return fail('volume-text-unproven');
+    const paint=[],segment=(a,b,w)=>paint.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,
+      width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
+    for (const route of Object.values(candidate.routes)) {
+      if (!route || !Array.isArray(route.points) || !Array.isArray(route.crossings)) return fail('volume-text-unproven');
+      for (let i=0;i<route.points.length-1;i++) segment(route.points[i],route.points[i+1],5);
+      for (const p of route.points.slice(1,-1)) paint.push({x:p.x-13,y:p.y-13,width:26,height:26});
+      for (const crossing of route.crossings) if (crossing.bridge) paint.push({x:crossing.point.x-11,y:crossing.point.y-11,width:22,height:22});
+    }
+    for (const id of ['domestic-cold','domestic-hot']) {
+      const edge=model.connections[id]; if (!edge) continue;
+      const a=diagramPort(model,edge.from),b=diagramPort(model,edge.to);
+      segment(a,{x:a.x,y:b.y},5);if(a.x!==b.x)segment({x:a.x,y:b.y},b,5);
+    }
+    if (paint.some(p=>![p.x,p.y,p.width,p.height,p.x+p.width,p.y+p.height].every(Number.isFinite))) return fail('volume-text-unproven');
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    if (boxes.some(a=>paint.some(b=>hit(a,b)))) return fail('volume-label-pipe-contact');
+    // No success status: staging parity, other text, shadows and paint remain.
+    return {status:'unsupported',reason:'volume-slots-staged-only',count:boxes.length};
+  } catch (_) { return fail('volume-text-unproven'); }
+}
 function layoutRelevantHassKey(card,hass) {
   if (!card || !hass || !hass.states || !Array.isArray(card._ents)) return null;
   return JSON.stringify([sprache(card._cfg,hass),...card._ents.map(e=>{
@@ -3583,14 +3636,16 @@ function layoutRelevantHassKey(card,hass) {
     return [!!entity,typeof entity?.state,String(entity?.state),String(entity?.attributes?.unit_of_measurement || '')];
   })]);
 }
-function markLayoutTextUnproven(owner,parent) {
+function markLayoutTextUnproven(owner,parent,code='text-slots-and-paint-unproven') {
   const de=sprache(owner._config || owner._cfg,owner._hass)==='de';
   if (owner._layoutPanel?.previewRoot===parent) {
     owner._layoutPanel.apply.disabled=true;
-    owner._layoutPanel.status.textContent=de?'Text und Zeichnung sind noch nicht vollständig geprüft.':'Text and paint validation is not complete yet.';
+    owner._layoutPanel.status.textContent=code==='volume-label-overflow' || code==='volume-label-pipe-contact'
+      ? (de?'Das Volumenetikett passt nicht sicher in die Darstellung.':'The volume label does not fit safely in the diagram.')
+      : (de?'Text und Zeichnung sind noch nicht vollständig geprüft.':'Text and paint validation is not complete yet.');
   }
   if (owner._layoutStatus?.status==='pending') {
-    owner._layoutStatus={status:'unsupported',errors:[{code:'text-slots-and-paint-unproven',path:'layout'}]};
+    owner._layoutStatus={status:'unsupported',errors:[{code,path:'layout'}]};
     const notice=owner._box?.querySelector?.('[data-layout-status]');
     if (notice) notice.textContent=savedLayoutNotice(owner._layoutStatus,de?'de':'en',false);
   }
@@ -3601,7 +3656,7 @@ function cancelLayoutTextMeasurement(owner) {
   layoutTextMeasurementJobs.delete(owner); job.controller.abort(); job.cleanup();
   markLayoutTextUnproven(owner,job.parent);
 }
-function requestLayoutVolumeMeasurement(owner,card,html) {
+function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
   const unsupported=code=>({status:'unsupported',errors:[{code,path:'layout'}]});
   try {
     if (owner===card && typeof card._layoutFeatureEnabled==='function' && !card._layoutFeatureEnabled())
@@ -3650,11 +3705,13 @@ function requestLayoutVolumeMeasurement(owner,card,html) {
     const current=token=>{try{return token===generation && layoutTextMeasurementJobs.get(owner)===job && !controller.signal.aborted &&
       owner.isConnected && parent.isConnected && (owner._layoutPanel?.previewRoot || owner._box)===parent &&
       JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass)])===key;}catch(_){return false;}};
-    const finish=()=>{
+    const finish=result=>{
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
-      layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent);
+      const volume=inspectMeasuredVolumeSlots(card,candidate,result?.textRecords);
+      const code=['volume-label-overflow','volume-label-pipe-contact'].includes(volume.reason)?volume.reason:'text-slots-and-paint-unproven';
+      layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
     };
-    Promise.resolve().then(()=>stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,undefined,controller.signal))
+    Promise.resolve().then(()=>stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,undefined,controller.signal,true))
       .then(finish,finish);
     return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
   } catch (_) { cancelLayoutTextMeasurement(owner); return unsupported('text-measurement-unavailable'); }
@@ -3670,7 +3727,7 @@ function renderLayoutCandidate(card, candidate, owner=card) {
     if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
     const visible=value=>value!==null && value!==undefined && value!=='';
     if (visible(card._cfg.volumen) || (card._cfg.typ==='getrennt' && visible(card._cfg.volumen_ww)))
-      return requestLayoutVolumeMeasurement(owner,card,html);
+      return requestLayoutVolumeMeasurement(owner,card,html,candidate);
     return { status: 'rendered-candidate', html };
   } catch (error) {
     return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
@@ -3795,6 +3852,7 @@ function savedLayoutNotice(result, language, disabled = false) {
   const de = language === 'de', code = result?.errors?.[0]?.code;
   const reason = result?.status==='pending' ? (de ? 'Textprüfung läuft.' : 'Text validation is pending.')
     : code === 'invalid-hass' ? (de ? 'Warte auf aktuelle Home-Assistant-Daten.' : 'Waiting for current Home Assistant data.')
+    : ['volume-label-overflow','volume-label-pipe-contact'].includes(code) ? (de ? 'Das Volumenetikett passt nicht sicher in die Darstellung.' : 'The volume label does not fit safely in the diagram.')
     : code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Darstellung.' : 'A current sensor value does not fit the diagram.')
     : code === 'unsupported-version' ? (de ? 'Die Layout-Version wird nicht unterstützt.' : 'The layout version is not supported.')
     : code === 'unknown-id' || code === 'inactive-id' ? (de ? 'Ein gespeicherter Anschluss oder ein Gerät ist nicht verfügbar.' : 'A saved device or port is unavailable.')

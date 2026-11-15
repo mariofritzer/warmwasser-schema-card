@@ -22,6 +22,7 @@
     <button id="temperature">Toggle FM label overflow</button>
     <button id="wp">Disable / restore WP</button>
     <button id="volume">Long volume pending check</button>
+    <button id="volume-short">Normal volume pending check</button>
     <button id="smoke">Run smoke checks</button>
   </div>
   <p id="result" role="status"></p>
@@ -79,10 +80,10 @@
         config = { ...config, wp: enabledWp ? { betrieb: 'sensor.wp' } : {} };
         editor.setConfig(copy(config));
       }
-      function volume() {
+      function volume(value='W'.repeat(80)) {
         enabledWp=true;
         hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.wp':{state:'on'}}};
-        const next=fixture();next.speicher.volumen='W'.repeat(80);install(next);
+        const next=fixture();next.speicher.volumen=value;install(next);
         const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value);
         ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
         ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
@@ -126,7 +127,8 @@
       document.getElementById('separated').addEventListener('click', separated);
       document.getElementById('temperature').addEventListener('click', temperature);
       document.getElementById('wp').addEventListener('click', wp);
-      document.getElementById('volume').addEventListener('click', volume);
+      document.getElementById('volume').addEventListener('click', ()=>volume());
+      document.getElementById('volume-short').addEventListener('click', ()=>volume(500));
       document.getElementById('smoke').addEventListener('click', smoke);
       window.layoutHarness = { reset, separated, temperature, wp, smoke, get editor() { return editor; }, get config() { return copy(config); } };
       reset();
