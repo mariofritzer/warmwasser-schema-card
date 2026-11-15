@@ -8,8 +8,8 @@ const context={HTMLElement:class {},customElements:{get:n=>registry.get(n),defin
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
   '\nglobalThis.api={resolveLayoutCandidate,inspectMeasuredLayoutTexts,inspectLayoutShadowPolicy,inspectLayoutSymbolPaint,inspectLayoutPipePaint,renderGeometry:(c,k)=>{c._model=k.model;layoutRenderRoutes.set(c,k);try{return c._render();}finally{layoutRenderRoutes.delete(c);}}};',context);
 const {resolveLayoutCandidate:resolve,inspectMeasuredLayoutTexts:inspect,inspectLayoutShadowPolicy:shadow,inspectLayoutSymbolPaint:symbols,inspectLayoutPipePaint:pipes,renderGeometry}=context.api;
-function fixture(full=false) {
-  const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm',...(full?{temp:'sensor.fmtemp',durchfluss:'sensor.flow'}:{})},
+function fixture(full=false,type='schicht') {
+  const raw={speicher:{typ:type,volumen:500},fm:{pumpe:'sensor.fm',...(full?{temp:'sensor.fmtemp',durchfluss:'sensor.flow'}:{})},
     wp:{betrieb:'sensor.wp',...(full?{leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl'}:{})},
     ...(full?{text_tw_kalt:'Cold',text_tw_warm:'Hot'}:{})};
   const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
@@ -100,6 +100,14 @@ test('visible droplet, rotating fan, LED and domestic arrows exclude text boxes'
     assert.equal(symbols(c,candidate,changed,html).reason,'text-obstacle-contact',icon.id);
   }
   assert.equal(symbols(c,candidate,records,html.replace('M430 30C424','M430 31C424')).reason,'layout-symbol-paint-unproven');
+});
+test('baffle plate is inventoried and cannot cover a measured label',()=>{
+  const {c,candidate,records}=fixture(false,'trennblech'),html=renderGeometry(c,candidate),result=symbols(c,candidate,records,html);
+  assert.equal(result.reason,'layout-symbol-paint-bound-only');
+  const baffle=result.symbols.find(s=>s.id==='tank-baffle');assert.ok(baffle);
+  const changed=records.map(r=>({...r,box:{...r.box}}));changed[0].box={x:baffle.x,y:baffle.y,width:1,height:1};
+  assert.equal(symbols(c,candidate,changed,html).reason,'text-obstacle-contact');
+  assert.equal(symbols(c,candidate,records,html.replace('fill="url(#wwGrid)"','fill="none"')).reason,'layout-symbol-paint-unproven');
 });
 test('primary and domestic routes and every stub bind to the rendered batch',()=>{
   const {c,candidate}=fixture(),html=renderGeometry(c,candidate),result=pipes(c,candidate,html);

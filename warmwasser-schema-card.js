@@ -1705,6 +1705,10 @@ function inspectStagedLayoutSymbolStrokes(svg) {
     const fmDisplay=displays(392,62,52,34),wpDisplay=displays(342,282,96,46);
     const hasFmDisplay=droplets[0].getAttribute('d').startsWith('M430 22');
     if (fmDisplay.length!==(hasFmDisplay?1:0) || wpDisplay.length!==fan.length) return fail();
+    const baffles=rects.filter(el=>el.localName==='rect' && el.getAttribute('x')==='73' &&
+      el.getAttribute('width')==='128' && el.getAttribute('height')==='4');
+    const baffleLines=all.filter(el=>el.localName==='path' && /^M73 [-\d.]+H201M73 [-\d.]+H201$/.test(el.getAttribute('d')||''));
+    if (baffles.length!==baffleLines.length || baffles.length>1) return fail();
     const bounded=(el,max,required)=>{
       const s=view.getComputedStyle(el),v=s?.strokeWidth;
       if (!s || (s.vectorEffect && s.vectorEffect!=='none') || typeof v!=='string' ||
@@ -1715,7 +1719,8 @@ function inspectStagedLayoutSymbolStrokes(svg) {
     const droplet=view.getComputedStyle(droplets[0]);
     if (!droplet || droplet.stroke!=='none' || (droplet.vectorEffect && droplet.vectorEffect!=='none') ||
         arrows.some(el=>!bounded(el,1.6,true)) || fan.some(el=>!bounded(el,3,true)) || led.some(el=>!bounded(el,1,true)) ||
-        [...fmDisplay,...wpDisplay].some(el=>!bounded(el,1,true))) return fail();
+        [...fmDisplay,...wpDisplay].some(el=>!bounded(el,1,true)) ||
+        baffles.some(el=>view.getComputedStyle(el).stroke!=='none') || baffleLines.some(el=>!bounded(el,.7,true))) return fail();
     return {status:'unsupported',reason:'layout-symbol-strokes-bound-only'};
   } catch (_) { return fail(); }
 }
@@ -1815,7 +1820,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false,holdForFinalCheck=false) {
   const unsupported=reason=>({status:'unsupported',reason});
   const wait=promise=>{
     if (!signal) return promise;
@@ -1828,7 +1833,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       promise.then(finish,()=>finish(null));
     });
   };
-  let stage,svg;
+  let stage,svg,transferred=false,held,structureObserver;
   try {
     if (!['identical','translated','independent'].includes(parityMode) || (parityMode!=='identical' && !referenceSvg) ||
         (parityMode==='independent' && !fixedViewport) ||
@@ -1887,13 +1892,33 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
     const stageInitial=referenceSvg?screen(svg):null;
     if (referenceSvg && (!sameScreen(referenceInitial,screen(referenceSvg),allMatrix) ||
         !sameScreen(referenceInitial,stageInitial,linearMatrix))) return unsupported('text-stage-viewport-unproven');
+    const snapshot=node=>({markup:node.outerHTML,nodes:[node,...node.querySelectorAll('*')]});
+    const unchanged=(node,saved)=>{
+      if (typeof saved?.markup!=='string' || node.outerHTML!==saved.markup) return false;
+      const nodes=[node,...node.querySelectorAll('*')];
+      return nodes.length===saved.nodes.length && nodes.every((element,i)=>element===saved.nodes[i]);
+    };
+    let candidateSnapshot,referenceSnapshot,structureMutated=false;
+    const structureValid=()=>{
+      if (!holdForFinalCheck) return true;
+      if (structureObserver?.takeRecords().length) structureMutated=true;
+      return !structureMutated && unchanged(svg,candidateSnapshot) && unchanged(referenceSvg,referenceSnapshot);
+    };
+    if (holdForFinalCheck) {
+      if (!referenceSvg || typeof doc.defaultView.MutationObserver!=='function') return unsupported('text-stage-unavailable');
+      candidateSnapshot=snapshot(svg);referenceSnapshot=snapshot(referenceSvg);
+      if (typeof candidateSnapshot.markup!=='string' || typeof referenceSnapshot.markup!=='string') return unsupported('text-stage-unavailable');
+      structureObserver=new doc.defaultView.MutationObserver(()=>{structureMutated=true;});
+      const options={attributes:true,childList:true,characterData:true,subtree:true};
+      structureObserver.observe(svg,options);structureObserver.observe(referenceSvg,options);
+    }
     const reserve=await wait(measureLegacyHeatingSvgText(svg,contextKey));
-    if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
+    if (!isCurrent(generation) || !parent.isConnected || !intact() || !structureValid()) return unsupported('text-stage-invalidated');
     if (!reserve) return unsupported('text-stage-invalidated');
     if (!reserve.entries) return reserve;
     if (!reserve.entries.length) return unsupported('text-stage-empty-inventory');
     const current=await wait(measureLegacyHeatingSvgText(svg,contextKey));
-    if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
+    if (!isCurrent(generation) || !parent.isConnected || !intact() || !structureValid()) return unsupported('text-stage-invalidated');
     if (!current) return unsupported('text-stage-invalidated');
     const checked=checkMeasuredTextReserve(reserve,current,contextKey);
     if (checked.textReserve!=='fits') return checked;
@@ -1902,7 +1927,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       if (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root)
         return unsupported('text-stage-reference-invalid');
       const active=await wait(measureLegacyHeatingSvgText(referenceSvg,contextKey));
-      if (!isCurrent(generation) || !parent.isConnected || !intact() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
+      if (!isCurrent(generation) || !parent.isConnected || !intact() || !structureValid() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
         return unsupported('text-stage-invalidated');
       if (!active) return unsupported('text-stage-invalidated');
       if (!active.entries || checkMeasuredTextReserve(active,active,contextKey).textReserve!=='fits' ||
@@ -1949,8 +1974,8 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       if (independent) {symbolStrokeProof=inspectStagedLayoutSymbolStrokes(svg);pipeStrokeProof=inspectStagedLayoutPipeStrokes(svg);}
       // Recheck the visible SVG after removing the staged sibling: structural
       // selectors such as :last-child must not alter the on-screen styles.
-      stage.remove(); stage=null;
-      if (!isCurrent(generation) || !referenceSvg.isConnected || referenceSvg.parentNode!==parent) return unsupported('text-stage-invalidated');
+      const detachedStage=stage;stage.remove(); stage=null;
+      if (!isCurrent(generation) || !structureValid() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent) return unsupported('text-stage-invalidated');
       if (!sameScreen(referenceBeforeCleanup,screen(referenceSvg),allMatrix)) return unsupported('text-stage-viewport-unproven');
       const provenance=textMeasurementProvenance.get(active);
       const after=provenance && captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
@@ -1958,6 +1983,39 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
         return unsupported('text-stage-style-mismatch');
       referenceEntries=after.entries;
       textStyleParity=independent?'independent-text-measurements-only':translated?'translated-text-only':'identical-baseline-only';
+      if (holdForFinalCheck) {
+        if (!independent) return unsupported('text-stage-invalidated');
+        stage=detachedStage;parent.append(stage);
+        let alive=true,lastReason='',lastDetail=null;
+        const candidateProvenance=textMeasurementProvenance.get(current);
+        const validate=()=>{
+          try {
+            const reject=reason=>{lastReason=reason;return false;};
+            if (!alive || !isCurrent(generation) || !intact() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
+              return reject('connection-or-generation');
+            const referenceScreen=screen(referenceSvg),candidateScreen=screen(svg);
+            if (!sameScreen(referenceInitial,referenceScreen,allMatrix) || !sameScreen(stageInitial,candidateScreen,allMatrix)) {
+              lastDetail={referenceInitial,referenceScreen,stageInitial,candidateScreen};return reject('viewport');
+            }
+            if (!candidateProvenance || !provenance) return reject('provenance');
+            if (!structureValid()) return reject('svg-mutated');
+            const candidateNow=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
+            const referenceNow=captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
+            if (!candidateNow.entries || !referenceNow.entries) return reject('measurement');
+            if (!same(current.entries,candidateNow.entries)) return reject('candidate-changed');
+            if (!same(active.entries,referenceNow.entries)) return reject('reference-changed');
+            if (checkMeasuredTextReserve(current,candidateNow,contextKey).textReserve!=='fits') return reject('candidate-reserve');
+            if (checkMeasuredTextReserve(active,referenceNow,contextKey).textReserve!=='fits') return reject('reference-reserve');
+            if (inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only') return reject('symbol-stroke');
+            if (inspectStagedLayoutPipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only') return reject('pipe-stroke');
+            if (!structureValid()) return reject('svg-mutated');
+            lastReason='';lastDetail=null;return true;
+          } catch (_) {lastReason='exception';return false;}
+        };
+        const release=()=>{if(!alive)return;alive=false;structureObserver?.disconnect();if(svg && svg.parentNode!==stage && svg.isConnected)svg.remove();stage?.remove();stage=null;};
+        if (!validate()) {release();return unsupported('text-stage-invalidated');}
+        held={validate,release,get reason(){return lastReason;},get detail(){return lastDetail;}};
+      }
     }
     // Position and dimension can each differ by the parity tolerance.
     const pad=textStyleParity ? 4e-9 : 0;
@@ -1967,11 +2025,12 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       box:{x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}}));
     const textRecords=includeTextRecords ? records(current.entries) : undefined;
     const referenceTextRecords=includeTextRecords && referenceEntries ? records(referenceEntries) : undefined;
+    transferred=!!held;
     return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
       textCount:current.entries.length,boxes,...(textStyleParity?{textStyleParity}:{}),...(textRecords?{textRecords}:{}),
-      ...(referenceTextRecords?{referenceTextRecords}:{}),...(symbolStrokeProof?{symbolStrokeProof}:{}),...(pipeStrokeProof?{pipeStrokeProof}:{})};
+      ...(referenceTextRecords?{referenceTextRecords}:{}),...(symbolStrokeProof?{symbolStrokeProof}:{}),...(pipeStrokeProof?{pipeStrokeProof}:{}),...(held?{held}:{})};
   } catch (_) { return unsupported('text-stage-unavailable'); }
-  finally { if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove(); }
+  finally { if (!transferred) {structureObserver?.disconnect();if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove();} }
 }
 
 function inventoryLegacyHeatingDecorations(model, prepared, routes, compiled, localBridge, options = {}) {
@@ -3936,6 +3995,12 @@ function inspectLayoutSymbolPaint(card,candidate,records,html) {
     if (html.split(coldPath).length!==2 || html.split(hotPath).length!==2) return fail('layout-symbol-paint-unproven');
     icons.push({id:'domestic-cold-arrow',x:cold.x-4.8,y:-23.8+dy,width:9.6,height:5.6},
       {id:'domestic-hot-arrow',x:hot.x-4.8,y:-23.8+dy,width:9.6,height:5.6});
+    if (c.typ==='trennblech') {
+      const y=m.geometry.yt;
+      if (!Number.isFinite(y) || html.split(`<rect x="73" y="${y-2}" width="128" height="4" fill="url(#wwGrid)"/>`).length!==2 ||
+          html.split(`M73 ${y-2}H201M73 ${y+2}H201`).length!==2) return fail('layout-symbol-paint-unproven');
+      icons.push({id:'tank-baffle',x:72.65,y:y-2.35,width:128.7,height:4.7});
+    }
     const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
     if (icons.some(a=>![a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite)) ||
         records.some(r=>!r?.box || ![r.box.x,r.box.y,r.box.width,r.box.height,r.box.x+r.box.width,r.box.y+r.box.height].every(Number.isFinite)))
@@ -4002,6 +4067,14 @@ function layoutRelevantHassKey(card,hass) {
     const entity=hass.states[e];
     return [!!entity,typeof entity?.state,String(entity?.state),String(entity?.attributes?.unit_of_measurement || '')];
   })]);
+}
+function layoutMeasurementDraftKey(owner) {
+  try {
+    const draft=owner?._layoutDraft;
+    if (owner?._layoutPanel) return !owner._layoutDraftNeedsRebind && draft && Array.isArray(draft.history) && Number.isInteger(draft.index)
+      ? JSON.stringify([draft.index,draft.history[draft.index]]) : null;
+    return JSON.stringify([draft?.value ?? null,owner?._savedLayout?.value ?? null]);
+  } catch (_) { return null; }
 }
 function markLayoutTextUnproven(owner,parent,code='text-slots-and-paint-unproven') {
   const de=sprache(owner._config || owner._cfg,owner._hass)==='de';
@@ -4073,7 +4146,9 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       return unsupported('text-measurement-unavailable');
     const hassKey=layoutRelevantHassKey(card,owner._hass || card._hass);
     if (hassKey===null) return unsupported('text-measurement-unavailable');
-    const key=JSON.stringify([html,card._cfg,owner._config || null,hassKey]);
+    const draftKey=layoutMeasurementDraftKey(owner);
+    if (draftKey===null) return unsupported('text-measurement-unavailable');
+    const key=JSON.stringify([html,card._cfg,owner._config || null,hassKey,draftKey]);
     const previous=layoutTextMeasurementJobs.get(owner);
     if (previous && previous.parent===parent && previous.key===key)
       return {status:'pending',viewport:previous.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
@@ -4111,10 +4186,13 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
     resize.observe(host);
     const current=token=>{try{return token===generation && layoutTextMeasurementJobs.get(owner)===job && !controller.signal.aborted &&
       owner.isConnected && parent.isConnected && (owner._layoutPanel?.previewRoot || owner._box)===parent &&
-      JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass)])===key;}catch(_){return false;}};
+      JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass),layoutMeasurementDraftKey(owner)])===key;}catch(_){return false;}};
+    job.current=current;
     const finish=result=>{
+      const held=result?.held;
+      try {
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
-      const independent=result?.textStyleParity==='independent-text-measurements-only';
+      const independent=result?.textStyleParity==='independent-text-measurements-only' && held?.validate?.()===true;
       const textInventory=independent ? inspectMeasuredLayoutTexts(card,candidate,result.textRecords) : {reason:'text-inventory-unproven'};
       const shadowPolicy=independent ? inspectLayoutShadowPolicy(card,candidate,html) : {reason:'layout-shadow-policy-unproven'};
       const targetReferences=independent ? inspectLayoutTargetReferences(parent,html) : {reason:'layout-target-references-unproven'};
@@ -4129,13 +4207,19 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       const reference=independent ? inspectMeasuredVolumeSlots(card,{model:diagramModel(card._cfg),routes:{}},result.referenceTextRecords)
         : {reason:'volume-text-unproven'};
       const negative=['volume-label-overflow','volume-label-pipe-contact','text-slot-overflow','text-overlap','text-obstacle-contact'];
-      const code=negative.includes(volume.reason)?volume.reason:reference.reason==='volume-label-overflow'?reference.reason
+      let code=negative.includes(volume.reason)?volume.reason:reference.reason==='volume-label-overflow'?reference.reason
         : negative.includes(textInventory.reason)?textInventory.reason:negative.includes(symbolPaint.reason)?symbolPaint.reason
         : textInventory.reason==='text-inventory-staged-only' && shadowPolicy.reason==='layout-shadow-policy-bound-only' &&
           targetReferences.reason==='layout-target-references-bound-only' && symbolPaint.reason==='layout-symbol-paint-bound-only' &&
           pipePaint.reason==='layout-pipe-paint-bound-only' ? 'text-inventory-staged-only'
         : 'text-slots-and-paint-unproven';
+      if (independent && (!current(generation) || held.validate()!==true)) code='text-slots-and-paint-unproven';
       layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
+      } catch (_) {
+        if(layoutTextMeasurementJobs.get(owner)===job) {
+          layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent);
+        }
+      } finally {held?.release?.();}
     };
     Promise.resolve().then(()=>{
       if (!current(generation)) return {status:'unsupported',reason:'text-stage-invalidated'};
@@ -4149,7 +4233,7 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       if (!rect || ![rect.width,rect.height].every(Number.isFinite) || rect.width<=0 || rect.height<=0)
         return {status:'unsupported',reason:'text-stage-viewport-unproven'};
       job.width=rect.width;job.height=rect.height;
-      return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'independent',true);
+      return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'independent',true,true);
     })
       .then(finish,finish);
     return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
@@ -4894,6 +4978,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _discardLayoutDraft() { return this._beginLayoutDraft(); }
 
   _applyLayoutDraft() {
+    const job=layoutTextMeasurementJobs.get(this);
+    if (job?.pending && job.current?.(job.generation))
+      return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
+    if (job) cancelLayoutTextMeasurement(this);
     const state = this._layoutDraftState();
     if (!state || state.status !== 'rendered-candidate') return state;
     // Give the emitted configuration its own mutable data, separate from the
@@ -5346,10 +5434,15 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _refreshLayoutUI({ preserveFocusedInput = false } = {}) {
-    cancelLayoutTextMeasurement(this);
     const ui = this._layoutPanel;
     if (!ui || !this._layoutDraft) return;
-    const state = this._layoutDraftState(true), checked = state;
+    const previousJob=layoutTextMeasurementJobs.get(this);
+    const currentPending=previousJob?.pending && previousJob.current?.(previousJob.generation);
+    const state = currentPending
+      ? {layout:this._layoutDraft.history[this._layoutDraft.index],canUndo:this._layoutDraft.index>0,
+        canRedo:this._layoutDraft.index+1<this._layoutDraft.history.length,status:'pending',
+        viewport:previousJob.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]}
+      : this._layoutDraftState(true), checked = state;
     let ids = [], hitBoxes = [], modelIds = {}, separated = false;
     try {
       const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
@@ -5437,7 +5530,15 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         catch (_) {html='';}
       }
     }
-    ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
+    const job=layoutTextMeasurementJobs.get(this),slot=ui.previewRoot.querySelector('[data-layout-viewport]'),reference=slot?.querySelector?.('svg');
+    const preserve=checked.status==='pending' && job && job===previousJob && job.pending &&
+      job.current?.(job.generation) && reference?.isConnected && reference.parentNode===slot && viewport &&
+      reference.getAttribute('viewBox')===viewport.viewBox &&
+      job.viewport?.viewBox===viewport.viewBox && !viewportRejected && !this._layoutDrag;
+    if (!preserve) {
+      if (job && job===previousJob) cancelLayoutTextMeasurement(this);
+      ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
+    }
     const svg = ui.previewRoot.querySelector('svg');
     if (svg && !viewportRejected && this._layoutDrag?.viewBox) svg.setAttribute('viewBox', this._layoutDrag.viewBox);
     this._positionLayoutOverlay();

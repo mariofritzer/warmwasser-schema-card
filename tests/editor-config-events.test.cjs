@@ -32,13 +32,15 @@ class ResizeObserverMock {
   observe(target) { this.target = target; }
   disconnect() { this.disconnected = true; }
 }
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + require('./helpers/internal-layout-gate.cjs'), {
+const testContext = {
   HTMLElement: Host, CustomEvent, ResizeObserver: ResizeObserverMock, document: { createElement: tag => new Element(tag) },
   customElements: { get: name => registry.get(name), define: (name, ctor) => registry.set(name, ctor) },
   window: {}, console: { info() {} },
   requestAnimationFrame: fn => { const id = ++nextFrame; frames.set(id, fn); return id; },
   cancelAnimationFrame: id => frames.delete(id),
-});
+};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../warmwasser-schema-card.js'), 'utf8') + require('./helpers/internal-layout-gate.cjs') +
+  '\nglobalThis.setLayoutMeasurementJob=(owner,job)=>layoutTextMeasurementJobs.set(owner,job);', testContext);
 const Editor = registry.get('warmwasser-schema-card-editor');
 const plain = value => JSON.parse(JSON.stringify(value));
 const descendants = node => [node, ...node.children.flatMap(descendants)];
@@ -285,7 +287,7 @@ test('pointer drag uses inverse screen matrix, coalesces moves and cancels stale
   const ui = editor._layoutPanel, x = Number(ui.inputs.x.value), y = Number(ui.inputs.y.value);
   const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 0, f: 0 }) }),
     getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
-  ui.previewRoot.querySelector = () => svg;
+  ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null;
   ui.viewport.getBoundingClientRect = () => ({ left: 0, top: 0 }); ui.viewport.scrollLeft = 0; ui.viewport.scrollTop = 0;
   ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
   const pointer = (clientX, clientY) => ({ pointerId: 1, isPrimary: true, pointerType: 'touch', button: 0, clientX: clientX + 2 * x, clientY: clientY + 2 * y });
@@ -318,7 +320,7 @@ test('rebuild and disconnect cancel a drag and reject old animation frames', () 
     const ui = editor._layoutPanel;
     const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
       getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
-    ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+    ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
     ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
     const box = ui.hitBoxes.find(box => box.id === 'fm');
     const event = { pointerId: 7, isPrimary: true, pointerType: 'mouse', button: 0, clientX: box.x + 10, clientY: box.y + 10 };
@@ -345,7 +347,7 @@ test('resize repositions overlay and cancels active drag with stale transform', 
   let width = 400;
   const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
     getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 10, top: 20, width, height: 300 }) };
-  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
   ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
   const box = ui.hitBoxes.find(box => box.id === 'fm');
   const event = { pointerId: 8, isPrimary: true, pointerType: 'touch', clientX: box.x + 10, clientY: box.y + 10 };
@@ -386,7 +388,7 @@ test('diagram click selects the hit component and ignores empty or ambiguous spa
   const ui = editor._layoutPanel;
   const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
     getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
-  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
   ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
   const wp = ui.hitBoxes.find(box => box.id === 'wp');
   const event = { pointerId: 9, isPrimary: true, pointerType: 'mouse', button: 0, clientX: wp.x + wp.width / 2, clientY: wp.y + wp.height / 2 };
@@ -436,7 +438,7 @@ test('invalid layout keeps a marked draft while canonical preview remains visibl
   const ui = editor._layoutPanel;
   const svg = { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
-  ui.previewRoot.querySelector = () => svg; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null; ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
   ui.inputs.x.value = '72'; ui.inputs.x.emit('change'); ui.inputs.y.value = '14'; ui.inputs.y.emit('change');
   assert.equal(ui.apply.disabled, true); assert.equal(ui.marker.style.display, 'block');
   assert.equal(ui.marker.style.left, '72px'); assert.equal(ui.marker.style.top, '14px');
@@ -458,6 +460,20 @@ test('rejected drag viewport keeps canonical viewBox and reports unsupported', (
   assert.match(ui.status.textContent,/viewport is not supported/i);
   assert.match(ui.previewRoot._html,/<svg viewBox="0 -30 486 430"/);
   assert.deepEqual(writes,[]);
+});
+test('refresh preserves the connected preview for the same pending generation', () => {
+  const editor=new Editor();editor._visualLayoutEditorEnabled=()=>true;
+  editor.hass={language:'en',states:{'sensor.fm':{state:'on'}}};
+  editor.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+  const ui=editor._layoutPanel,viewBox='0 -30 600 500',viewport={x:0,y:-30,width:600,height:500,viewBox};
+  const svg={isConnected:true,getAttribute:()=>viewBox},slot={querySelector:()=>svg};svg.parentNode=slot;
+  ui.previewRoot.querySelector=selector=>selector==='[data-layout-viewport]'?slot:svg;
+  editor._positionLayoutOverlay=()=>{};
+  editor._layoutDraftState=()=>{throw Error('unchanged pending refresh must not render again');};
+  const job={pending:true,generation:{},viewport,current:()=>true,controller:{abort(){throw Error('must remain connected');}},cleanup(){}};
+  testContext.setLayoutMeasurementJob(editor,job);
+  ui.previewRoot.innerHTML='connected candidate sentinel';editor._refreshLayoutUI();
+  assert.equal(ui.previewRoot._html,'connected candidate sentinel');assert.equal(ui.apply.disabled,true);
 });
 
 test('reattached editor preserves dirty history but requires explicit rebind', () => {

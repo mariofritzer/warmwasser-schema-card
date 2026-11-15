@@ -112,6 +112,35 @@ test('both real candidate paths require connected text measurement without a vol
     await Promise.resolve();assert.equal(f.calls.length,1,kind);cancel(f.owner);
   }
 });
+test('Apply while pending reuses the same job and does not start a new preflight',async()=>{
+  const f=fixture('editor');assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  await Promise.resolve();let preflights=0;
+  f.owner._layoutDraftState=()=>{preflights++;return {status:'unsupported'};};
+  assert.equal(f.owner._applyLayoutDraft().status,'pending');
+  assert.equal(preflights,0);assert.equal(f.calls.length,1);assert.equal(f.calls[0].signal.aborted,false);
+  f.owner._layoutDraft.history[f.owner._layoutDraft.index]={version:2,components:{fm:{x:1,y:2}}};
+  assert.equal(f.owner._applyLayoutDraft().status,'unsupported');
+  assert.equal(preflights,1);assert.equal(f.calls[0].signal.aborted,true);
+});
+test('late connected evidence is released when its owner is invalidated',async()=>{
+  const f=fixture('editor');let resolveStage,releases=0;
+  setStage(()=>new Promise(resolve=>{resolveStage=resolve;}));
+  assert.equal(request(f.owner,f.card,'candidate').status,'pending');await Promise.resolve();
+  cancel(f.owner);
+  resolveStage({held:{validate:()=>true,release:()=>{releases++;}}});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(releases,1);
+  assert.equal(f.owner._layoutPanel.apply.disabled,true);
+});
+test('connected evidence is rechecked after inspection and always released',async()=>{
+  const f=fixture('editor');let validations=0,releases=0;
+  f.card.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+  setStage(async()=>({textStyleParity:'independent-text-measurements-only',textRecords:[],referenceTextRecords:[],
+    held:{validate:()=>++validations===1,release:()=>{releases++;}}}));
+  assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(validations,2);assert.equal(releases,1);assert.equal(f.owner._layoutPanel.apply.disabled,true);
+  assert.match(f.owner._layoutPanel.status.textContent,/not complete/);
+});
 test('real pending Editor path rejects a measured volume overflow and keeps a fitting label unapproved',async()=>{
   for(const [value,width,expected] of [['W'.repeat(80),400,/does not fit/],[500,24,/not complete/]]) {
     const f=fixture('editor'),raw={speicher:{typ:'schicht',volumen:value},fm:{pumpe:'sensor.fm'}};
@@ -123,7 +152,7 @@ test('real pending Editor path rejects a measured volume overflow and keeps a fi
       text:`${value} l`,x:'137',y:'338',className:'wc wt wo',matrix:{a:1,b:0,c:0,d:1,e:0,f:0},
       box:{x:125,y:329,width,height:10}}];
     setStage(async()=>({reason:'text-stage-style-and-paint-validation-required',textStyleParity:'independent-text-measurements-only',
-      textRecords:records,referenceTextRecords:records}));
+      textRecords:records,referenceTextRecords:records,held:{validate:()=>true,release(){}}}));
     assert.equal(preflight(raw,layout,hass,f.owner).status,'pending');
     await new Promise(resolve=>setImmediate(resolve));
     assert.match(f.owner._layoutPanel.status.textContent,expected);
@@ -137,7 +166,7 @@ test('independently overflowing reference rejects an otherwise fitting candidate
   const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};f.owner._config=raw;f.owner._hass=hass;
   const good={text:'500 l',x:'137',y:'338',className:'wc wt wo',matrix:{a:1,b:0,c:0,d:1,e:0,f:0},box:{x:125,y:329,width:24,height:10}};
   setStage(async()=>({textStyleParity:'independent-text-measurements-only',textRecords:[good],
-    referenceTextRecords:[{...good,box:{...good.box,width:400}}]}));
+    referenceTextRecords:[{...good,box:{...good.box,width:400}}],held:{validate:()=>true,release(){}}}));
   assert.equal(preflight(raw,layout,hass,f.owner).status,'pending');await new Promise(resolve=>setImmediate(resolve));
   assert.match(f.owner._layoutPanel.status.textContent,/does not fit/);assert.equal(f.owner._layoutPanel.apply.disabled,true);
 });

@@ -30,6 +30,13 @@ test('FM-only display does not accept an inherited oversized stroke',()=>{
   assert.equal(context.inspect(f.svg).reason,'layout-symbol-stroke-unproven');
   f.nodes.at(-1).style.strokeWidth='1px';assert.equal(context.inspect(f.svg).reason,'layout-symbol-strokes-bound-only');
 });
+test('baffle rectangle and lines reject inherited or oversized strokes',()=>{
+  const f=fixture(),rect=f.shape('rect',{x:'73',y:'168',width:'128',height:'4'},'none','1px'),
+    line=f.shape('path',{d:'M73 168H201M73 172H201'},'white','.7px');
+  f.nodes.push(rect,line);assert.equal(context.inspect(f.svg).reason,'layout-symbol-strokes-bound-only');
+  rect.style.stroke='red';assert.equal(context.inspect(f.svg).reason,'layout-symbol-stroke-unproven');
+  rect.style.stroke='none';line.style.strokeWidth='2px';assert.equal(context.inspect(f.svg).reason,'layout-symbol-stroke-unproven');
+});
 test('pipe and stub stroke envelopes reject wider, missing and non-scaling styles',()=>{
   const matrix={a:1,b:0,c:0,d:1,e:0,f:0};
   const element=(name,width)=>({localName:name==='wk'?'rect':'path',getAttribute:()=>name,getScreenCTM:()=>matrix,style:{stroke:'red',strokeWidth:`${width}px`,vectorEffect:'none',strokeLinecap:'round',strokeLinejoin:'round'}});

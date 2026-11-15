@@ -195,6 +195,56 @@ test('fixed viewport measures translated text boxes independently without author
   changed.svg.ownerDocument.defaultView.getComputedStyle=el=>el===node?{...changed.style,fontWeight:'700'}:changed.style;
   assert.equal((await stage(changed.parent,'<svg></svg>','theme-1',1,()=>true,ref,undefined,false,'independent',true)).reason,'text-stage-style-mismatch');
 });
+test('connected staging evidence revalidates synchronously and releases exactly once',async()=>{
+  const f=stagingFixture();f.ready();f.style.height='150px';f.svg.style={};
+  f.svg.ownerDocument.defaultView.MutationObserver=class {observe(){}takeRecords(){return [];}disconnect(){}};
+  const paint={d:'M0 0H10',fill:'red'};
+  Object.defineProperty(f.svg,'outerHTML',{enumerable:true,get:()=>`<svg><path d="${paint.d}" fill="${paint.fill}"/></svg>`});
+  f.node.getAttribute=name=>({x:'137',y:'338',class:'wc wt wo'})[name];
+  const reference={...f.svg,parentNode:f.parent,parentElement:f.parent},text={...f.node};
+  text.parentElement=reference;reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+  const shape=(name,attrs,stroke,width)=>({localName:name,getAttribute:k=>attrs[k]??null,getScreenCTM:()=>identity,
+    computed:{stroke,strokeWidth:width,vectorEffect:'none',strokeLinecap:'round',strokeLinejoin:'round'}});
+  const drop=shape('path',{d:'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'},'none','1px');
+  const arrows=[shape('path',{class:'wa'},'white','1.6px'),shape('path',{class:'wa'},'white','1.6px')];
+  const paths=['w0','w1','w2'].flatMap((cl,i)=>Array.from({length:4},()=>shape('path',{class:cl},'red',['10px','7px','2px'][i])));
+  const stubs=Array.from({length:6},()=>shape('rect',{class:'wk'},'black','.8px'));
+  f.svg.ownerDocument.defaultView.getComputedStyle=el=>el.computed||f.style;
+  f.svg.querySelectorAll=selector=>selector==='[id]'?[]:selector==='*'?[f.node]:selector==='text'?[f.node]
+    :selector==='path,circle'?[drop,...arrows,...paths]:selector==='path'?[drop,...arrows,...paths]
+    :selector==='rect'?stubs:selector==='[class]'?[...arrows,...paths,...stubs]:[];
+  const result=await stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference,undefined,true,'independent',true,true);
+  assert.equal(result.textStyleParity,'independent-text-measurements-only');assert.ok(result.held);
+  assert.equal(result.held.validate(),true);
+  paint.d='M0 0H999';assert.equal(result.held.validate(),false);assert.equal(result.held.reason,'svg-mutated');
+  paint.d='M0 0H10';assert.equal(result.held.validate(),true);
+  paint.fill='blue';assert.equal(result.held.validate(),false);assert.equal(result.held.reason,'svg-mutated');
+  paint.fill='red';assert.equal(result.held.validate(),true);
+  const query=f.svg.querySelectorAll;f.svg.querySelectorAll=selector=>selector==='*'?[{...f.node}]:query(selector);
+  assert.equal(result.held.validate(),false);assert.equal(result.held.reason,'svg-mutated');
+  f.svg.querySelectorAll=query;assert.equal(result.held.validate(),true);
+  f.listeners.loadingdone();assert.equal(result.held.validate(),false);
+  result.held.release();result.held.release();assert.equal(result.held.validate(),false);
+});
+test('candidate and reference mutations during font wait cannot become a new baseline',async()=>{
+  for (const target of ['candidate-d','candidate-fill','reference-d','candidate-reverted']) {
+    const f=stagingFixture();f.style.height='150px';f.svg.style={};
+    let candidate='<svg><path d="M0 0H10" fill="red"/></svg>',referenceMarkup='<svg><path d="M0 0H10" fill="red"/></svg>';
+    Object.defineProperty(f.svg,'outerHTML',{enumerable:true,get:()=>candidate});
+    let observer;
+    f.svg.ownerDocument.defaultView.MutationObserver=class {constructor(){observer=this;this.records=[];}observe(){}takeRecords(){return this.records.splice(0);}disconnect(){}};
+    const reference={...f.svg,parentNode:f.parent,parentElement:f.parent},text={...f.node};
+    Object.defineProperty(reference,'outerHTML',{get:()=>referenceMarkup});
+    text.parentElement=reference;reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+    const pending=stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference,undefined,true,'independent',true,true);
+    if(target==='candidate-d') candidate='<svg><path d="M0 0H999" fill="red"/></svg>';
+    if(target==='candidate-fill') candidate='<svg><path d="M0 0H10" fill="blue"/></svg>';
+    if(target==='reference-d') referenceMarkup='<svg><path d="M0 0H999" fill="red"/></svg>';
+    if(target==='candidate-reverted') {candidate='<svg><path d="M0 0H999" fill="red"/></svg>';candidate='<svg><path d="M0 0H10" fill="red"/></svg>';observer.records.push({type:'attributes'});}
+    f.ready();const result=await pending;
+    assert.equal(result.reason,'text-stage-invalidated',target);assert.equal(result.held,undefined,target);assert.equal(f.removed(),true,target);
+  }
+});
 test('screen transform changes after stage cleanup invalidate parity',async()=>{
   const f=stagingFixture();f.ready();
   const reference={...f.svg,parentNode:f.parent,parentElement:f.parent,

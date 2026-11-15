@@ -28,8 +28,8 @@
     <button id="viewport-real">Card + editor viewport check</button>
     <button id="smoke">Run smoke checks</button>
   </div>
-  <p id="result" role="status"></p>
   <div id="editor"></div>
+  <p id="result" role="status"></p>
   <h2>Last emitted configuration</h2><pre id="config">No event yet</pre>
   <script>
     // Minimal stand-in for HA's form: the actual editor and card remain real.
@@ -93,6 +93,7 @@
       stageLegacyHeatingTextCandidate=async (...args)=>{
         const checked=await realTextStage(...args);
         result.textContent+=` | stage: ${checked.reason}${checked.mismatch ? ` ${JSON.stringify(checked.mismatch)}` : ''}${checked.textStyleParity ? ` ${checked.textStyleParity}` : ''}${checked.symbolStrokeProof ? ` ${checked.symbolStrokeProof.reason}` : ''}${checked.pipeStrokeProof ? ` ${checked.pipeStrokeProof.reason}` : ''}`;
+        if (checked.held) result.textContent+=` | held: ${checked.held.validate()?'fresh':checked.held.reason}${checked.held.detail?` ${JSON.stringify(checked.held.detail)}`:''}`;
         return checked;
       };
       function install(nextConfig) {
