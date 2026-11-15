@@ -4331,24 +4331,24 @@ function inspectLayoutPipePaint(card,candidate,html) {
       unresolved:['remaining-decorative-paint','commit-freshness']};
   } catch (_) { return fail(); }
 }
-// A deliberately narrow complete paint inventory for the first experimental
-// end-to-end path. Every visible shape is accounted for; wider configurations
-// remain unsupported until their own complete inventories exist.
+// Complete paint inventory for the experimental non-separated FM-only path.
+// Every visible shape is accounted for; WP and other tank types remain closed.
 function inspectCompleteSimpleFmPaint(card,candidate,svg) {
   const fail=()=>({status:'unsupported',reason:'layout-complete-paint-unproven'});
   try {
     const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || c.typ!=='schicht' || c.wp || !c.fm || c.fm.temp || c.fm.durchfluss ||
-        (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') || !svg?.isConnected) return fail();
+    if (!c || !m?.routingScope?.fm || c.typ!=='schicht' || c.wp || !c.fm || !svg?.isConnected) return fail();
     if (Object.keys(m.components).sort().join(',')!==['domestic-boundary','fm','tank','tank-feet'].sort().join(',')) return fail();
     const shapes=Array.from(svg.querySelectorAll('path,rect,circle,line')).filter(el=>!el.closest('defs')),
       paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect');
-    if (shapes.length!==paths.length+rects.length || rects.length!==14) return fail();
+    const hasDisplay=!!(c.fm.temp || c.fm.durchfluss);
+    if (shapes.length!==paths.length+rects.length || rects.length!==(hasDisplay?15:14)) return fail();
     const cls=el=>el.getAttribute('class')||'',plain=paths.filter(el=>!['w0','w1','w2','w3','wa'].includes(cls(el)));
     const tank=m.components.tank,fm=m.components.fm,o=tank.origin,b=tank.bounds;
     const expectedPaths=[`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
       `M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`,
-      'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'];
+      hasDisplay?'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
+        :'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'];
     if (plain.length!==3 || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
     const match=(el,x,y,w,h)=>el.getAttribute('x')===String(x) && el.getAttribute('y')===String(y) &&
       el.getAttribute('width')===String(w) && el.getAttribute('height')===String(h);
@@ -4356,6 +4356,10 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     if (tankRects.length!==3 || fmRects.length!==2 || rects.filter(el=>cls(el)==='wk').length!==6 ||
         rects.filter(el=>match(el,o.x+14,o.y+30,7,300)).length!==1 ||
         rects.filter(el=>match(el,93,362,11,22)).length!==1 || rects.filter(el=>match(el,170,362,11,22)).length!==1) return fail();
+    const displays=rects.filter(el=>match(el,392,62,52,34));
+    if (displays.length!==(hasDisplay?1:0) || displays.some(el=>el.getAttribute('rx')!=='5' ||
+        el.getAttribute('fill')!=='#0f1114' || el.getAttribute('fill-opacity')!=='.85' ||
+        el.getAttribute('stroke')!=='#fff' || el.getAttribute('stroke-opacity')!=='.08')) return fail();
     if (tankRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
         tankRects.filter(el=>el.getAttribute('fill')==='url(#wwCyl)').length!==1 ||
         tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1 ||
@@ -4370,7 +4374,7 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
         c:(matrix.d*a.c-matrix.c*a.d)/det,d:(-matrix.b*a.c+matrix.a*a.d)/det,
         e:(matrix.d*(a.e-matrix.e)-matrix.c*(a.f-matrix.f))/det,
         f:(-matrix.b*(a.e-matrix.e)+matrix.a*(a.f-matrix.f))/det};
-      const x=el===droplet?delta.x:0,y=el===droplet?delta.y:0;
+      const moved=el===droplet || displays.includes(el),x=moved?delta.x:0,y=moved?delta.y:0;
       if (![rel.a-1,rel.b,rel.c,rel.d-1,rel.e-x,rel.f-y].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8)) return fail();
     }
     const a={x:o.x-2,y:o.y-2,width:b.width+4,height:b.height+4},d={x:fm.origin.x-2,y:fm.origin.y-2,width:fm.bounds.width+4,height:fm.bounds.height+4};

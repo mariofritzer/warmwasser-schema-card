@@ -148,3 +148,43 @@ test('simple FM-only complete inventory classifies every visible shape',()=>{
   shapes.push({localName:'circle',getAttribute:()=>null,closest:()=>null});
   assert.equal(complete(c,candidate,svg).status,'unsupported');
 });
+test('FM display and volume variants keep a complete, model-bound shape inventory',()=>{
+  for(const [temp,flow,volume] of [[true,false,500],[false,true,500],[true,true,500],[true,true,null]]) {
+    const raw={speicher:{typ:'schicht',...(volume===null?{}:{volumen:volume})},
+      fm:{pumpe:'sensor.fm',...(temp?{temp:'sensor.temp'}:{}),...(flow?{durchfluss:'sensor.flow'}:{})}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'}}};
+    const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:370,y:29}}}),html=renderGeometry(c,candidate);
+    const body=html.slice(html.indexOf('</defs>')+7,html.indexOf('</svg>')),matrix={a:1,b:0,c:0,d:1,e:0,f:0},shapes=[];
+    for(const match of body.matchAll(/<(path|rect|circle|line)\b([^>]*)\/?\s*>/g)) {
+      const attrs=Object.fromEntries([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+      const moved=attrs.d?.startsWith('M430 22C426') || (attrs.x==='392' && attrs.y==='62' && attrs.width==='52' && attrs.height==='34');
+      shapes.push({localName:match[1],getAttribute:name=>attrs[name]??null,closest:()=>null,getScreenCTM:()=>moved?{...matrix,e:30,f:15}:matrix});
+    }
+    const svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
+    assert.equal(complete(c,candidate,svg).status,'complete',`${temp}/${flow}/${volume}`);
+    const display=shapes.find(el=>el.localName==='rect' && el.getAttribute('x')==='392' && el.getAttribute('y')==='62');
+    const get=display.getAttribute;display.getAttribute=name=>name==='rx'?'50':get(name);
+    assert.equal(complete(c,candidate,svg).status,'unsupported');
+  }
+});
+test('FM volume and live values require exact inventory, slots and current HA state',()=>{
+  const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'}},
+    c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+  c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'}}};
+  const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:370,y:29}}}),html=renderGeometry(c,candidate),records=[];
+  for(const match of html.matchAll(/<text\s+([^>]*)>([^<]*)<\/text>/g)) {
+    const attrs=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+    const x=Number(attrs.x),y=Number(attrs.y),moved=x===352 || x===418,dx=moved?30:0,dy=moved?15:0,
+      center=(attrs.class||'').split(' ').includes('wc'),end=(attrs.class||'').split(' ').includes('we');
+    records.push({text:match[2],x:attrs.x,y:attrs.y,className:attrs.class??null,matrix:{a:1,b:0,c:0,d:1,e:dx,f:dy},
+      box:{x:x+dx-(center?1:end?2:0),y:y+dy-5,width:2,height:4}});
+  }
+  assert.equal(inspect(c,candidate,records).reason,'text-inventory-staged-only');
+  for(const text of ['500 l','42.0°','3 l/min']) assert.ok(records.some(record=>record.text===text),text);
+  const overflow=records.map(r=>({...r,box:{...r.box}}));overflow.find(r=>r.text==='42.0°').box.width=100;
+  assert.equal(inspect(c,candidate,overflow).reason,'text-slot-overflow');
+  c._hass.states['sensor.temp'].state='43';assert.equal(inspect(c,candidate,records).reason,'text-inventory-unproven');
+  assert.equal(complete({...c,_cfg:{...c._cfg,wp:{betrieb:'sensor.wp'}}},candidate,{isConnected:true}).status,'unsupported');
+  assert.equal(complete({...c,_cfg:{...c._cfg,typ:'trennblech'}},candidate,{isConnected:true}).status,'unsupported');
+});
