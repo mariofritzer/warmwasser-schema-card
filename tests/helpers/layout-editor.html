@@ -23,6 +23,8 @@
     <button id="wp">Disable / restore WP</button>
     <button id="volume">Long volume pending check</button>
     <button id="volume-short">Normal volume pending check</button>
+    <button id="viewport-events">Viewport reflow diagnostics</button>
+    <button id="viewport-contract">Fixed viewport prototype</button>
     <button id="smoke">Run smoke checks</button>
   </div>
   <p id="result" role="status"></p>
@@ -44,6 +46,18 @@
       let config, hass, editor, enabledWp;
       const copy = value => JSON.parse(JSON.stringify(value));
       const output = document.getElementById('config'), result = document.getElementById('result');
+      // Test-only instrumentation records real synchronous browser layout at
+      // each connected SVG viewBox transition, including rollback.
+      const viewportEvents=[];
+      const nativeSetAttribute=SVGElement.prototype.setAttribute;
+      SVGElement.prototype.setAttribute=function(name,value) {
+        if (name!=='viewBox' || !this.isConnected) return nativeSetAttribute.call(this,name,value);
+        const before=this.getBoundingClientRect(), old=this.getAttribute(name);
+        nativeSetAttribute.call(this,name,value);
+        const after=this.getBoundingClientRect(), root=this.getRootNode();
+        viewportEvents.push({owner:root.host?.localName,old,value,
+          before:{width:before.width,height:before.height},after:{width:after.width,height:after.height}});
+      };
       const realTextStage=stageLegacyHeatingTextCandidate;
       stageLegacyHeatingTextCandidate=async (...args)=>{
         const checked=await realTextStage(...args);
@@ -135,8 +149,35 @@
       document.getElementById('wp').addEventListener('click', wp);
       document.getElementById('volume').addEventListener('click', ()=>volume());
       document.getElementById('volume-short').addEventListener('click', ()=>volume(500));
+      document.getElementById('viewport-events').addEventListener('click', ()=>{
+        result.textContent=JSON.stringify(viewportEvents.slice(-20));
+      });
+      document.getElementById('viewport-contract').addEventListener('click', async()=>{
+        const slot=document.createElement('div');
+        slot.style.cssText='position:fixed;left:-10000px;top:0;width:320px;aspect-ratio:518/445;overflow:hidden';
+        slot.innerHTML='<svg viewBox="0 -30 518 445" style="position:absolute;inset:0;width:100%;height:100%"><text x="137" y="338">500 l</text></svg><svg viewBox="0 -30 518 445" style="position:absolute;inset:0;width:100%;height:100%;visibility:hidden"><text x="167" y="353">500 l</text></svg>';
+        document.body.append(slot);
+        try {
+          await document.fonts.ready;
+          const [visible,staged]=slot.querySelectorAll('svg'), observations=[];
+          for(const width of [320,420,320,420]) {
+            slot.style.width=`${width}px`;
+            const before=slot.getBoundingClientRect();
+            visible.setAttribute('viewBox','0 -30 486 430');
+            const changed=slot.getBoundingClientRect();
+            visible.setAttribute('viewBox','0 -30 518 445');
+            const after=slot.getBoundingClientRect(),a=visible.getScreenCTM(),b=staged.getScreenCTM();
+            if ([before.width,before.height,changed.width,changed.height,after.width,after.height].some(n=>!Number.isFinite(n)) ||
+                before.width!==changed.width || before.height!==changed.height || before.width!==after.width || before.height!==after.height ||
+                !a || !b || ['a','b','c','d'].some(k=>Math.abs(a[k]-b[k])>1e-9)) throw new Error('host or matching viewport changed');
+            observations.push({width:after.width,height:after.height,scale:a.a});
+          }
+          result.textContent=`PASS prototype only; no card text or paint approval: ${JSON.stringify(observations)}`;
+        } catch(error) {result.textContent=`FAIL fixed viewport prototype: ${error.message}`;}
+        finally {slot.remove();}
+      });
       document.getElementById('smoke').addEventListener('click', smoke);
-      window.layoutHarness = { reset, separated, temperature, wp, smoke, get editor() { return editor; }, get config() { return copy(config); } };
+      window.layoutHarness = { reset, separated, temperature, wp, smoke, viewportEvents, get editor() { return editor; }, get config() { return copy(config); } };
       reset();
       if (new URLSearchParams(location.search).has('smoke')) smoke();
     })();

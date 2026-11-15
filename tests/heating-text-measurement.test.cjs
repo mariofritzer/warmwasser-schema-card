@@ -62,6 +62,8 @@ test('rejects empty nonempty-text bounds, decorations and hidden shadow hosts',a
   assert.equal((await measure(f.svg,'theme-1')).reason,'text-effect-unproven');
   f.svg.ownerDocument.defaultView.getComputedStyle=el=>el===host ? {...f.style,textDecorationLine:'overline'} : original(el);
   assert.equal((await measure(f.svg,'theme-1')).reason,'text-effect-unproven');
+  f.svg.ownerDocument.defaultView.getComputedStyle=el=>el===host ? {...f.style,perspective:'500px'} : original(el);
+  assert.equal((await measure(f.svg,'theme-1')).reason,'text-effect-unproven');
 });
 test('reserve check remeasures live and rejects changes after the current snapshot',async()=>{
   const f=fixture(); f.ready();

@@ -6,25 +6,65 @@ const vm=require('node:vm');
 const registry=new Map();
 const context={HTMLElement:class {},AbortController,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
-  '\nglobalThis.api={requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,setStage:fn=>{stageLegacyHeatingTextCandidate=fn;}};',context);
-const {requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
+  '\nglobalThis.api={layoutCandidateViewport,requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,setStage:fn=>{stageLegacyHeatingTextCandidate=fn;}};',context);
+const {layoutCandidateViewport:viewport,requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
+test('viewport contract rejects malformed, unrepresentable and degenerate dimensions',()=>{
+  const parse=value=>viewport({getAttribute:()=>value});
+  assert.equal(parse('0 -30 518 445').viewBox,'0 -30 518 445');
+  assert.equal(parse('0, -30, 518, 445').viewBox,'0 -30 518 445');
+  for(const value of ['0,,0 100 100','0, ,0 100 100',',0 0 100 100','0 0 100 100,','0 0 0 20','0 0 1e309 2','0x10 0 20 20','1e308 0 1 20','0 0 5e-324 1e308']) assert.equal(parse(value),null,value);
+});
 function fixture(kind='card') {
   const handlers=new Map(),mutations=[],resizes=[],calls=[];
   const fonts={addEventListener:(n,f)=>handlers.set(n,f),removeEventListener:(n,f)=>{if(handlers.get(n)===f)handlers.delete(n);}};
   class Mutation {constructor(fn){this.fn=fn;mutations.push(this);}observe(){}disconnect(){this.disconnected=true;}}
   class Resize {constructor(fn){this.fn=fn;resizes.push(this);}observe(){}disconnect(){this.disconnected=true;}}
   const view={AbortController,MutationObserver:Mutation,ResizeObserver:Resize};
-  const doc={fonts,defaultView:view,head:null,createElement:()=>({content:{querySelectorAll:()=>[{outerHTML:'<svg></svg>'}]},set innerHTML(v){doc.lastHTML=v;}})};
+  const doc={fonts,defaultView:view,head:null,createElement:()=>({content:{querySelectorAll:()=>{
+    const box=doc.lastHTML.match(/<svg viewBox="([^"]+)"/)?.[1] || '0 -30 600 500';
+    return [{outerHTML:`<svg viewBox="${box}"></svg>`,getAttribute:()=>box}];
+  }},set innerHTML(v){doc.lastHTML=v;}})};
   const host={isConnected:true,parentElement:null,ownerDocument:doc,getRootNode:()=>({}),getBoundingClientRect(){return {width:this.width,height:100};},width:200};
-  const root={host,querySelectorAll:()=>[]},parent={isConnected:true,ownerDocument:doc,getRootNode:()=>root,querySelector:()=>({})};
+  let box='0 -30 486 430';
+  const root={host,querySelectorAll:()=>[]},parent={isConnected:true,ownerDocument:doc,getRootNode:()=>root};
+  const reference={isConnected:true,parentNode:parent,getAttribute:()=>box,setAttribute:(_name,value)=>{box=value;}};
+  parent.querySelector=()=>reference;
   const card=new (registry.get('warmwasser-schema-card'))();card.isConnected=true;card._cfg={sprache:'en'};card._ents=['sensor.a'];card._hass={language:'en',states:{}};card._box=parent;card._update=()=>{};card._layoutFeatureEnabled=()=>true;
   const owner=kind==='card'?card:new (registry.get('warmwasser-schema-card-editor'))();
-  if(kind==='editor') {owner.isConnected=true;owner._config={};owner._hass=card._hass;owner._layoutPanel={previewRoot:parent,apply:{disabled:false},status:{textContent:''}};owner._layoutDraft={history:[{version:2}],index:0};}
+  if(kind==='editor') {owner.isConnected=true;owner._config={};owner._hass=card._hass;owner._layoutPanel={previewRoot:parent,overlay:{},apply:{disabled:false},status:{textContent:''}};owner._layoutDraft={history:[{version:2}],index:0};owner._positionLayoutOverlay=()=>{owner.overlayUpdates=(owner.overlayUpdates||0)+1;};}
   setStage((_parent,_html,_key,_generation,_current,_reference,signal)=>new Promise(resolve=>{
     calls.push({signal,resolve});signal.addEventListener('abort',()=>resolve({reason:'text-stage-invalidated'}),{once:true});
   }));
-  return {owner,card,parent,host,doc,handlers,mutations,resizes,calls};
+  return {owner,card,parent,host,doc,handlers,mutations,resizes,calls,reference};
 }
+test('both owners expose the candidate viewport without changing the visible fallback',async()=>{
+  for(const kind of ['card','editor']) {
+    const f=fixture(kind);const result=request(f.owner,f.card,'candidate');
+    assert.equal(result.viewport.viewBox,'0 -30 600 500');
+    await Promise.resolve();assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
+    cancel(f.owner);assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
+  }
+});
+test('drag rejects viewport binding before staging',async()=>{
+  const f=fixture('editor');f.owner._layoutDrag={};request(f.owner,f.card,'candidate');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.calls.length,0);assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
+});
+test('cancellation before the pending microtask does not alter either viewport',async()=>{
+  for(const kind of ['card','editor']) {
+    const f=fixture(kind);request(f.owner,f.card,'candidate');cancel(f.owner);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.calls.length,0);assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
+  }
+});
+test('font or repeated resize aborts without changing the visible viewport',async()=>{
+  for(const kind of ['card','editor']) for(const reason of ['font','resize']) {
+    const f=fixture(kind);request(f.owner,f.card,'candidate');await Promise.resolve();
+    if(reason==='font')f.handlers.get('loading')();
+    else { f.host.width++;f.resizes[0].fn([]);f.host.width++;f.resizes[0].fn([]); }
+    assert.equal(f.calls[0].signal.aborted,true);assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
+  }
+});
 test('real Editor preflight of an unsafe volume becomes pending, never a rendered candidate',async()=>{
   const f=fixture('editor'), raw={speicher:{typ:'schicht',volumen:'W'.repeat(80)},fm:{pumpe:'sensor.fm'}};
   const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);

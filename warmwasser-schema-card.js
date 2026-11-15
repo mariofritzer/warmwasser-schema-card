@@ -1634,6 +1634,7 @@ function captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch) {
         const effect=view.getComputedStyle(ancestor);
         if (!effect || effect.display==='none' || effect.visibility==='hidden' || effect.visibility==='collapse' ||
             effect.filter!=='none' || effect.clipPath!=='none' || effect.mask!=='none' ||
+            (effect.perspective && effect.perspective!=='none') ||
             (effect.textShadow && effect.textShadow!=='none') ||
             (effect.textDecorationLine && effect.textDecorationLine!=='none')) return unsupported('text-effect-unproven');
         if (ancestor===svg) sawSvg=true;
@@ -1835,7 +1836,9 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
         const parts=JSON.parse(value);
         // The staging container deliberately disables pointer interaction and
         // is inert; these inherited properties do not change text painting.
-        parts[0]=parts[0].filter(([name])=>name!=='pointer-events' && name!=='interactivity');
+        // Perspective has already been rejected on every ancestor. Its
+        // computed origin then has no effect and may track moved text boxes.
+        parts[0]=parts[0].filter(([name])=>name!=='pointer-events' && name!=='interactivity' && name!=='perspective-origin');
         parts.pop(); // Compare the numeric matrix separately with bounded tolerance.
         return JSON.stringify(parts);
       };
@@ -3695,6 +3698,22 @@ function cancelLayoutTextMeasurement(owner) {
   layoutTextMeasurementJobs.delete(owner); job.controller.abort(); job.cleanup();
   markLayoutTextUnproven(owner,job.parent);
 }
+// The candidate's viewBox is also the fixed aspect-ratio contract of the
+// future SVG. It is derived from the rendered model, never from the prior DOM.
+function layoutCandidateViewport(svg) {
+  const raw=svg?.getAttribute?.('viewBox');
+  if (typeof raw!=='string') return null;
+  const value='[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?', separator='(?:\\s*,\\s*|\\s+)';
+  const match=raw.trim().match(new RegExp(`^(${value})${separator}(${value})${separator}(${value})${separator}(${value})$`,'i'));
+  if (!match) return null;
+  const fields=match.slice(1);
+  if (fields.some(s=>!Number.isFinite(Number(s)))) return null;
+  const [x,y,width,height]=fields.map(Number);
+  const ratio=width/height;
+  if (width<=0 || height<=0 || ratio<=0 || x+width<=x || y+height<=y ||
+      ![x+width,y+height,ratio].every(Number.isFinite)) return null;
+  return Object.freeze({x,y,width,height,viewBox:`${x} ${y} ${width} ${height}`});
+}
 function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
   const unsupported=code=>({status:'unsupported',errors:[{code,path:'layout'}]});
   try {
@@ -3710,13 +3729,15 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
     const key=JSON.stringify([html,card._cfg,owner._config || null,hassKey]);
     const previous=layoutTextMeasurementJobs.get(owner);
     if (previous && previous.parent===parent && previous.key===key)
-      return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
+      return {status:'pending',viewport:previous.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
     cancelLayoutTextMeasurement(owner);
     const template=doc.createElement('template');template.innerHTML=html;
     const svgs=template.content.querySelectorAll('svg');
     if (svgs.length!==1) return unsupported('text-measurement-unavailable');
+    const viewport=layoutCandidateViewport(svgs[0]);
+    if (!viewport) return unsupported('text-stage-viewport-unproven');
     const svgHtml=svgs[0].outerHTML,controller=new view.AbortController(),generation={};
-    const job={parent,key,hassKey,card,controller,generation,pending:true,cleanup:()=>{}};
+    const job={parent,key,hassKey,card,controller,generation,viewport,pending:true,cleanup:()=>{}};
     const invalidate=()=>{if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);};
     const fonts=doc.fonts;
     const mutation=new view.MutationObserver(invalidate),resize=new view.ResizeObserver(()=>{
@@ -3752,12 +3773,13 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
     };
     Promise.resolve().then(()=>{
+      if (!current(generation)) return {status:'unsupported',reason:'text-stage-invalidated'};
       const reference=parent.querySelector('svg');
-      if (!reference) return {status:'unsupported',reason:'text-stage-reference-invalid'};
+      if (!reference || owner._layoutDrag) return {status:'unsupported',reason:'text-stage-reference-invalid'};
       return stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,reference,controller.signal,true,'translated');
     })
       .then(finish,finish);
-    return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
+    return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
   } catch (_) { cancelLayoutTextMeasurement(owner); return unsupported('text-measurement-unavailable'); }
 }
 function renderLayoutCandidate(card, candidate, owner=card) {
@@ -3769,10 +3791,13 @@ function renderLayoutCandidate(card, candidate, owner=card) {
     const complete = Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
       html.includes(`<path d="${route.path}" class="${layer}"`)));
     if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
+    const viewBox=html.match(/<svg viewBox="([^"]+)"/);
+    const viewport=layoutCandidateViewport({getAttribute:name=>name==='viewBox' ? viewBox?.[1] : null});
+    if (!viewport) return {status:'unsupported',errors:[{code:'text-stage-viewport-unproven',path:'layout'}]};
     const visible=value=>value!==null && value!==undefined && value!=='';
     if (card._cfg.typ==='getrennt' || visible(card._cfg.volumen))
       return requestLayoutVolumeMeasurement(owner,card,html,candidate);
-    return { status: 'rendered-candidate', html };
+    return { status: 'rendered-candidate', html, viewport };
   } catch (error) {
     return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
   } finally {
@@ -3886,7 +3911,7 @@ function preflightLayoutRender(rawConfig, layout, hass, cacheOwner) {
   card._hass = hass;
   const result = prepareLayoutCandidate(card, rawConfig, layout, cacheOwner);
   // Keep the existing preflight API free of mutable candidate models.
-  if (result.status === 'rendered-candidate') return { status: result.status, html: result.html };
+  if (result.status === 'rendered-candidate') return { status: result.status, html: result.html, viewport: result.viewport };
   return result;
 }
 
@@ -4874,6 +4899,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _startLayoutDrag(event) {
     const ui = this._layoutPanel, draft = this._layoutDraft;
     if (!ui || !draft || this._layoutDraftNeedsRebind || this._layoutDrag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    // A pending measurement must not outlive the start of a drag.
+    cancelLayoutTextMeasurement(this);
     const svg = ui.previewRoot.querySelector('svg');
     const matrix = svg?.getScreenCTM();
     if (!svg || !matrix) return;
