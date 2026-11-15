@@ -1746,8 +1746,19 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal) {
   const unsupported=reason=>({status:'unsupported',reason});
+  const wait=promise=>{
+    if (!signal) return promise;
+    if (signal.aborted) return Promise.resolve(null);
+    return new Promise(resolve=>{
+      let done=false;
+      const finish=value=>{if(done)return;done=true;signal.removeEventListener('abort',abort);resolve(value);};
+      const abort=()=>finish(null);
+      signal.addEventListener('abort',abort,{once:true});
+      promise.then(finish,()=>finish(null));
+    });
+  };
   let stage,svg;
   try {
     if (!parent || !parent.isConnected || typeof candidateHtml!=='string' || !candidateHtml ||
@@ -1773,21 +1784,24 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       !Array.from(root.querySelectorAll('[id]')).some(el=>!svg.contains(el) && el!==svg &&
         [svg,...svg.querySelectorAll('[id]')].some(inside=>inside.id && inside.id===el.id));
     if (!intact() || !isCurrent(generation)) return unsupported('text-stage-invalidated');
-    const reserve=await measureLegacyHeatingSvgText(svg,contextKey);
+    const reserve=await wait(measureLegacyHeatingSvgText(svg,contextKey));
     if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
+    if (!reserve) return unsupported('text-stage-invalidated');
     if (!reserve.entries) return reserve;
     if (!reserve.entries.length) return unsupported('text-stage-empty-inventory');
-    const current=await measureLegacyHeatingSvgText(svg,contextKey);
+    const current=await wait(measureLegacyHeatingSvgText(svg,contextKey));
     if (!isCurrent(generation) || !parent.isConnected || !intact()) return unsupported('text-stage-invalidated');
+    if (!current) return unsupported('text-stage-invalidated');
     const checked=checkMeasuredTextReserve(reserve,current,contextKey);
     if (checked.textReserve!=='fits') return checked;
     let textStyleParity;
     if (referenceSvg) {
       if (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root)
         return unsupported('text-stage-reference-invalid');
-      const active=await measureLegacyHeatingSvgText(referenceSvg,contextKey);
+      const active=await wait(measureLegacyHeatingSvgText(referenceSvg,contextKey));
       if (!isCurrent(generation) || !parent.isConnected || !intact() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
         return unsupported('text-stage-invalidated');
+      if (!active) return unsupported('text-stage-invalidated');
       if (!active.entries || checkMeasuredTextReserve(active,active,contextKey).textReserve!=='fits' ||
           checkMeasuredTextReserve(current,current,contextKey).textReserve!=='fits') return unsupported('text-stage-parity-unavailable');
       const parityFingerprint=value=>{
@@ -3561,7 +3575,91 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
 // expose partial HTML on failure. A moved candidate takes the renderer's
 // all-routed branch, including its live-label checks.
 const layoutRenderRoutes = new WeakMap();
-function renderLayoutCandidate(card, candidate) {
+const layoutTextMeasurementJobs = new WeakMap();
+function layoutRelevantHassKey(card,hass) {
+  if (!card || !hass || !hass.states || !Array.isArray(card._ents)) return null;
+  return JSON.stringify([sprache(card._cfg,hass),...card._ents.map(e=>{
+    const entity=hass.states[e];
+    return [!!entity,typeof entity?.state,String(entity?.state),String(entity?.attributes?.unit_of_measurement || '')];
+  })]);
+}
+function markLayoutTextUnproven(owner,parent) {
+  const de=sprache(owner._config || owner._cfg,owner._hass)==='de';
+  if (owner._layoutPanel?.previewRoot===parent) {
+    owner._layoutPanel.apply.disabled=true;
+    owner._layoutPanel.status.textContent=de?'Text und Zeichnung sind noch nicht vollständig geprüft.':'Text and paint validation is not complete yet.';
+  }
+  if (owner._layoutStatus?.status==='pending') {
+    owner._layoutStatus={status:'unsupported',errors:[{code:'text-slots-and-paint-unproven',path:'layout'}]};
+    const notice=owner._box?.querySelector?.('[data-layout-status]');
+    if (notice) notice.textContent=savedLayoutNotice(owner._layoutStatus,de?'de':'en',false);
+  }
+}
+function cancelLayoutTextMeasurement(owner) {
+  const job=owner && layoutTextMeasurementJobs.get(owner);
+  if (!job) return;
+  layoutTextMeasurementJobs.delete(owner); job.controller.abort(); job.cleanup();
+  markLayoutTextUnproven(owner,job.parent);
+}
+function requestLayoutVolumeMeasurement(owner,card,html) {
+  const unsupported=code=>({status:'unsupported',errors:[{code,path:'layout'}]});
+  try {
+    if (owner===card && typeof card._layoutFeatureEnabled==='function' && !card._layoutFeatureEnabled())
+      return unsupported('text-measurement-unavailable');
+    const parent=owner?._layoutPanel?.previewRoot || owner?._box;
+    const doc=parent?.ownerDocument,view=doc?.defaultView,root=parent?.getRootNode(),host=root?.host;
+    if (!owner?.isConnected || !parent?.isConnected || !host?.isConnected || !view?.AbortController ||
+        !view.MutationObserver || !view.ResizeObserver || !doc.fonts?.addEventListener || !doc.fonts?.removeEventListener)
+      return unsupported('text-measurement-unavailable');
+    const hassKey=layoutRelevantHassKey(card,owner._hass || card._hass);
+    if (hassKey===null) return unsupported('text-measurement-unavailable');
+    const key=JSON.stringify([html,card._cfg,owner._config || null,hassKey]);
+    const previous=layoutTextMeasurementJobs.get(owner);
+    if (previous && previous.parent===parent && previous.key===key)
+      return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
+    cancelLayoutTextMeasurement(owner);
+    const template=doc.createElement('template');template.innerHTML=html;
+    const svgs=template.content.querySelectorAll('svg');
+    if (svgs.length!==1) return unsupported('text-measurement-unavailable');
+    const svgHtml=svgs[0].outerHTML,controller=new view.AbortController(),generation={};
+    const job={parent,key,hassKey,card,controller,generation,pending:true,cleanup:()=>{}};
+    const invalidate=()=>{if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);};
+    const fonts=doc.fonts;
+    const mutation=new view.MutationObserver(invalidate),resize=new view.ResizeObserver(()=>{
+      const box=host.getBoundingClientRect();
+      if (!box || !Number.isFinite(box.width) || !Number.isFinite(box.height) ||
+          box.width!==job.width || box.height!==job.height) invalidate();
+    });
+    const media=typeof view.matchMedia==='function' ? ['(prefers-color-scheme: dark)','(forced-colors: active)','(prefers-contrast: more)'].map(q=>view.matchMedia(q)) : [];
+    job.cleanup=()=>{mutation.disconnect();resize.disconnect();for (const name of ['loading','loadingdone','loadingerror']) fonts.removeEventListener(name,invalidate);
+      for (const query of media) query.removeEventListener?.('change',invalidate);};
+    layoutTextMeasurementJobs.set(owner,job);
+    for (const name of ['loading','loadingdone','loadingerror']) fonts.addEventListener(name,invalidate);
+    for (const query of media) query.addEventListener?.('change',invalidate);
+    // Theme and viewport changes invalidate; text/paint remain unsupported
+    // even if the measurement finishes without an observable change.
+    for (let node=host;node;node=node.parentElement || node.getRootNode?.().host || null)
+      mutation.observe(node,{attributes:true,attributeFilter:['class','style','hidden','dir']});
+    if (doc.head) mutation.observe(doc.head,{childList:true,subtree:true,attributes:true,characterData:true});
+    const rect=host.getBoundingClientRect();job.width=rect.width;job.height=rect.height;
+    if (![job.width,job.height].every(Number.isFinite) || job.width<=0 || job.height<=0) {
+      cancelLayoutTextMeasurement(owner);
+      return unsupported('text-measurement-unavailable');
+    }
+    resize.observe(host);
+    const current=token=>{try{return token===generation && layoutTextMeasurementJobs.get(owner)===job && !controller.signal.aborted &&
+      owner.isConnected && parent.isConnected && (owner._layoutPanel?.previewRoot || owner._box)===parent &&
+      JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass)])===key;}catch(_){return false;}};
+    const finish=()=>{
+      if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
+      layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent);
+    };
+    Promise.resolve().then(()=>stageLegacyHeatingTextCandidate(parent,svgHtml,key,generation,current,undefined,controller.signal))
+      .then(finish,finish);
+    return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
+  } catch (_) { cancelLayoutTextMeasurement(owner); return unsupported('text-measurement-unavailable'); }
+}
+function renderLayoutCandidate(card, candidate, owner=card) {
   const previous = card._model;
   try {
     card._model = candidate.model;
@@ -3570,6 +3668,9 @@ function renderLayoutCandidate(card, candidate) {
     const complete = Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
       html.includes(`<path d="${route.path}" class="${layer}"`)));
     if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
+    const visible=value=>value!==null && value!==undefined && value!=='';
+    if (visible(card._cfg.volumen) || (card._cfg.typ==='getrennt' && visible(card._cfg.volumen_ww)))
+      return requestLayoutVolumeMeasurement(owner,card,html);
     return { status: 'rendered-candidate', html };
   } catch (error) {
     return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
@@ -3672,7 +3773,7 @@ function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
   const sideChanged = candidate.model.layoutSeparatedPreview && (candidate.model.layoutValveRotation || ['hot-tank', 'buffer-tank', 'fm', ...(card._cfg.wp ? ['wp'] : [])].some(id =>
     Object.values(candidate.model.components[id].ports).some(port => port.effectiveSide && port.effectiveSide !== port.canonicalSide)));
   if (!moved && !sideChanged) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
-  const rendered = renderLayoutCandidate(card, candidate);
+  const rendered = renderLayoutCandidate(card, candidate, cacheOwner || card);
   return rendered.status === 'rendered-candidate' ? { ...rendered, candidate } : rendered;
 }
 
@@ -3692,7 +3793,8 @@ function preflightLayoutRender(rawConfig, layout, hass, cacheOwner) {
 // why it was not used without exposing partially routed SVG or raw values.
 function savedLayoutNotice(result, language, disabled = false) {
   const de = language === 'de', code = result?.errors?.[0]?.code;
-  const reason = code === 'invalid-hass' ? (de ? 'Warte auf aktuelle Home-Assistant-Daten.' : 'Waiting for current Home Assistant data.')
+  const reason = result?.status==='pending' ? (de ? 'Textprüfung läuft.' : 'Text validation is pending.')
+    : code === 'invalid-hass' ? (de ? 'Warte auf aktuelle Home-Assistant-Daten.' : 'Waiting for current Home Assistant data.')
     : code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Darstellung.' : 'A current sensor value does not fit the diagram.')
     : code === 'unsupported-version' ? (de ? 'Die Layout-Version wird nicht unterstützt.' : 'The layout version is not supported.')
     : code === 'unknown-id' || code === 'inactive-id' ? (de ? 'Ein gespeicherter Anschluss oder ein Gerät ist nicht verfügbar.' : 'A saved device or port is unavailable.')
@@ -3712,6 +3814,7 @@ class WarmwasserSchemaCard extends HTMLElement {
   getGridOptions() { return { columns: 'full', min_columns: 6 }; }
 
   setConfig(config) {
+    cancelLayoutTextMeasurement(this);
     if (!config) throw new Error('Keine Konfiguration / no configuration');
     const c = { ...DEFAULTS, ...config, farben: { ...DEFAULTS.farben, ...(config.farben || {}) } };
     c.fuehler = (config.fuehler || [])
@@ -3770,6 +3873,7 @@ class WarmwasserSchemaCard extends HTMLElement {
   // Internal only: no config event or persistence. A failed preparation leaves
   // the currently rendered model untouched. setConfig always clears it.
   _commitLayoutCandidate(layout) {
+    cancelLayoutTextMeasurement(this);
     let draft;
     try { draft = snapshotLayout(layout); }
     catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-layout', path: 'layout' }] }; }
@@ -3809,6 +3913,8 @@ class WarmwasserSchemaCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const job=layoutTextMeasurementJobs.get(this);
+    if (job && layoutRelevantHassKey(job.card,hass)!==job.hassKey) cancelLayoutTextMeasurement(this);
     this._hass = hass;
     this._update();
   }
@@ -3819,6 +3925,7 @@ class WarmwasserSchemaCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    cancelLayoutTextMeasurement(this);
     this._textResizeObserver?.disconnect();
     this._textResizeObserver = null;
   }
@@ -3853,12 +3960,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (!this._cfg || !this._hass) return;
     // Units participate in rendered labels even when the entity state itself
     // is unchanged. Structured encoding also prevents delimiter collisions.
-    const key = JSON.stringify([sprache(this._cfg,this._hass),...this._ents.map(e=>{
-      const entity=this._hass.states[e];
-      // sensorReader.S distinguishes a missing entity from a present entity
-      // whose state is empty, undefined or null.
-      return [!!entity,typeof entity?.state,String(entity?.state),String(entity?.attributes?.unit_of_measurement || '')];
-    })]);
+    const key=layoutRelevantHassKey(this,this._hass);
     if (key === this._key) return;
     if (!this._box) this._init();
     const previous = { html: this._box.innerHTML, model: this._model, candidate: this._layoutCandidate, status: this._layoutStatus };
@@ -3890,7 +3992,7 @@ class WarmwasserSchemaCard extends HTMLElement {
         finally { this._model = model; }
       }
       const notice = this._savedLayout ? savedLayoutNotice(nextStatus, sprache(this._cfg, this._hass), !enabled) : '';
-      if (notice) html += `<div role="status" aria-live="polite" style="padding:8px 12px;color:var(--secondary-text-color)">${esc(notice)}</div>`;
+      if (notice) html += `<div role="status" aria-live="polite"${nextStatus?.status==='pending'?' data-layout-status':''} style="padding:8px 12px;color:var(--secondary-text-color)">${esc(notice)}</div>`;
       tpl.innerHTML = html;
       if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
       else this._box.replaceChildren(tpl.content);
@@ -4215,6 +4317,7 @@ const aufraeumen = (o) => {
 class WarmwasserSchemaCardEditor extends HTMLElement {
   // Draft state is private until the visual editor is ready for release.
   _beginLayoutDraft() {
+    cancelLayoutTextMeasurement(this);
     let initial;
     try { initial = snapshotLayout(Object.prototype.hasOwnProperty.call(this._config, 'layout') ? this._config.layout : { version: 2 }); }
     catch (_) { initial = null; }
@@ -4239,6 +4342,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _editLayoutDraft(layout, evaluate = true) {
+    cancelLayoutTextMeasurement(this);
     if (!this._layoutDraft) this._beginLayoutDraft();
     if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
     let next;
@@ -4251,6 +4355,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _undoLayoutDraft(evaluate = true) {
+    cancelLayoutTextMeasurement(this);
     if (!this._layoutDraft) return null;
     if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
     if (this._layoutDraft.index > 0) this._layoutDraft.index--;
@@ -4258,6 +4363,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _redoLayoutDraft(evaluate = true) {
+    cancelLayoutTextMeasurement(this);
     if (!this._layoutDraft) return null;
     if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
     if (this._layoutDraft.index + 1 < this._layoutDraft.history.length) this._layoutDraft.index++;
@@ -4265,6 +4371,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _rebindLayoutDraft() {
+    cancelLayoutTextMeasurement(this);
     if (!this._layoutDraft) return null;
     let current = null;
     try { current = JSON.stringify(this._config); } catch (_) {}
@@ -4292,6 +4399,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
+    cancelLayoutTextMeasurement(this);
     this._endLayoutDrag(true);
     // HA supplies no stable card ID. Never silently transfer an unsaved draft
     // to changed configuration, even if the card type happens to match.
@@ -4328,12 +4436,14 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   set hass(hass) {
+    const job=layoutTextMeasurementJobs.get(this),unchanged=!!job && layoutRelevantHassKey(job.card,hass)===job.hassKey;
+    if (job && !unchanged) cancelLayoutTextMeasurement(this);
     const first = !this._hass;
     this._hass = hass;
     if (this._forms) this._forms.forEach((f) => { f.hass = hass; });
     if (first && this._config) this._build();
-    else if (this._layoutPanel) this._refreshLayoutUI({ preserveFocusedInput: true });
-    this._refreshSavedLayoutNotice();
+    else if (this._layoutPanel && !unchanged) this._refreshLayoutUI({ preserveFocusedInput: true });
+    if (!unchanged) this._refreshSavedLayoutNotice();
   }
 
   _refreshSavedLayoutNotice() {
@@ -4552,6 +4662,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   disconnectedCallback() {
+    cancelLayoutTextMeasurement(this);
     this._endLayoutDrag(true);
     // An editor instance may be reattached to a different card without a
     // distinguishable setConfig call. Require explicit confirmation on reuse.
@@ -4722,6 +4833,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _refreshLayoutUI({ preserveFocusedInput = false } = {}) {
+    cancelLayoutTextMeasurement(this);
     const ui = this._layoutPanel;
     if (!ui || !this._layoutDraft) return;
     const state = this._layoutDraftState(true), checked = state;
@@ -4782,7 +4894,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       Object.keys(layout).every(key => ['version', 'components', 'ports'].includes(key)) &&
       ['components', 'ports'].every(key => layout[key] === undefined || (layoutObject(layout[key]) && Object.keys(layout[key]).length === 0));
     const neutralDefault = emptyDraft && ids.length > 0 && checked.status === 'unsupported' && checked.errors?.[0]?.code !== 'unsupported-configuration';
-    ui.status.textContent = checked.status === 'rendered-candidate' ? (de ? 'Entwurf geprüft' : 'Draft validated')
+    ui.status.textContent = checked.status === 'pending' ? (de ? 'Textprüfung läuft.' : 'Text validation is pending.')
+      : checked.status === 'rendered-candidate' ? (de ? 'Entwurf geprüft' : 'Draft validated')
       : checked.status === 'unbound' ? (de ? 'Die Konfiguration hat sich geändert. Entwurf für diese Karte bestätigen oder verwerfen.' : 'Configuration changed. Confirm this draft for this card or discard it.')
       : (neutralDefault || checked.errors?.[0]?.code === 'unmoved-candidate') ? (de ? 'Komponente bewegen, um einen Entwurf zu prüfen.' : 'Move a component to validate the draft.')
       : checked.errors?.[0]?.code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Vorschau.' : 'A current sensor value does not fit the preview.')
@@ -4806,6 +4919,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   _build() {
+    cancelLayoutTextMeasurement(this);
     this._endLayoutDrag(true);
     this._layoutResizeObserver?.disconnect();
     this._layoutResizeObserver = null;

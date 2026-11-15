@@ -143,6 +143,20 @@ test('preflight fails closed for invalid layout, missing state and live-label ov
   assert.equal(context.preflight(raw, { version: 2 }, hass).errors[0].code, 'unmoved-candidate');
 });
 
+test('visible volume text cannot be released without connected measurement and paint proof', () => {
+  for (const volume of ['W'.repeat(80),500]) {
+    const {raw,card}=fixture({speicher:{typ:'schicht',volumen:volume}});
+    const {x,y}=card._model.components.fm.origin;
+    const moved={version:2,components:{fm:{x:x+30,y:y+15}}};
+    const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};
+    const result=context.preflight(raw,moved,hass);
+    assert.equal(result.status,'unsupported');
+    assert.equal(result.errors[0].code,'text-measurement-unavailable');
+    assert.equal(result.html,undefined);
+    card._hass=hass;assert.ok(card._render().includes(String(volume)),'legacy rendering remains unchanged');
+  }
+});
+
 for (const thrown of [null, 'render error']) test(`preflight contains non-Error renderer throw ${JSON.stringify(thrown)}`, () => {
   const { raw, card } = fixture();
   const { x, y } = card._model.components.fm.origin;

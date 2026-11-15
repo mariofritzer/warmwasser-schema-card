@@ -1,0 +1,119 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const registry=new Map();
+const context={HTMLElement:class {},AbortController,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},console:{info(){}}};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8')+
+  '\nglobalThis.api={requestLayoutVolumeMeasurement,cancelLayoutTextMeasurement,preflightLayoutRender,prepareLayoutCandidate,setStage:fn=>{stageLegacyHeatingTextCandidate=fn;}};',context);
+const {requestLayoutVolumeMeasurement:request,cancelLayoutTextMeasurement:cancel,preflightLayoutRender:preflight,prepareLayoutCandidate:prepare,setStage}=context.api;
+function fixture(kind='card') {
+  const handlers=new Map(),mutations=[],resizes=[],calls=[];
+  const fonts={addEventListener:(n,f)=>handlers.set(n,f),removeEventListener:(n,f)=>{if(handlers.get(n)===f)handlers.delete(n);}};
+  class Mutation {constructor(fn){this.fn=fn;mutations.push(this);}observe(){}disconnect(){this.disconnected=true;}}
+  class Resize {constructor(fn){this.fn=fn;resizes.push(this);}observe(){}disconnect(){this.disconnected=true;}}
+  const view={AbortController,MutationObserver:Mutation,ResizeObserver:Resize};
+  const doc={fonts,defaultView:view,head:null,createElement:()=>({content:{querySelectorAll:()=>[{outerHTML:'<svg></svg>'}]},set innerHTML(v){doc.lastHTML=v;}})};
+  const host={isConnected:true,parentElement:null,ownerDocument:doc,getRootNode:()=>({}),getBoundingClientRect(){return {width:this.width,height:100};},width:200};
+  const root={host,querySelectorAll:()=>[]},parent={isConnected:true,ownerDocument:doc,getRootNode:()=>root};
+  const card=new (registry.get('warmwasser-schema-card'))();card.isConnected=true;card._cfg={sprache:'en'};card._ents=['sensor.a'];card._hass={language:'en',states:{}};card._box=parent;card._update=()=>{};card._layoutFeatureEnabled=()=>true;
+  const owner=kind==='card'?card:new (registry.get('warmwasser-schema-card-editor'))();
+  if(kind==='editor') {owner.isConnected=true;owner._config={};owner._hass=card._hass;owner._layoutPanel={previewRoot:parent,apply:{disabled:false},status:{textContent:''}};owner._layoutDraft={history:[{version:2}],index:0};}
+  setStage((_parent,_html,_key,_generation,_current,_reference,signal)=>new Promise(resolve=>{
+    calls.push({signal,resolve});signal.addEventListener('abort',()=>resolve({reason:'text-stage-invalidated'}),{once:true});
+  }));
+  return {owner,card,parent,host,doc,handlers,mutations,resizes,calls};
+}
+test('real Editor preflight of an unsafe volume becomes pending, never a rendered candidate',async()=>{
+  const f=fixture('editor'), raw={speicher:{typ:'schicht',volumen:'W'.repeat(80)},fm:{pumpe:'sensor.fm'}};
+  const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+  const {x,y}=c._model.components.fm.origin,layout={version:2,components:{fm:{x:x+30,y:y+15}}};
+  const hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};
+  f.owner._config=raw;f.owner._hass=hass;
+  const result=preflight(raw,layout,hass,f.owner);
+  assert.equal(result.status,'pending');assert.equal(result.html,undefined);
+  assert.ok(f.doc.lastHTML.includes('W'.repeat(80)),'the actual candidate was rendered for measurement');
+  await Promise.resolve();assert.equal(f.calls.length,1);
+  f.owner._editLayoutDraft({version:2,components:{}},false);
+  assert.equal(f.calls[0].signal.aborted,true);
+});
+test('real Card preparation stays pending and setConfig aborts it',async()=>{
+  const f=fixture(),raw={speicher:{typ:'schicht',volumen:'W'.repeat(80)},fm:{pumpe:'sensor.fm'}};
+  f.card.setConfig(raw);f.card._hass={language:'en',states:{'sensor.fm':{state:'on',attributes:{}}}};
+  const {x,y}=f.card._model.components.fm.origin,layout={version:2,components:{fm:{x:x+30,y:y+15}}};
+  const result=prepare(f.card,raw,layout,f.card);
+  assert.equal(result.status,'pending');assert.equal(result.html,undefined);
+  assert.ok(f.doc.lastHTML.includes('W'.repeat(80)));
+  await Promise.resolve();assert.equal(f.calls.length,1);
+  f.card.setConfig({...raw,titel:'changed'});
+  assert.equal(f.calls[0].signal.aborted,true);
+});
+test('shared pending state cancels on Card HA changes and never exposes HTML',async()=>{
+  const f=fixture();
+  assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  await Promise.resolve();assert.equal(f.calls.length,1);
+  f.owner.hass={language:'en',states:{'sensor.a':{state:'on'}}};
+  assert.equal(f.calls[0].signal.aborted,true);
+  assert.ok(f.mutations[0].disconnected && f.resizes[0].disconnected);
+  assert.equal(f.handlers.size,0);
+});
+test('irrelevant HA updates keep Card and Editor measurements alive',async()=>{
+  for(const kind of ['card','editor']) {
+    const f=fixture(kind);f.card._hass={language:'en',states:{'sensor.a':{state:'on',attributes:{}}}};
+    f.owner._hass=f.card._hass;
+    if(kind==='editor'){f.owner._refreshLayoutUI=()=>{};f.owner._refreshSavedLayoutNotice=()=>{};}
+    assert.equal(request(f.owner,f.card,'candidate').status,'pending');await Promise.resolve();
+    for(let i=0;i<5;i++)f.owner.hass={language:'en',states:{'sensor.a':{state:'on',attributes:{}},'sensor.other':{state:String(i)}}};
+    assert.equal(f.calls[0].signal.aborted,false,kind);
+    assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+    await Promise.resolve();assert.equal(f.calls.length,1,kind);
+    f.owner.hass={language:'en',states:{'sensor.a':{state:'off',attributes:{}}}};
+    assert.equal(f.calls[0].signal.aborted,true,kind);
+  }
+});
+test('Editor draft, disconnect, font, theme and viewport changes abort pending work',async()=>{
+  for(const reason of ['draft','disconnect','font','theme','viewport']) {
+    const f=fixture('editor');assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+    await Promise.resolve();const signal=f.calls[0].signal;
+    if(reason==='draft')f.owner._editLayoutDraft({version:2,components:{}},false);
+    if(reason==='disconnect')f.owner.disconnectedCallback();
+    if(reason==='font')f.handlers.get('loading')();
+    if(reason==='theme')f.mutations[0].fn([]);
+    if(reason==='viewport'){f.resizes[0].fn([]);assert.equal(signal.aborted,false);f.host.width++;f.resizes[0].fn([]);}
+    assert.equal(signal.aborted,true,reason);
+    assert.ok(f.mutations[0].disconnected && f.resizes[0].disconnected,reason);
+    assert.equal(f.owner._layoutPanel.apply.disabled,true,reason);
+  }
+});
+test('a completed measurement stays unsupported and is never reused',async()=>{
+  const f=fixture('editor');assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  await Promise.resolve();f.calls[0].resolve({reason:'text-stage-style-and-paint-validation-required'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(f.owner._layoutPanel.status.textContent,/not complete/);
+  assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  await Promise.resolve();assert.equal(f.calls.length,2);
+  cancel(f.owner);
+});
+test('in-place HA mutation discards the pending result and cleans observers',async()=>{
+  const f=fixture('editor');f.owner._hass.states['sensor.a']={state:'1'};
+  assert.equal(request(f.owner,f.card,'candidate').status,'pending');
+  await Promise.resolve();f.owner._hass.states['sensor.a'].state='2';
+  f.calls[0].resolve({reason:'text-stage-style-and-paint-validation-required'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.calls[0].signal.aborted,true);
+  assert.ok(f.mutations[0].disconnected && f.resizes[0].disconnected);
+  assert.equal(f.owner._layoutPanel.apply.disabled,true);
+});
+test('a stale observer callback cannot cancel a newer generation',async()=>{
+  const f=fixture('editor');
+  assert.equal(request(f.owner,f.card,'first').status,'pending');await Promise.resolve();
+  const stale=f.mutations[0].fn;
+  assert.equal(request(f.owner,f.card,'second').status,'pending');await Promise.resolve();
+  assert.equal(f.calls[0].signal.aborted,true);
+  assert.equal(f.calls[1].signal.aborted,false);
+  stale([]);
+  assert.equal(f.calls[1].signal.aborted,false);
+  cancel(f.owner);
+});

@@ -159,6 +159,13 @@ test('staging discards stale generations after fonts resolve and cleans up',asyn
   assert.equal((await pending).reason,'text-stage-invalidated');
   assert.equal(f.removed(),true);
 });
+test('aborting a pending font wait removes staging without waiting for fonts',async()=>{
+  const f=stagingFixture(), controller=new AbortController();
+  const pending=stage(f.parent,'<svg></svg>','theme-1',1,()=>true,undefined,controller.signal);
+  controller.abort();
+  assert.equal((await pending).reason,'text-stage-invalidated');
+  assert.equal(f.removed(),true);
+});
 test('staging discards a reparented candidate and removes the owned SVG',async()=>{
   const f=stagingFixture(); let svgRemoved=false;
   f.svg.remove=()=>{svgRemoved=true;f.svg.isConnected=false;};
