@@ -7,3 +7,5 @@ Click FM or WP in the diagram to select it, drag that device with a mouse or tou
 Click **Run smoke checks** to exercise the pointer overlay, candidate preview, undo/redo, synchronous configuration echo, live fallback/recovery, and reload. The overlay check verifies its size and touch-action; it does not synthesize trusted mouse or touch gestures, so exercise dragging manually. Appending `?smoke=1` runs the same checks on load. The harness is an isolated browser test, not a substitute for testing inside Home Assistant.
 
 If the configuration changes while a draft is pending, Apply is blocked until you explicitly continue with that draft on the current card or discard it. An invalid position is shown as a dashed “Unchecked” marker over the canonical diagram; it is not a validated route.
+
+The **Load separated tank fixture** button loads a guarded FM/WP example with the tank connector pair on the left and the FM pair on the right. The port controls apply to each pair together. Try Standard, Auto, Left, and Right; only configurations whose full pipe batch passes validation can be applied.

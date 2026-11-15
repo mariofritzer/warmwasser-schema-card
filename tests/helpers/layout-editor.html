@@ -18,6 +18,7 @@
   <p>Test instance only. The normal editor and card gates remain closed. Mock entities are local to this page.</p>
   <div class="actions">
     <button id="reset">Reset fixture</button>
+    <button id="separated">Load separated tank fixture</button>
     <button id="temperature">Toggle FM label overflow</button>
     <button id="wp">Disable / restore WP</button>
     <button id="smoke">Run smoke checks</button>
@@ -58,6 +59,15 @@
         hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.temp': { state: '42' }, 'sensor.wp': { state: 'on' } } };
         output.textContent = 'No event yet'; result.textContent = '';
         install(fixture());
+      }
+      function separated() {
+        enabledWp = true;
+        hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.temp': { state: '42' }, 'sensor.wp': { state: 'on' } } };
+        const next = fixture(); next.speicher.typ = 'getrennt';
+        next.layout = { version: 2, components: { fm: { x: -110, y: 14 } },
+          ports: { 'tank.fm-supply': { mode: 'manual', side: 'left' }, 'tank.fm-return': { mode: 'manual', side: 'left' },
+            'fm.supply': { mode: 'manual', side: 'right' }, 'fm.return': { mode: 'manual', side: 'right' } } };
+        output.textContent = 'No event yet'; result.textContent = ''; install(next);
       }
       function temperature() {
         const states = { ...hass.states, 'sensor.temp': { state: hass.states['sensor.temp'].state === '42' ? '1000000000' : '42' } };
@@ -102,10 +112,11 @@
         return checks;
       }
       document.getElementById('reset').addEventListener('click', reset);
+      document.getElementById('separated').addEventListener('click', separated);
       document.getElementById('temperature').addEventListener('click', temperature);
       document.getElementById('wp').addEventListener('click', wp);
       document.getElementById('smoke').addEventListener('click', smoke);
-      window.layoutHarness = { reset, temperature, wp, smoke, get editor() { return editor; }, get config() { return copy(config); } };
+      window.layoutHarness = { reset, separated, temperature, wp, smoke, get editor() { return editor; }, get config() { return copy(config); } };
       reset();
       if (new URLSearchParams(location.search).has('smoke')) smoke();
     })();

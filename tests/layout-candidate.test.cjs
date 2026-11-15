@@ -235,3 +235,110 @@ test('port contracts use the same routed preflight and leave legacy output uncha
   assert.equal(context.preflight(raw, base, hass).html, context.preflight(raw, portLayout, hass).html);
   assert.equal(card._render(), legacy);
 });
+
+test('separated FM/WP alternate connector pairs render the entire seven-path batch', () => {
+  const { raw, card, resolve } = fixture({ speicher: { typ: 'getrennt' }, wp: { betrieb: 'sensor.wp', ventil: 'sensor.valve' } });
+  const layout = { version: 2, components: { fm: { x: -110, y: 14 } },
+    ports: { 'tank.fm-supply': { mode: 'manual', side: 'left' }, 'fm.supply': { mode: 'manual', side: 'right' } } };
+  const before = JSON.stringify({ raw, config: card._cfg, model: card._model, layout });
+  const result = resolve(layout), hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  assert.equal(result.status, 'candidate', JSON.stringify(result.errors)); assert.equal(Object.keys(result.routes).length, 7);
+  for (const [id, names, side] of [['hot-tank', ['fm-supply', 'fm-return'], 'left'], ['fm', ['supply', 'return'], 'right']]) {
+    const component = result.model.components[id];
+    for (const name of names) {
+      const port = component.ports[name]; assert.equal(port.direction, side); assert.equal(port.effectiveSide, side);
+      assert.ok(component.routingAreas.some(area => JSON.stringify(area) === JSON.stringify(port.stub)));
+    }
+  }
+  const rendered = context.preflight(raw, layout, hass);
+  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
+  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2'])
+    assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+  const [, vx, vy, vw, vh] = rendered.html.match(/viewBox="([^ ]+) ([^ ]+) ([^ ]+) ([^"]+)"/).map(Number);
+  for (const route of Object.values(result.routes)) for (const p of route.points) {
+    assert.ok(p.x - 16 >= vx && p.x + 16 <= vx + vw); assert.ok(p.y - 16 >= vy && p.y + 16 <= vy + vh);
+  }
+  assert.equal(JSON.stringify({ raw, config: card._cfg, model: card._model, layout }), before);
+});
+
+test('separated connector auto is deterministic; conflict, collisions and unsupported equipment fail closed', () => {
+  const { raw, card, resolve } = fixture({ speicher: { typ: 'getrennt' }, wp: { betrieb: 'sensor.wp' } });
+  const layout = { version: 2, components: { fm: { x: -110, y: 14 } },
+    ports: { 'tank.fm-supply': { mode: 'auto' }, 'fm.supply': { mode: 'auto' } } };
+  const a = resolve(layout), b = resolve(layout);
+  assert.equal(a.status, 'candidate', JSON.stringify(a.errors)); assert.equal(JSON.stringify(a.routes), JSON.stringify(b.routes));
+  assert.equal(a.model.components.fm.ports.supply.effectiveSide, 'right');
+  const conflict = resolve({ ...layout, ports: { 'fm.supply': { mode: 'manual', side: 'left' }, 'fm.return': { mode: 'manual', side: 'right' } } });
+  assert.equal(conflict.status, 'invalid'); assert.equal(conflict.errors[0].code, 'paired-port-side-conflict');
+  const blocked = resolve({ ...layout, components: { fm: { x: 72, y: 14 } } });
+  assert.equal(blocked.status, 'unsupported'); assert.equal(blocked.model, undefined);
+  const unsupported = fixture({ speicher: { typ: 'getrennt' }, solar: { pumpe: 'sensor.solar' } }).resolve(layout);
+  assert.equal(unsupported.status, 'unsupported');
+  const sideOnly = { version: 2, ports: { 'tank.fm-supply': { mode: 'manual', side: 'left' }, 'fm.supply': { mode: 'manual', side: 'right' } } };
+  const r = context.preflight(raw, sideOnly, { language: 'en', states: {} });
+  assert.equal(r.status, 'unsupported'); assert.notEqual(r.errors[0].code, 'unmoved-candidate');
+  assert.equal(card._model.layoutSeparatedPreview, undefined);
+});
+
+test('separated inactive WP layout survives disable and applies on re-enable', () => {
+  const enabled = fixture({ speicher: { typ: 'getrennt' }, wp: { betrieb: 'sensor.wp' } });
+  const disabled = fixture({ speicher: { typ: 'getrennt' }, wp: {} });
+  const layout = { version: 2, components: { fm: { x: -110, y: 14 }, wp: { x: 330, y: 150 } },
+    ports: { 'tank.fm-supply': { mode: 'manual', side: 'left' }, 'fm.supply': { mode: 'manual', side: 'right' },
+      'wp.upper-supply': { mode: 'manual', side: 'top' } } };
+  const before = JSON.stringify(layout), inactive = disabled.resolve(layout), active = enabled.resolve(layout);
+  assert.equal(inactive.status, 'candidate', JSON.stringify(inactive.errors));
+  assert.equal(inactive.inactive.length, 2); assert.equal(Object.keys(inactive.routes).length, 2);
+  assert.equal(active.status, 'candidate', JSON.stringify(active.errors));
+  assert.equal(active.model.components.wp.origin.x, 330); assert.equal(Object.keys(active.routes).length, 7);
+  assert.equal(JSON.stringify(layout), before);
+});
+
+for (const [angle, dx, dy, upper] of [[90, 0, 0, 'right'], [180, 0, 100, 'left'], [270, -150, 200, 'left']]) test(`separated valve ${angle}° rotates ports, bounds and rendered symbol with seven paths`, () => {
+  const { raw, card, resolve } = fixture({ speicher: { typ: 'getrennt' }, wp: { betrieb: 'sensor.wp', ventil: 'sensor.valve' } });
+  const v = card._model.components.valve, before = JSON.stringify({ raw, model: card._model });
+  const layout = { version: 2, components: { fm: { x: 400, y: 29 }, valve: { x: v.origin.x + dx, y: v.origin.y + dy, rotation: angle } },
+    ports: { 'tank.wp-supply': { mode: 'manual', side: upper } } };
+  const result = resolve(layout), rendered = context.preflight(raw, layout, { language: 'en', states: {} });
+  assert.equal(result.status, 'candidate', JSON.stringify(result.errors)); assert.equal(Object.keys(result.routes).length, 7);
+  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
+  const rotated = result.model.components.valve;
+  assert.equal(rotated.ports.wp.role, v.ports.wp.role); assert.equal(rotated.ports.upper.role, v.ports.upper.role);
+  if (angle === 90 || angle === 270) { assert.equal(rotated.bounds.width, 28); assert.equal(rotated.bounds.height, 49); }
+  assert.ok(rendered.html.includes(`rotate(${angle} ${rotated.origin.x + 34} ${rotated.origin.y + 14})`));
+  assert.ok(rendered.html.includes(`rotate(${-angle} ${rotated.origin.x + 8} ${rotated.origin.y + 14})`));
+  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2']) assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+  assert.equal(JSON.stringify({ raw, model: card._model }), before);
+});
+
+for (const [name, layout] of [
+  ['upper tank', { components: { fm: { x: 400, y: 29 }, valve: { x: 228, y: 368.5, rotation: 180 } }, ports: { 'tank.wp-supply': { mode: 'manual', side: 'left' } } }],
+  ['buffer', { components: { fm: { x: 400, y: 29 }, wp: { x: -110, y: 232 }, valve: { x: 277, y: 187, rotation: 0 } }, ports: { 'buffer.lower-supply': { mode: 'manual', side: 'left' }, 'tank.fm-supply': { mode: 'auto' }, 'fm.supply': { mode: 'auto' } } }],
+  ['heat pump', { components: { fm: { x: 400, y: 29 }, wp: { x: -233, y: 254 }, valve: { x: 272, y: 376, rotation: 90 } }, ports: { 'wp.lower-supply': { mode: 'manual', side: 'right' }, 'tank.fm-supply': { mode: 'auto' }, 'fm.supply': { mode: 'auto' } } }],
+]) test(`separated ${name} mirrored port group passes complete routed render`, () => {
+  const { raw, card, resolve } = fixture({ speicher: { typ: 'getrennt' }, wp: { betrieb: 'sensor.wp', ventil: 'sensor.valve' } });
+  const full = { version: 2, ...layout }, result = resolve(full);
+  assert.equal(result.status, 'candidate', JSON.stringify(result.errors)); assert.equal(Object.keys(result.routes).length, 7);
+  const rendered = context.preflight(raw, full, { language: 'en', states: {} });
+  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
+  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2']) assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+  if (name === 'heat pump') {
+    const before = card._model.components.wp.ports['upper-supply'], after = result.model.components.wp.ports['upper-supply'];
+    assert.equal(after.direction, 'top'); assert.equal(after.x, result.model.components.wp.bounds.width - before.x);
+    assert.equal(result.model.components.wp.ports.return.direction, 'right');
+  }
+});
+
+test('stored WP and valve placement survives disabled WP and tank type round trip', () => {
+  const raw = { speicher: { typ: 'getrennt' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' },
+    layout: { version: 2, components: { fm: { x: 400, y: 29 }, wp: { x: 330, y: 150 }, valve: { x: 228, y: 268.5, rotation: 90 } } } };
+  const before = JSON.stringify(raw.layout), card = new Card();
+  card.setConfig(raw); card.setConfig({ ...raw, wp: {} });
+  assert.equal(JSON.stringify(card._cfg.layout), before);
+  card.setConfig({ ...raw, wp: {}, speicher: { typ: 'schicht' } });
+  assert.equal(JSON.stringify(card._cfg.layout), before);
+  card.setConfig(raw); assert.equal(JSON.stringify(card._cfg.layout), before);
+  const result = context.resolve(raw, card._cfg, card._cfg.layout);
+  assert.equal(result.status, 'candidate', JSON.stringify(result.errors));
+  assert.equal(result.model.components.wp.origin.x, 330); assert.equal(result.model.layoutValveRotation, 90);
+});

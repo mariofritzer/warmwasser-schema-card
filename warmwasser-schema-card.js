@@ -683,7 +683,7 @@ function diagramPortGeometry(model, reference) {
   const [id, name] = reference.split('.'), component = model.components[id];
   const port = component && component.ports[name];
   if (!port) throw new Error(`Unknown port: ${reference}`);
-  return { anchor, stub: port.stub ? diagramStub(model, reference) : null, side: port.canonicalSide || null };
+  return { anchor, stub: port.stub ? diagramStub(model, reference) : null, side: port.effectiveSide || port.canonicalSide || null };
 }
 
 // clearance is the TOTAL obstacle inflation radius, including any stroke allowance.
@@ -1157,17 +1157,22 @@ function resolveLegacyWpHeatingIncidences(model) {
   try {
     const { components:c, connections:e, junctions:j } = model;
     const allowed = new Set(['tank','tank-feet','wp','valve','manifolds','heating-circuit-0']);
+    const pump=!!c['heating-pump-0']; if (pump) allowed.add('heating-pump-0');
     if (Object.keys(c).some(id => !allowed.has(id)) || [...allowed].some(id => !c[id])) return unsupported();
     const specs = {
       'wp-lower-supply':['wp.lower-supply','tank.lower-supply',['supply-tee']],
       'wp-lower-return':['tank.lower-return','valve.lower',['return-tee']],
       'hk-supply':['supply-tee','manifold-primary-supply',[]],
       'hk-return':['manifold-primary-return','return-tee',[]],
-      'heating-supply-0':['manifold-supply-0','heating-circuit-0.supply',[]],
+      'heating-supply-0':['manifold-supply-0',pump?'heating-pump-0.in':'heating-circuit-0.supply',[]],
       'heating-return-0':['heating-circuit-0.return','manifold-return-0',[]],
       'manifold-supply':['manifolds.supply-left','manifolds.supply-right',['manifold-supply-0','manifold-primary-supply']],
       'manifold-return':['manifolds.return-left','manifolds.return-right',['manifold-return-0','manifold-primary-return']]
     };
+    if (pump) {
+      specs['heating-pump-through-0']=['heating-pump-0.in','heating-pump-0.out',[]];
+      specs['heating-pump-out-0']=['heating-pump-0.out','heating-circuit-0.supply',[]];
+    }
     const ids = ['supply-tee','return-tee','manifold-primary-supply','manifold-primary-return','manifold-supply-0','manifold-return-0'];
     // diagramPort resolves junctions before ports; extra keys could shadow a
     // port reference and invalidate the directions inferred below.
@@ -1188,6 +1193,11 @@ function resolveLegacyWpHeatingIncidences(model) {
     const ws=port('wp.lower-supply'), ts=port('tank.lower-supply'), tr=port('tank.lower-return'), vr=port('valve.lower');
     const sl=port('manifolds.supply-left'), sr=port('manifolds.supply-right'), rl=port('manifolds.return-left'), rr=port('manifolds.return-right');
     const hs=port('heating-circuit-0.supply'), hr=port('heating-circuit-0.return');
+    if (pump) {
+      const unit=c['heating-pump-0'], pin=port('heating-pump-0.in'), pout=port('heating-pump-0.out');
+      if (unit.parent!=='heating-circuit-0' || unit.bounds.x!==0 || unit.bounds.y!==0 || unit.bounds.width!==20 || unit.bounds.height!==20 ||
+          pin.x!==hs.x || pout.x!==hs.x || pin.y!==hs.y-44 || pout.y!==hs.y-24) return unsupported();
+    }
     // The renderer's fixed bends and bridges place local legs on these axes.
     if (!(s.x===295 && r.x===240 && ps.x===295 && pr.x===312 && ws.y===s.y && ts.y===s.y && tr.y===r.y &&
       ws.x>s.x && ts.x<254 && tr.x<r.x && vr.x===262 && r.y>vr.y && s.y<model.geometry.ym-9 && ps.y>399 && pr.y>381 && r.y<348 &&
@@ -1462,6 +1472,12 @@ function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localB
     const box={id,x:o.x+b.x,y:o.y+b.y,width:b.width,height:b.height};
     if (![box.x,box.y,box.x+box.width,box.y+box.height].every(Number.isFinite)) return unsupported('invalid-model-body');
     bodies.push(box);
+  }
+  if (model.components['heating-pump-0']) {
+    const halo=resolveHeatingGeometry(model).bodies.find(b=>b.owner==='heating-pump-0');
+    if (!halo || ![halo.x,halo.y,halo.width,halo.height,halo.x+halo.width,halo.y+halo.height].every(Number.isFinite))
+      return unsupported('invalid-model-body');
+    bodies.push({id:'heating-pump-0',x:halo.x,y:halo.y,width:halo.width,height:halo.height});
   }
   // These are the seven `stub(...)` calls visible in this narrow WP+1HK
   // configuration. The .wk stroke extends 0.4px on every side.
@@ -1858,6 +1874,7 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
   const ordinary = ['wp-upper-supply','wp-upper-return','wp-valve-return',
     'wp-lower-supply','wp-lower-return','hk-supply','hk-return',
     'heating-supply-0','heating-return-0'];
+  if (model && model.components && model.components['heating-pump-0']) ordinary.push('heating-pump-through-0','heating-pump-out-0');
   const rails = ['manifold-return','manifold-supply'];
   const incidence = resolveLegacyWpHeatingIncidences(model);
   if (incidence.status !== 'resolved') return unsupported('unproven-geometry');
@@ -1866,6 +1883,7 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
     if (keys.length !== ordinary.length + rails.length || keys.some(id => !ordinary.includes(id) && !rails.includes(id)))
       return unsupported('unproven-connection-inventory');
     if (keys.some(id => model.connections[id].routingPolicy !== (rails.includes(id) ? 'manifold-rail'
+      : id==='heating-pump-through-0' ? 'pump-through'
       : id.startsWith('wp-') ? 'external' : 'fixed'))) return unsupported('unproven-connection-inventory');
     const upper = {
       'wp-upper-supply':['wp.upper-supply','tank.wp-supply'],
@@ -1884,6 +1902,10 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
       'tank.lower-return':['right','return'], 'valve.lower':['bottom','return'],
       'heating-circuit-0.supply':['top','supply'], 'heating-circuit-0.return':['top','return']
     };
+    if (model.components['heating-pump-0']) {
+      upperPorts['heating-pump-0.in']=['top','supply'];
+      upperPorts['heating-pump-0.out']=['bottom','supply'];
+    }
     if (Object.entries(upperPorts).some(([ref,[direction,role]]) => {
       const [id,name] = ref.split('.'), c = model.components[id], p = c && c.ports[name];
       const b=c && c.bounds;
@@ -1925,6 +1947,11 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
     for (const id of ordinary) {
       const {from,to}=model.connections[id];
       const route=routes.find(r => r.id===id), points=route.points;
+      if (id==='heating-pump-through-0') {
+        if (points.length!==2 || points[0].x!==points[1].x || points[0].y>=points[1].y)
+          return unsupported('unproven-pump-through');
+        continue;
+      }
       if (points.length<2 || (upperPorts[from] && !outward(points[0],points[1],upperPorts[from][0])) ||
           (upperPorts[to] && !outward(points.at(-1),points.at(-2),upperPorts[to][0])))
         return unsupported('unproven-port-escape');
@@ -1945,6 +1972,174 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
     if (decorations.reason!=='heating-decorations-and-paint-validation-required') return decorations;
     return {...decorations,inventory:{ordinary:[...ordinary],rails:[...rails]},localBridge:checked.localBridge};
   } catch (_) { return unsupported('unproven-connection-inventory'); }
+}
+
+const heatingAnimationStateProvenance=new WeakMap();
+// Reuse the same state derivation as the card; this is not a parallel
+// interpretation of HA sensor strings, valve inversion or pump thresholds.
+function deriveLegacyWpHeatingAnimationState(card) {
+  const unsupported=reason=>({status:'unsupported',reason});
+  try {
+    const c=card && card._cfg,h=card && card._hass,model=card && card._model;
+    if (!c || !h || !model || !c.wp || !Array.isArray(c.heizkreise) || c.heizkreise.length!==1 ||
+        c.heizkreise[0].mischer || c.verteiler || c.weiche ||
+        !!c.heizkreise[0].pumpe!==!!model.components['heating-pump-0'] ||
+        resolveLegacyWpHeatingIncidences(model).status!=='resolved')
+      return unsupported('animation-state-unsupported');
+    const configSnapshot=JSON.stringify(c),stateSnapshot=JSON.stringify([h.language,h.states]), F=c.farben,L=T[sprache(c,h)];
+    const {S,U,ON,NUM}=sensorReader(h),pump=heatPumpState(c,L,F,S,ON,NUM);
+    const position=model.components['heating-circuit-0'].origin.x+22;
+    const heating=heatingCircuitState(c,[position],L,S,U,ON,NUM,pump.CW,pump.CK);
+    const value=Object.freeze({wpOn:!!pump.wp_on,wpUpper:!!pump.wpO,wpLower:!!pump.wpU,
+      circuitOn:!!heating.hks[0].on,hkFlow:heating.hk_fl,upperDuration:pump.tO,lowerDuration:pump.tU});
+    heatingAnimationStateProvenance.set(value,{card,model,configSnapshot,stateSnapshot});
+    return value;
+  } catch (_) { return unsupported('animation-state-unsupported'); }
+}
+
+// Reverse only the compiler's explicit M/L/Q/A grammar, retaining the same
+// quadratic control point and reversing the sweep of every circular bridge.
+function reverseCompiledAnimationPath(path) {
+  if (typeof path!=='string' || !path) return null;
+  const pieces=[...path.matchAll(/([MLQA])([^MLQA]*)/g)];
+  if (!pieces.length || pieces.map(p=>p[0]).join('')!==path || pieces[0][1]!=='M') return null;
+  const segments=[]; let current=null;
+  for (let i=0;i<pieces.length;i++) {
+    const command=pieces[i][1], raw=pieces[i][2].trim();
+    if (!raw) return null;
+    const values=raw.split(/\s+/).map(Number), expected={M:2,L:2,Q:4,A:7}[command];
+    if (values.length!==expected || !values.every(Number.isFinite) || (command==='M' && i!==0)) return null;
+    if (command==='M') {current={x:values[0],y:values[1]};continue;}
+    if (!current) return null;
+    if (command==='A' && (values[0]<=0 || values[0]!==values[1] || values[2]!==0 || values[3]!==0 || ![0,1].includes(values[4]))) return null;
+    const next={x:values.at(-2),y:values.at(-1)};
+    segments.push({command,values,from:current});current=next;
+  }
+  if (!current || !segments.length) return null;
+  let reversed=`M${current.x} ${current.y}`;
+  for (const s of segments.reverse()) {
+    if (s.command==='L') reversed+=`L${s.from.x} ${s.from.y}`;
+    else if (s.command==='Q') reversed+=`Q${s.values[0]} ${s.values[1]} ${s.from.x} ${s.from.y}`;
+    else reversed+=`A${s.values[0]} ${s.values[1]} 0 0 ${1-s.values[4]} ${s.from.x} ${s.from.y}`;
+  }
+  return reversed;
+}
+
+// Internal state-to-animation prototype for the validated one-circuit model.
+function planLegacyWpHeatingAnimations(model,routes,options,state) {
+  const unsupported=reason=>({status:'unsupported',reason});
+  try {
+    const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options);
+    if (proof.reason!=='heating-decorations-and-paint-validation-required') return proof;
+    // The three pump pieces must share one uninterrupted dash phase underneath
+    // the pump symbol; this phase contract is not yet established.
+    if (model.components['heating-pump-0']) return unsupported('pump-animation-phase-unproven');
+    const provenance=state && heatingAnimationStateProvenance.get(state);
+    if (!provenance || provenance.model!==model || provenance.card._model!==model ||
+        JSON.stringify(provenance.card._cfg)!==provenance.configSnapshot ||
+        JSON.stringify([provenance.card._hass.language,provenance.card._hass.states])!==provenance.stateSnapshot)
+      return unsupported('animation-state-unsupported');
+    const compiled=compileDirectedJunctionBatch(routes,options);
+    if (compiled.status!=='routed') return compiled;
+    const owner=compiled.routes[proof.localBridge.owner], source=routes.find(r=>r.id===proof.localBridge.owner);
+    if (!owner || owner.crossings.length || !source || source.points.length!==2) return unsupported('preview-bridge-composition-required');
+    const {point:p,radius}=proof.localBridge,first=source.points[0],last=source.points[1];
+    const ownerPath=`M${first.x} ${first.y}L${p.x} ${p.y-radius}A${radius} ${radius} 0 0 1 ${p.x} ${p.y+radius}L${last.x} ${last.y}`;
+    const split=(id,ref,part)=>{
+      const route=routes.find(r=>r.id===id),node=route.nodes.find(n=>n.ref===ref),path=compiled.routes[id].path;
+      if (!node) return null;
+      const marker=`L${node.x} ${node.y}`,i=path.indexOf(marker);
+      if (i<0 || path.indexOf(marker,i+1)>=0 || (path[i+marker.length] && !/[LQA]/.test(path[i+marker.length]))) return null;
+      return part==='before' ? path.slice(0,i+marker.length) : `M${node.x} ${node.y}${path.slice(i+marker.length)}`;
+    };
+    const partialSupply=reverseCompiledAnimationPath(split('wp-lower-supply','supply-tee','after'));
+    const partialReturn=reverseCompiledAnimationPath(split('wp-lower-return','return-tee','before'));
+    if (!partialSupply || !partialReturn) return unsupported('animation-partial-path-unavailable');
+    const {wpUpper,wpLower,upperDuration,lowerDuration,hkFlow}=state,
+      hkDuration=1/Math.max(hkFlow,0.04), plan={};
+    if (![hkFlow,upperDuration,lowerDuration,hkDuration].every(Number.isFinite) || hkFlow!==(state.circuitOn?1:0) ||
+        upperDuration<1 || upperDuration>25 || lowerDuration<1 || lowerDuration>25)
+      return unsupported('animation-state-unsupported');
+    const set=(id,active,duration,path=compiled.routes[id].path)=>{plan[id]=active?{path,duration}:null;};
+    set('wp-upper-supply',wpUpper,upperDuration);
+    set('wp-upper-return',wpUpper,upperDuration);
+    set('wp-lower-supply',wpLower || state.circuitOn,wpLower?lowerDuration:hkDuration,wpLower?compiled.routes['wp-lower-supply'].path:partialSupply);
+    set('wp-lower-return',wpLower || state.circuitOn,wpLower?lowerDuration:hkDuration,wpLower?compiled.routes['wp-lower-return'].path:partialReturn);
+    set('wp-valve-return',state.wpOn,1);
+    set('hk-supply',hkFlow>0.04,hkDuration);
+    set('hk-return',hkFlow>0.04,hkDuration);
+    set('heating-supply-0',state.circuitOn,1,ownerPath);
+    set('heating-return-0',state.circuitOn,1);
+    for (const [id,from,to] of [['manifold-return','manifold-return-0','manifold-primary-return'],['manifold-supply','manifold-primary-supply','manifold-supply-0']]) {
+      const a=model.junctions[from],b=model.junctions[to];
+      plan[id]=state.circuitOn?{path:`M${a.x} ${a.y}H${b.x}`,duration:hkDuration}:null;
+    }
+    return {status:'unsupported',reason:'animation-plan-paint-validation-required',plan};
+  } catch (_) { return unsupported('animation-plan-unavailable'); }
+}
+
+// Internal synthetic preview only: each requested animation covers the whole
+// path with a fixed duration. Real state must not use these synthetic flags.
+function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,colours,mode) {
+  const unsupported=reason=>({status:'unsupported',reason});
+  try {
+    if (!['synthetic-full-route','operational-preview'].includes(mode)) return unsupported('synthetic-preview-opt-in-required');
+    const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options);
+    if (proof.reason!=='heating-decorations-and-paint-validation-required') return proof;
+    if (model.components['heating-pump-0']) return unsupported('pump-animation-phase-unproven');
+    const ids=proof.inventory.ordinary, railIds=proof.inventory.rails;
+    if (mode==='synthetic-full-route' && (!syntheticFlow || typeof syntheticFlow!=='object' || Array.isArray(syntheticFlow) || Object.keys(syntheticFlow).length!==ids.length+railIds.length ||
+        [...ids,...railIds].some(id=>!Object.hasOwn(syntheticFlow,id) || typeof syntheticFlow[id]!=='boolean')))
+      return unsupported('invalid-preview-flow');
+    if (!colours || typeof colours!=='object' || Array.isArray(colours) ||
+        Object.keys(colours).some(k=>!['supply','return'].includes(k)) ||
+        ![colours.supply,colours.return].every(c=>typeof c==='string' && /^#[0-9a-f]{6}$/i.test(c)))
+      return unsupported('invalid-preview-colour');
+    const prepared=prepareLegacyWpHeatingRails(model,options), compiled=compileDirectedJunctionBatch(routes,options);
+    if (compiled.status!=='routed') return compiled;
+    const operational=mode==='operational-preview'?planLegacyWpHeatingAnimations(model,routes,options,syntheticFlow):null;
+    if (operational && operational.reason!=='animation-plan-paint-validation-required') return operational;
+    if (routes.some(route=>route.role!==(route.id.includes('supply')?'supply':'neutral')))
+      return unsupported('invalid-preview-role');
+    const owner=compiled.routes[proof.localBridge.owner], source=routes.find(r=>r.id===proof.localBridge.owner);
+    // This construction replaces the owner's straight segment with A11.
+    // A second ordinary crossing on it would require a joint path compiler.
+    if (!owner || !source || owner.crossings.length || source.points.length!==2)
+      return unsupported('preview-bridge-composition-required');
+    const {point:p,radius}=proof.localBridge, start=source.points[0],end=source.points[1];
+    const a11=`M${start.x} ${start.y}L${p.x} ${p.y-radius}A${radius} ${radius} 0 0 1 ${p.x} ${p.y+radius}L${end.x} ${end.y}`;
+    const animation=(id,defaultPath)=>{
+      const part=operational?operational.plan[id]:(syntheticFlow[id]?{path:defaultPath,duration:1}:null);
+      if (!part) return '';
+      const duration=Math.round(part.duration*100)/100;
+      return `<path d="${part.path}" class="w3"${duration!==1?` style="animation-duration:${duration}s"`:''}/>`;
+    };
+    const layers=(id,d,colour)=>`<g data-preview-route="${id}"><path d="${d}" class="w0"/><path d="${d}" class="w1" style="stroke:${colour}"/><path d="${d}" class="w2"/>`+
+      animation(id,d)+'</g>';
+    const railFragment=id=>{
+      const rail=prepared.rails.find(r=>r.id===id), a=rail.nodes[0],b=rail.nodes.at(-1);
+      const d=`M${a.x} ${a.y}H${b.x}`, colour=id==='manifold-supply'?colours.supply:colours.return;
+      const startNode=rail.nodes.find(n=>n.ref===(id==='manifold-supply'?'manifold-supply-0':'manifold-return-0'));
+      const primary=rail.nodes.find(n=>n.ref===(id==='manifold-supply'?'manifold-primary-supply':'manifold-primary-return'));
+      const from=id==='manifold-supply'?primary:startNode, to=id==='manifold-supply'?startNode:primary;
+      return `<g data-preview-rail="${id}"><path d="${d}" stroke="#000" stroke-opacity=".35" stroke-width="18"/><path d="${d}" stroke="${colour}" stroke-width="14"/>`+
+        `<path d="M${a.x} ${a.y-3}H${b.x}" stroke="#fff" stroke-opacity=".25" stroke-width="3"/>`+
+        `<rect x="${a.x-5}" y="${a.y-10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${b.x}" y="${b.y-10}" width="5" height="20" rx="1.5" class="wk"/>`+
+        animation(id,`M${from.x} ${from.y}H${to.x}`)+'</g>';
+    };
+    let fragment=''; const paintOrder=[];
+    for (const id of compiled.paintOrder) {
+      // The legacy return rail paints after its return branches and before
+      // the A11 owner; the supply rail paints after the supply branch.
+      if (id===proof.localBridge.owner) { fragment+=railFragment('manifold-return'); paintOrder.push('manifold-return'); }
+      const sourceRoute=routes.find(r=>r.id===id), d=id===proof.localBridge.owner?a11:compiled.routes[id].path;
+      fragment+=layers(id,d,sourceRoute.role==='supply'?colours.supply:colours.return);
+      paintOrder.push(id);
+    }
+    fragment+=railFragment('manifold-supply'); paintOrder.push('manifold-supply');
+    return {status:'unsupported',reason:operational?'operational-preview-paint-and-decoration-unvalidated':'synthetic-preview-not-operational-animation',fragment,
+      paintOrder};
+  } catch (_) { return unsupported('invalid-preview-batch'); }
 }
 
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
@@ -1993,7 +2188,13 @@ function routeDiagramConnections(model, ids, options = {}) {
     candidates.push({ id, role, points:routed.points, nodes:resolved.map(p => ({ ref:p.ref, x:p.x, y:p.y })) });
   }
   if (candidates.length) {
-    const compiled = compilePipeRoutes(candidates, { radius:8, bridgeRadius:6, halfWidth:5, obstacles });
+    const policy = { radius:8, bridgeRadius:6, halfWidth:5, obstacles };
+    let compiled = compilePipeRoutes(candidates, policy);
+    if (compiled.status !== 'routed' && model.layoutSeparatedPreview === true) {
+      const normalized = candidates.map(c => ({ ...c, points: c.points.map(p => ({ ...p })) }));
+      for (const c of normalized) normalizeDirectedPolyline(c.points, c.nodes);
+      compiled = compilePipeRoutes(normalized, policy);
+    }
     if (compiled.status === 'routed') for (const [id, route] of Object.entries(compiled.routes)) result[id] = { status:'routed', ...route, paintOrder:compiled.paintOrder.indexOf(id) };
     else for (const c of candidates) result[c.id] = { status:'failed', code:compiled.code, reason:compiled.reason };
   }
@@ -2003,7 +2204,7 @@ function routeDiagramConnections(model, ids, options = {}) {
 // Select and validate the complete routed batch before drawing any pipe.
 function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
   const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
-  const movedRouting = FM && [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; });
+  const movedRouting = FM && (model.layoutSeparatedPreview === true || [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; }));
   const routes = movedRouting ? routeDiagramConnections(model, routingIds) : null;
   if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
@@ -2488,10 +2689,10 @@ const renderPumpe = (x, y, d, on, aktiv) => {
     `<circle cx="${x}" cy="${y}" r="10" fill="#2b2f35" stroke="${cl}" stroke-width="1.6"/>` +
     `<path d="M${r2(x + 10 * dx)} ${r2(y + 10 * dy)}L${r2(x - 5 * dx + 8.66 * dy)} ${r2(y - 5 * dy + 8.66 * dx)}L${r2(x - 5 * dx - 8.66 * dy)} ${r2(y - 5 * dy - 8.66 * dx)}Z" fill="${on ? aktiv : '#6b7280'}"/>`;
 };
-const renderMischer = (x, y, cl, a, cw, ck) =>
+const renderMischer = (x, y, cl, a, cw, ck, upright = 0) =>
   `<line x1="${x}" y1="${y}" x2="${x - 18}" y2="${y}" stroke="#8a9099" stroke-width="2"/>` +
   `<rect x="${x - 34}" y="${y - 9}" width="16" height="18" rx="3" class="wm"/>` +
-  `<text x="${x - 26}" y="${y + 3}" font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
+  `<text x="${x - 26}" y="${y + 3}"${upright ? ` transform="rotate(${-upright} ${x - 26} ${y})"` : ''} font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
   `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}ZM${x - 9} ${y + 14}H${x + 9}L${x} ${y}ZM${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="#1f2329" stroke="${cl}" stroke-width="1.6" stroke-linejoin="round"/>` +
   (a !== null ? `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}Z" fill="${cw}" fill-opacity="${r2(0.1 + 0.8 * a)}"/><path d="M${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="${ck}" fill-opacity="${r2(0.9 - 0.8 * a)}"/>` : '') +
   `<circle cx="${x}" cy="${y}" r="2.5" fill="${cl}"/>`;
@@ -2748,8 +2949,9 @@ function renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComp
 
 function renderValve({ WP, W, model, more, mischer, CK, CW, vb }) {
   if (!WP) return '';
-  const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + v.bounds.height / 2;
-  return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK)}</g>` : mischer(vx, vy, CK);
+  const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + 14, rotation = model.layoutValveRotation || 0;
+  const symbol = W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK, rotation)}</g>` : mischer(vx, vy, CK, null, CW, CK, rotation);
+  return rotation ? `<g transform="rotate(${rotation} ${vx} ${vy})">${symbol}</g>` : symbol;
 }
 
 function renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent }) {
@@ -2995,8 +3197,12 @@ function validateLayoutV2(layout, capabilities) {
       else if (!active) inactive.push({ code: 'inactive-id', path });
       if (!layoutObject(value)) { add('invalid-entry', path); continue; }
       if (section === 'components') {
-        fields(value, ['x', 'y'], path);
-        if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) add('invalid-position', path);
+        const valve = id === 'valve' && (active || dormant);
+        fields(value, valve ? ['x', 'y', 'rotation'] : ['x', 'y'], path);
+        const hasPosition = value.x !== undefined || value.y !== undefined;
+        if ((!valve || hasPosition) && (!Number.isFinite(value.x) || !Number.isFinite(value.y))) add('invalid-position', path);
+        if (valve && value.rotation !== undefined && ![0, 90, 180, 270].includes(value.rotation)) add('invalid-rotation', `${path}.rotation`);
+        if (valve && !hasPosition && value.rotation === undefined) add('invalid-entry', path);
       } else {
         fields(value, ['mode', 'side'], path);
         if (value.mode !== 'auto' && value.mode !== 'manual') add('invalid-mode', `${path}.mode`);
@@ -3025,16 +3231,142 @@ function snapshotLayout(value, ancestors = new Set()) {
 // presentation bounds, live labels and complete renderer integration need their
 // own checks before any public activation. List identities are validated even
 // though list components are not yet movable here.
+// Playground-derived separated tank experiment. Connector pairs are mirrored
+// together: anchors, painted stubs, escape direction and routing obstacles all
+// change as one unit. Every alternative starts from a fresh model.
+function resolveSeparatedLayout(config, layout) {
+  const componentMap = { tank: 'hot-tank', fm: 'fm', ...(config.wp ? { wp: 'wp', valve: 'valve' } : {}) };
+  const fixed = { 'wp.upper-supply': ['top'], 'wp.lower-supply': ['left', 'right'], 'wp.return': ['left', 'right'],
+    'tank.wp-supply': ['left', 'right'], 'tank.wp-return': ['left', 'right'],
+    'buffer.lower-supply': ['left', 'right'], 'buffer.lower-return': ['left', 'right'] };
+  const capabilities = { components: componentMap,
+    ports: { 'tank.fm-supply': ['left', 'right'], 'tank.fm-return': ['left', 'right'],
+      'fm.supply': ['left', 'right'], 'fm.return': ['left', 'right'], ...(config.wp ? fixed : {}) },
+    inactive: { components: config.wp ? {} : { wp: 'wp', valve: 'valve' }, ports: config.wp ? {} : fixed } };
+  const validation = validateLayoutV2(layout, capabilities);
+  if (validation.errors.length) return { status: 'invalid', errors: validation.errors };
+  if (config.wp) {
+    const proof = diagramModel(config);
+    const proofSides = { 'wp.upper-supply': 'top', 'wp.lower-supply': 'left', 'wp.return': 'left',
+      'hot-tank.wp-supply': 'right', 'hot-tank.wp-return': 'right', 'buffer-tank.lower-supply': 'right', 'buffer-tank.lower-return': 'right' };
+    for (const [ref, side] of Object.entries(proofSides)) {
+      const [id, name] = ref.split('.'), port = proof.components[id]?.ports[name];
+      const geometry = diagramPortGeometry(proof, ref);
+      if (!port || port.direction !== side || geometry.side !== side || !geometry.stub)
+        return { status: 'unsupported', errors: [{ code: 'unproven-port-geometry', path: `layout.ports.${ref}` }] };
+    }
+  }
+  const choices = (names, canonical) => {
+    const entries = names.map(name => layout.ports?.[name]).filter(Boolean);
+    const manual = [...new Set(entries.filter(e => e.mode === 'manual').map(e => e.side))];
+    if (manual.length > 1) return null;
+    if (manual.length) return manual;
+    return entries.some(e => e.mode === 'auto') ? [canonical, canonical === 'left' ? 'right' : 'left'] : [canonical];
+  };
+  const tankChoices = choices(['tank.fm-supply', 'tank.fm-return'], 'right');
+  const fmChoices = choices(['fm.supply', 'fm.return'], 'left');
+  const upperChoices = choices(['tank.wp-supply', 'tank.wp-return'], 'right');
+  const lowerChoices = choices(['buffer.lower-supply', 'buffer.lower-return'], 'right');
+  const wpChoices = choices(['wp.lower-supply', 'wp.return'], 'left');
+  if (!tankChoices || !fmChoices || !upperChoices || !lowerChoices || !wpChoices)
+    return { status: 'invalid', errors: [{ code: 'paired-port-side-conflict', path: 'layout.ports' }] };
+  const ids = ['fm-supply', 'fm-return', ...(config.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  let best = null, failure = { code: 'no-path', path: 'layout' };
+  for (const tankSide of tankChoices) for (const fmSide of fmChoices)
+    for (const upperSide of (config.wp ? upperChoices : ['right']))
+    for (const lowerSide of (config.wp ? lowerChoices : ['right']))
+    for (const wpSide of (config.wp ? wpChoices : ['left'])) {
+    const model = diagramModel(config);
+    for (const [id, position] of Object.entries(layout.components || {})) if (Object.hasOwn(componentMap, id)) {
+      const component = model.components[componentMap[id]];
+      if (position.x !== undefined) { component.origin.x = position.x; component.origin.y = position.y; }
+    }
+    for (const [id, names, side] of [['hot-tank', ['fm-supply', 'fm-return'], tankSide], ['fm', ['supply', 'return'], fmSide]]) {
+      const component = model.components[id];
+      for (const name of names) {
+        const port = component.ports[name];
+        if (!port || !port.stub || !['left', 'right'].includes(port.canonicalSide) || port.direction !== port.canonicalSide)
+          return { status: 'unsupported', errors: [{ code: 'unproven-port-geometry', path: `layout.ports.${id}.${name}` }] };
+        if (port.canonicalSide !== side) {
+          port.x = 2 * component.bounds.x + component.bounds.width - port.x;
+          port.stub.x = 2 * component.bounds.x + component.bounds.width - port.stub.x - port.stub.width;
+          port.direction = side; port.effectiveSide = side;
+        }
+      }
+      component.routingAreas = [{ ...component.bounds }, ...Object.values(component.ports).filter(p => p.stub).map(p => ({ ...p.stub }))];
+    }
+    if (config.wp) {
+      for (const [id, names, side, canonical] of [
+        ['hot-tank', ['wp-supply', 'wp-return'], upperSide, 'right'],
+        ['buffer-tank', ['lower-supply', 'lower-return'], lowerSide, 'right'],
+        ['wp', ['upper-supply', 'lower-supply', 'return'], wpSide, 'left'],
+      ]) {
+        const component = model.components[id];
+        if (side !== canonical) for (const name of names) {
+          const port = component.ports[name];
+          port.x = 2 * component.bounds.x + component.bounds.width - port.x;
+          port.stub.x = 2 * component.bounds.x + component.bounds.width - port.stub.x - port.stub.width;
+          if (port.direction === 'left') port.direction = 'right'; else if (port.direction === 'right') port.direction = 'left';
+          port.effectiveSide = port.direction;
+        }
+        component.routingAreas = [{ ...component.bounds }, ...Object.values(component.ports).filter(p => p.stub).map(p => ({ ...p.stub }))];
+      }
+      const rotation = layout.components?.valve?.rotation || 0, valve = model.components.valve;
+      const clockwise = { top: 'right', right: 'bottom', bottom: 'left', left: 'top' }, cx = 34, cy = 14;
+      for (let step = 0; step < rotation / 90; step++) {
+        for (const port of Object.values(valve.ports)) {
+          const x = port.x; port.x = cx - (port.y - cy); port.y = cy + (x - cx); port.direction = clockwise[port.direction];
+        }
+        const b = valve.bounds, { x, y, width, height } = b;
+        b.x = cx - (y + height - cy); b.y = cy + (x - cx); b.width = height; b.height = width;
+      }
+      valve.routingAreas = [{ ...valve.bounds }]; model.layoutValveRotation = rotation;
+    }
+    model.components['tank-feet'].routingAreas = [{ x: 0, y: 0, width: 11, height: 22 }, { x: 77, y: 0, width: 11, height: 22 }];
+    const bodies = ['hot-tank', 'buffer-tank', 'tank-feet', 'fm', ...(config.wp ? ['wp', 'valve'] : [])].map(id => {
+      const c = model.components[id], b = c.bounds; return { id, x: c.origin.x + b.x, y: c.origin.y + b.y, width: b.width, height: b.height };
+    });
+    const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+    let collision = false;
+    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+      if (bodies[i].id === 'buffer-tank' && bodies[j].id === 'tank-feet') continue;
+      if (intersects(bodies[i], bodies[j])) collision = true;
+    }
+    for (const id of ['domestic-cold', 'domestic-hot']) {
+      const edge = model.connections[id], a = diagramPort(model, edge.from), b = diagramPort(model, edge.to), w = 5;
+      const segments = [{ x: a.x - w, y: Math.min(a.y, b.y) - w, width: 2 * w, height: Math.abs(a.y - b.y) + 2 * w }];
+      if (a.x !== b.x) segments.push({ x: Math.min(a.x, b.x) - w, y: b.y - w, width: Math.abs(a.x - b.x) + 2 * w, height: 2 * w });
+      if (segments.some(segment => bodies.some(body => body.id !== 'fm' && intersects(segment, body)))) collision = true;
+    }
+    if (collision) { failure = { code: 'body-or-domestic-collision', path: 'layout.components' }; continue; }
+    model.layoutSeparatedPreview = true;
+    const routes = routeDiagramConnections(model, ids);
+    const bad = Object.entries(routes).find(([, route]) => route.status !== 'routed');
+    if (bad || Object.keys(routes).length !== ids.length) {
+      failure = { code: bad?.[1].code || bad?.[1].reason || 'incomplete-batch', path: `layout.connections.${bad?.[0] || ''}` }; continue;
+    }
+    const length = Object.values(routes).reduce((sum, r) => sum + r.points.slice(1).reduce((n, p, i) => n + Math.abs(p.x - r.points[i].x) + Math.abs(p.y - r.points[i].y), 0), 0);
+    if (!best || length < best.length) best = { status: 'candidate', capabilities, inactive: validation.inactive, model, routes, length };
+  }
+  return best || { status: 'unsupported', errors: [failure] };
+}
+
 function resolveLayoutCandidate(rawConfig, config, layout) {
   const identity = layoutIdentityMap(rawConfig);
   if (identity.errors.length) return { status: 'invalid', errors: identity.errors };
   const model = diagramModel(config);
-  const supported = model.routingScope.fm && ['schicht', 'trennblech'].includes(config.typ) &&
+  const supported = model.routingScope.fm && ['schicht', 'trennblech', 'getrennt'].includes(config.typ) &&
     config.fuehler.length === 0 && !config.weiche && !config.energie.length &&
     !!model.components.fm && (!config.wp || !!model.components.wp);
   // Internal scope is checked before layout syntax. A public integration must
   // explicitly decide its error precedence and user-facing diagnostics.
   if (!supported) return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
+  if (config.typ === 'getrennt') {
+    const allowed = new Set(['hot-tank', 'buffer-tank', 'tank-feet', 'fm', 'domestic-boundary', ...(config.wp ? ['wp', 'valve'] : [])]);
+    if (Object.keys(model.components).some(id => !allowed.has(id)))
+      return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
+    return resolveSeparatedLayout(config, layout);
+  }
   // Only the physical sides already drawn by the symbol, with a matching
   // routing direction and stub, are supported. Auto selects that sole proven
   // side; manual can pin it. Alternative sides need their own painted symbol,
@@ -3092,7 +3424,9 @@ function prepareLayoutCandidate(card, rawConfig, layout) {
   const candidate = resolveLayoutCandidate(rawConfig, card._cfg, layout);
   if (candidate.status !== 'candidate') return candidate;
   const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
-  if (!moved) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
+  const sideChanged = candidate.model.layoutSeparatedPreview && (candidate.model.layoutValveRotation || ['hot-tank', 'buffer-tank', 'fm', ...(card._cfg.wp ? ['wp'] : [])].some(id =>
+    Object.values(candidate.model.components[id].ports).some(port => port.effectiveSide && port.effectiveSide !== port.canonicalSide)));
+  if (!moved && !sideChanged) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
   const rendered = renderLayoutCandidate(card, candidate);
   return rendered.status === 'rendered-candidate' ? { ...rendered, candidate } : rendered;
 }
@@ -3370,12 +3704,14 @@ class WarmwasserSchemaCard extends HTMLElement {
 
     /* ---------- Bausteine ---------- */
     const pumpe = (x, y, d, on) => renderPumpe(x, y, d, on, F.aktiv);
-    const mischer = (x, y, cl, a = null, cw = CW, ck = CK) => renderMischer(x, y, cl, a, cw, ck);
+    const mischer = (x, y, cl, a = null, cw = CW, ck = CK, upright = 0) => renderMischer(x, y, cl, a, cw, ck, upright);
     const chip = (icon, text, on, e) =>
       renderChip(icon, text, on, e, F.aktiv);
 
     /* ---------- Kopfzeile ---------- */
     let o = renderCardHeader({ chip, avg, col, titel, L, c, S, NUM, SO, so_on, K, kTyp, t_k, k_feuer, WP, W, kuehl, wp, wp_on, HS, hs_hatP, hs_p, hs_on });
+
+    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
 
     /* ---------- Abmessungen ---------- */
     const QS = WP && QT !== 'luft';
@@ -3392,6 +3728,10 @@ class WarmwasserSchemaCard extends HTMLElement {
         minX = Math.min(minX, baseMinX + dx); maxX = Math.max(maxX, 486 + dx);
         minY = Math.min(minY, -30 + dy); maxY = Math.max(maxY, unten + dy);
       }
+    }
+    if (model.layoutSeparatedPreview && routes) for (const route of Object.values(routes)) for (const p of route.points) {
+      minX = Math.min(minX, p.x - 16); maxX = Math.max(maxX, p.x + 16);
+      minY = Math.min(minY, p.y - 16); maxY = Math.max(maxY, p.y + 16);
     }
     o += `<svg viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs>`;
     o += `<linearGradient id="wwTemp" gradientUnits="userSpaceOnUse" x1="0" y1="14" x2="0" y2="374"><stop offset="0" stop-color="${col(stops[0].wert)}"/>` +
@@ -3424,7 +3764,6 @@ class WarmwasserSchemaCard extends HTMLElement {
     o += `<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter></defs>`;
 
     /* ---------- Rohre ---------- */
-    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
     const primaryPipes = {};
     const primaryPipe = (id, legacyPath, color, on, duration) => {
       const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration);
@@ -3820,6 +4159,21 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     };
     const move = (dx, dy) => { const p = this._layoutUIPosition(); if (p) this._setLayoutUIPosition({ x: p.x + dx, y: p.y + dy }); };
     for (const [text, dx, dy, name] of [['←', -1, 0, label('Links', 'Left')], ['↑', 0, -1, label('Hoch', 'Up')], ['↓', 0, 1, label('Runter', 'Down')], ['→', 1, 0, label('Rechts', 'Right')]]) button(text, () => move(dx, dy), name);
+    const portControls = {};
+    for (const [group, deName, enName] of [['tank', 'Speicher-Frischwasser', 'Tank / fresh water'], ['fm', 'Frischwasser-Anschlüsse', 'Fresh water ports'], ['upper', 'Speicher-Wärmepumpe', 'Tank / heat pump'], ['lower', 'Puffer-Anschlüsse', 'Buffer ports'], ['wp', 'Wärmepumpe-Anschlüsse', 'Heat pump ports']]) {
+      const wrapper = document.createElement('label'); wrapper.textContent = label(deName, enName) + ' ';
+      const portSelect = document.createElement('select'); portSelect.setAttribute('aria-label', label(deName, enName));
+      for (const [value, text] of [['default', label('Standard', 'Default')], ['auto', label('Automatisch', 'Auto')], ['left', label('Links', 'Left')], ['right', label('Rechts', 'Right')]]) {
+        const option = document.createElement('option'); option.value = value; option.textContent = text; portSelect.appendChild(option);
+      }
+      portSelect.addEventListener('change', () => this._setLayoutUIPort(group, portSelect.value));
+      wrapper.appendChild(portSelect); controls.appendChild(wrapper); portControls[group] = wrapper; portControls[`${group}Select`] = portSelect;
+    }
+    const valveLabel = document.createElement('label'); valveLabel.textContent = label('Ventildrehung', 'Valve rotation') + ' ';
+    const valveSelect = document.createElement('select'); valveSelect.setAttribute('aria-label', label('Ventildrehung', 'Valve rotation'));
+    for (const angle of [0, 90, 180, 270]) { const option = document.createElement('option'); option.value = String(angle); option.textContent = `${angle}°`; valveSelect.appendChild(option); }
+    valveSelect.addEventListener('change', () => this._setLayoutUIRotation(Number(valveSelect.value)));
+    valveLabel.appendChild(valveSelect); controls.appendChild(valveLabel);
     const undo = button(label('Rückgängig', 'Undo'), () => { this._endLayoutDrag(true); this._undoLayoutDraft(false); this._refreshLayoutUI(); });
     const redo = button(label('Wiederholen', 'Redo'), () => { this._endLayoutDrag(true); this._redoLayoutDraft(false); this._refreshLayoutUI(); });
     const apply = button(label('Anwenden', 'Apply'), () => { this._endLayoutDrag(true); this._applyLayoutDraft(); if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); });
@@ -3850,7 +4204,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
       if (direction) { event.preventDefault(); const step = event.shiftKey ? 10 : 1; move(direction[0] * step, direction[1] * step); }
     });
-    this._layoutPanel = { panel, select, inputs, undo, redo, apply, rebind, discard, status, preview, previewRoot, viewport, overlay, marker };
+    this._layoutPanel = { panel, select, inputs, portControls, valveLabel, valveSelect, undo, redo, apply, rebind, discard, status, preview, previewRoot, viewport, overlay, marker };
     parent.appendChild(panel); this._refreshLayoutUI(); this._observeLayoutViewport();
   }
 
@@ -3916,7 +4270,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (layoutObject(existing) && Number.isFinite(existing.x) && Number.isFinite(existing.y)) return { x: existing.x, y: existing.y };
     try {
       const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
-      const origin = card._model.components[id]?.origin;
+      const origin = card._model.components[ui.modelIds?.[id] || id]?.origin;
       return origin ? { x: origin.x, y: origin.y } : null;
     } catch (_) { return null; }
   }
@@ -3934,6 +4288,38 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (coalesce && this._layoutDrag?.edited) draft.history[draft.index] = snapshotLayout(next);
     else { this._editLayoutDraft(next, false); if (coalesce && this._layoutDrag) this._layoutDrag.edited = true; }
     this._refreshLayoutUI();
+  }
+
+  _setLayoutUIPort(group, value) {
+    const draft = this._layoutDraft;
+    if (!draft || this._layoutDraftNeedsRebind || !['tank', 'fm', 'upper', 'lower', 'wp'].includes(group) || !['default', 'auto', 'left', 'right'].includes(value)) return;
+    this._endLayoutDrag(true);
+    const current = draft.history[draft.index];
+    if (!layoutObject(current) || current.version !== 2 || (current.ports !== undefined && !layoutObject(current.ports))) return;
+    const names = { tank: ['tank.fm-supply', 'tank.fm-return'], fm: ['fm.supply', 'fm.return'],
+      upper: ['tank.wp-supply', 'tank.wp-return'], lower: ['buffer.lower-supply', 'buffer.lower-return'],
+      wp: ['wp.lower-supply', 'wp.return'] }[group];
+    const ports = { ...(current.ports || {}) };
+    for (const name of names) {
+      if (value === 'default') { delete ports[name]; continue; }
+      if (ports[name] !== undefined && !layoutObject(ports[name])) return;
+      const entry = { ...(ports[name] || {}), mode: value === 'auto' ? 'auto' : 'manual' };
+      if (value === 'auto') delete entry.side; else entry.side = value;
+      ports[name] = entry;
+    }
+    this._editLayoutDraft({ ...current, ports }, false); this._refreshLayoutUI();
+  }
+
+  _setLayoutUIRotation(rotation) {
+    const draft = this._layoutDraft;
+    if (!draft || this._layoutDraftNeedsRebind || ![0, 90, 180, 270].includes(rotation)) return;
+    this._endLayoutDrag(true);
+    const current = draft.history[draft.index];
+    if (!layoutObject(current) || current.version !== 2 || (current.components !== undefined && !layoutObject(current.components))) return;
+    const components = { ...(current.components || {}) }, previous = components.valve;
+    if (previous !== undefined && !layoutObject(previous)) return;
+    components.valve = { ...(previous || {}), rotation };
+    this._editLayoutDraft({ ...current, components }, false); this._refreshLayoutUI();
   }
 
   _startLayoutDrag(event) {
@@ -3955,7 +4341,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (hits.length !== 1) { try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return; }
     const hit = hits[0]; ui.select.value = hit.id;
     ui.preview.focus?.({ preventScroll: true });
-    this._layoutDrag = { pointerId: event.pointerId, point, start, position: { x: hit.x, y: hit.y },
+    this._layoutDrag = { pointerId: event.pointerId, point, start, position: { x: hit.originX, y: hit.originY },
       id: hit.id, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
       frame: null, pending: null, edited: false };
     this._refreshLayoutUI(); event.preventDefault();
@@ -4003,25 +4389,42 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const ui = this._layoutPanel;
     if (!ui || !this._layoutDraft) return;
     const state = this._layoutDraftState(true), checked = state;
-    let ids = [], hitBoxes = [];
+    let ids = [], hitBoxes = [], modelIds = {}, separated = false;
     try {
       const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
-      // Hit-test the model that produced the visible SVG. On failed preflight
-      // the preview shows the canonical model, never an invalid draft model.
-      const candidate = resolveLayoutCandidate(this._config, card._cfg,
-        checked.status === 'rendered-candidate' ? state.layout : { version: 2 });
-      if (candidate.status === 'candidate') {
-        ids = Object.keys(candidate.capabilities.components);
+      const cfg = card._cfg, base = card._model;
+      const supported = base.routingScope.fm && ['schicht', 'trennblech', 'getrennt'].includes(cfg.typ) &&
+        cfg.fuehler.length === 0 && !cfg.weiche && !cfg.energie.length && !layoutIdentityMap(this._config).errors.length;
+      if (supported) {
+        separated = cfg.typ === 'getrennt';
+        modelIds = { ...(separated ? { tank: 'hot-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
+        ids = Object.keys(modelIds);
+        const candidate = checked.status === 'rendered-candidate' ? resolveLayoutCandidate(this._config, cfg, state.layout) : null;
+        const shown = candidate?.status === 'candidate' ? candidate.model : base;
         hitBoxes = ids.map(id => {
-          const component = candidate.model.components[candidate.capabilities.components[id]], b = component.bounds;
-          return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height };
+          const component = shown.components[modelIds[id]], b = component.bounds;
+          return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height,
+            originX: component.origin.x, originY: component.origin.y };
         });
       }
     } catch (_) { /* configuration remains unavailable */ }
-    ui.hitBoxes = hitBoxes;
+    ui.modelIds = modelIds; ui.hitBoxes = hitBoxes;
+    for (const group of ['tank', 'fm', 'upper', 'lower', 'wp']) {
+      ui.portControls[group].hidden = !separated || (!['tank', 'fm'].includes(group) && !modelIds.wp);
+      const names = { tank: ['tank.fm-supply', 'tank.fm-return'], fm: ['fm.supply', 'fm.return'],
+        upper: ['tank.wp-supply', 'tank.wp-return'], lower: ['buffer.lower-supply', 'buffer.lower-return'],
+        wp: ['wp.lower-supply', 'wp.return'] }[group];
+      const entries = names.map(name => state.layout?.ports?.[name]).filter(Boolean);
+      const manual = [...new Set(entries.filter(entry => entry.mode === 'manual').map(entry => entry.side))];
+      ui.portControls[`${group}Select`].value = manual.length === 1 ? manual[0] : entries.some(entry => entry.mode === 'auto') ? 'auto' : 'default';
+      ui.portControls[`${group}Select`].disabled = this._layoutDraftNeedsRebind;
+    }
+    ui.valveLabel.hidden = !separated || !modelIds.valve;
+    ui.valveSelect.disabled = this._layoutDraftNeedsRebind;
+    ui.valveSelect.value = String(state.layout?.components?.valve?.rotation ?? 0);
     const selected = ui.select.value;
     ui.select.replaceChildren();
-    for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = id === 'fm' ? 'FM' : 'WP'; ui.select.appendChild(option); }
+    for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = id === 'tank' ? (sprache(this._config, this._hass) === 'de' ? 'Speicher' : 'Tank') : id === 'fm' ? 'FM' : id === 'valve' ? (sprache(this._config, this._hass) === 'de' ? 'Ventil' : 'Valve') : 'WP'; ui.select.appendChild(option); }
     ui.select.value = ids.includes(selected) ? selected : ids[0] || '';
     const p = this._layoutUIPosition();
     for (const axis of ['x', 'y']) {

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Internal heating batch preview</title>
+<style>
+body{font:16px system-ui;margin:2rem} button{padding:.5rem 1rem} svg{width:min(100%,600px);background:#222}
+.w0,.w1,.w2,.w3{fill:none;stroke-linecap:round;stroke-linejoin:round}.w0{stroke:#000;stroke-width:10;opacity:.35}.w1{stroke-width:7}.w2{stroke:#fff;stroke-width:2;opacity:.22}.w3{stroke:#fff;stroke-width:2.6;stroke-dasharray:1 13;animation:flow 1s linear infinite}.wk{fill:#777;stroke:#111;stroke-width:.8}@keyframes flow{to{stroke-dashoffset:-14}}
+</style></head><body>
+<h1>Internal heating batch preview</h1>
+<p>Internal preview using sample Home Assistant states. The supported model has no heating-circuit pump, so HK animation is off. Labels, shadows and paint order against the complete card remain unvalidated; routing is not enabled.</p>
+<button id="draw">Upper WP / WP oben</button> <button id="split">Split valve / Ventil geteilt</button><p id="status" role="status">Ready / Bereit</p>
+<svg id="preview" viewBox="0 0 486 616" xmlns="http://www.w3.org/2000/svg"></svg>
+<script src="../../warmwasser-schema-card.js"></script><script>
+function draw(fraction){
+  const out=document.querySelector('#status'), svg=document.querySelector('#preview');
+  try {
+    const Card=customElements.get('warmwasser-schema-card'),c=new Card();
+    c.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizkreise:[{vorlauf:'sensor.vl'}]});
+    c._hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:String(fraction*100),attributes:{}}}};
+    const m=c._model, incidence=resolveLegacyWpHeatingIncidences(m),policy={radius:4};
+    const resolve=ref=>{const j=m.junctions[ref];if(j)return {...j,ref};const [id,name]=ref.split('.'),b=m.components[id],p=b.ports[name];return {...p,x:b.origin.x+p.x,y:b.origin.y+p.y,ref,owner:id};};
+    const side=(ref,id,index)=>incidence.junctions.find(j=>j.ref===ref).incidences.find(i=>i.connectionId===id&&i.segmentIndex===index).side;
+    const routes=[];
+    for(const [id,edge] of Object.entries(m.connections)){
+      if(id.startsWith('manifold-'))continue;
+      const nodes=[edge.from,...edge.via,edge.to].map(resolve),from={...nodes[0]},to={...nodes.at(-1)};
+      if(m.junctions[from.ref])from.direction=side(from.ref,id,0);
+      if(m.junctions[to.ref])to.direction=side(to.ref,id,nodes.length-2);
+      const junctions=nodes.slice(1,-1).map((n,i)=>({...n,incomingSide:side(n.ref,id,i),outgoingSide:side(n.ref,id,i+1)}));
+      const role=id.includes('supply')?'supply':'neutral';
+      const route=id==='hk-return'?validateDirectedFixedPolyline({id,role,nodes,points:[{x:312,y:448},{x:312,y:370},{x:240,y:370},{x:240,y:340}]},policy)
+        :routeDirectedJunctionConnection({id,role,from,to,junctions,lead:12,clearance:13,compileOptions:policy});
+      if(route.status!=='routed')throw Error(`${id}: ${route.code||route.reason}`);
+      routes.push(route);
+    }
+    const state=deriveLegacyWpHeatingAnimationState(c);
+    const result=renderLegacyWpHeatingBatchPreview(m,routes,policy,state,{supply:'#ff4b3e',return:'#3d8bff'},'operational-preview');
+    if(result.reason!=='operational-preview-paint-and-decoration-unvalidated' || !result.fragment)throw Error(result.reason);
+    svg.innerHTML=result.fragment;
+    out.textContent=`STATE PREVIEW — ${routes.length} lines, 2 rails, valve ${fraction}. Sample state only; production routing remains unsupported.`;
+  }catch(error){svg.replaceChildren();out.textContent=`FAIL — ${error.message||error}`;}
+}
+document.querySelector('#draw').addEventListener('click',()=>draw(1));
+document.querySelector('#split').addEventListener('click',()=>draw(.25));
+</script></body></html>
