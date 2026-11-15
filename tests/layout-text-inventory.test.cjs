@@ -57,7 +57,9 @@ test('overlap and pipe, corner and bridge envelopes reject measured labels',()=>
   flow.box={...temp.box};
   assert.equal(inspect(c,candidate,overlap).reason,'text-overlap');
   flow.box={...temp.box,x:temp.box.x+temp.box.width+1.5};
-  assert.equal(inspect(c,candidate,overlap).reason,'text-overlap','one-unit reserves touch');
+  assert.equal(inspect(c,candidate,overlap).reason,'text-inventory-staged-only','more than one unit separates the text');
+  flow.box={...temp.box,x:temp.box.x+temp.box.width+.75};
+  assert.equal(inspect(c,candidate,overlap).reason,'text-overlap','less than one unit separates the text');
   for(const shape of ['pipe','corner','bridge']) {
     const copy={...candidate,routes:{...candidate.routes}},key=Object.keys(copy.routes)[0];
     const route={...copy.routes[key],points:[{x:10,y:10},{x:20,y:10}],crossings:[]};
@@ -187,4 +189,32 @@ test('FM volume and live values require exact inventory, slots and current HA st
   c._hass.states['sensor.temp'].state='43';assert.equal(inspect(c,candidate,records).reason,'text-inventory-unproven');
   assert.equal(complete({...c,_cfg:{...c._cfg,wp:{betrieb:'sensor.wp'}}},candidate,{isConnected:true}).status,'unsupported');
   assert.equal(complete({...c,_cfg:{...c._cfg,typ:'trennblech'}},candidate,{isConnected:true}).status,'unsupported');
+});
+test('air WP fan and valve inventory follows live valve state and rejects changed geometry',()=>{
+  for(const [valveState,wpState,defrost] of [[null,'on',false],['unknown','unknown',false],['on','off',false],['off','unavailable',false],['50','on',true]]) {
+    const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'},
+      wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',...(defrost?{abtauen:'sensor.defrost'}:{}),...(valveState===null?{}:{ventil:'sensor.valve'})}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:wpState},'sensor.defrost':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'},
+      'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.valve':{state:valveState}}};
+    const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:370,y:29}}});assert.equal(candidate.status,'candidate');
+    const html=renderGeometry(c,candidate),body=html.slice(html.indexOf('</defs>')+7,html.indexOf('</svg>')),
+      matrix={a:1,b:0,c:0,d:1,e:0,f:0},shapes=[];
+    const fanMarkup=body.match(/<g\b([^>]*)><path d="M390 226Q405 213 397 192Q383 203 390 226Z"/);
+    assert.ok(fanMarkup,'rendered fan group');
+    assert.equal(/class="wr"/.test(fanMarkup[1]),wpState==='on'||defrost);
+    assert.equal(/style="animation-duration:4s"/.test(fanMarkup[1]),defrost);
+    const svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
+    const fan={localName:'g',parentElement:svg,getAttribute:name=>name==='class'?(wpState==='on'||defrost?'wr':null):name==='style'&&defrost?'animation-duration:4s':null};
+    for(const match of body.matchAll(/<(path|rect|circle|line)\b([^>]*)\/?\s*>/g)) {
+      const attrs=Object.fromEntries([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+      const moved=attrs.d?.startsWith('M430 22C426') || (attrs.x==='392' && attrs.y==='62' && attrs.width==='52' && attrs.height==='34');
+      shapes.push({localName:match[1],attrs,parentElement:attrs.d==='M390 226Q405 213 397 192Q383 203 390 226Z'?fan:svg,
+        getAttribute:name=>attrs[name]??null,closest:()=>null,getScreenCTM:()=>moved?{...matrix,e:30,f:15}:matrix});
+    }
+    assert.equal(complete(c,candidate,svg).status,'complete',`valve ${valveState}, WP ${wpState}, defrost ${defrost}`);
+    const blade=shapes.find(el=>el.attrs.transform==='rotate(72 390 226)');blade.attrs.transform='rotate(73 390 226)';
+    assert.equal(complete(c,candidate,svg).status,'unsupported');blade.attrs.transform='rotate(72 390 226)';
+    shapes.push({localName:'circle',getAttribute:()=>null,closest:()=>null});assert.equal(complete(c,candidate,svg).status,'unsupported');
+  }
 });

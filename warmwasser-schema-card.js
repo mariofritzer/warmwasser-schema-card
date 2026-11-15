@@ -4101,8 +4101,10 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
     if (wp) {
       const state=heatPumpState(c,L,F,S,ON,NUM),display=heatPumpDisplay(c,state,L,F,S,NUM);
       add('wp',342,168,'wt',c.hersteller,{x:336,y:154,width:74,height:20});
-      if (wp.cop) add('wp',438,168,'we wt wx',display.wpCopText,{x:410,y:154,width:34,height:20});
-      if (wp.leistung) add('wp',390,305,'wc wt',display.wpPowerText,{x:343,y:283,width:94,height:26});
+      // COP is right-aligned in the unobstructed upper housing row; actual
+      // manufacturer/COP overlap is checked separately from these slots.
+      if (wp.cop) add('wp',438,168,'we wt wx',display.wpCopText,{x:390,y:154,width:54,height:20});
+      if (wp.leistung) add('wp',390,305,'wc wt',display.wpPowerText,{x:343,y:283,width:94,height:27});
       add('wp',390,wp.leistung?320:309,'wc',display.wpStatus[0],{x:343,y:wp.leistung?308:283,width:94,height:wp.leistung?17:43});
       if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
       add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
@@ -4135,9 +4137,12 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
           Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven');
       if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
         return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
-      boxes.push({owner:item.owner,...q});
+      boxes.push({owner:item.owner,anchor:{x:item.x,y:item.y},...q});
     }
-    for (let i=0;i<boxes.length;i++) for(let j=i+1;j<boxes.length;j++) if(hit(boxes[i],boxes[j])) return fail('text-overlap');
+    // Boxes already include one unit on each side for obstacle clearance.
+    // Text/text needs one unit total, so compare half-unit expansions.
+    const textBox=b=>({x:b.x+.5,y:b.y+.5,width:b.width-1,height:b.height-1});
+    for (let i=0;i<boxes.length;i++) for(let j=i+1;j<boxes.length;j++) if(hit(textBox(boxes[i]),textBox(boxes[j]))) return fail('text-overlap',{first:boxes[i],second:boxes[j]});
     const obstacles=[];
     for (const [id,b] of Object.entries(m.components)) {
       if (id==='domestic-boundary') continue;
@@ -4331,29 +4336,35 @@ function inspectLayoutPipePaint(card,candidate,html) {
       unresolved:['remaining-decorative-paint','commit-freshness']};
   } catch (_) { return fail(); }
 }
-// Complete paint inventory for the experimental non-separated FM-only path.
-// Every visible shape is accounted for; WP and other tank types remain closed.
+// Complete paint inventory for the experimental FM/air-WP stratified path.
+// Other tank types and equipment remain closed.
 function inspectCompleteSimpleFmPaint(card,candidate,svg) {
   const fail=()=>({status:'unsupported',reason:'layout-complete-paint-unproven'});
   try {
     const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || c.typ!=='schicht' || c.wp || !c.fm || !svg?.isConnected) return fail();
-    if (Object.keys(m.components).sort().join(',')!==['domestic-boundary','fm','tank','tank-feet'].sort().join(',')) return fail();
+    if (!c || !m?.routingScope?.fm || c.typ!=='schicht' || !c.fm || !svg?.isConnected) return fail();
+    const wp=!!c.wp,allowed=['domestic-boundary','fm','tank','tank-feet',...(wp?['wp','valve']:[])];
+    const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=wp?heatPumpState(c,L,c.farben,S,ON,NUM):null;
+    const valveFraction=wp && c.wp.ventil ? heat.vb : null;
+    if (wp && m.layoutValveRotation) return fail();
+    if (Object.keys(m.components).sort().join(',')!==allowed.sort().join(',')) return fail();
     const shapes=Array.from(svg.querySelectorAll('path,rect,circle,line')).filter(el=>!el.closest('defs')),
-      paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect');
+      paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect'),
+      circles=shapes.filter(el=>el.localName==='circle'),lines=shapes.filter(el=>el.localName==='line');
     const hasDisplay=!!(c.fm.temp || c.fm.durchfluss);
-    if (shapes.length!==paths.length+rects.length || rects.length!==(hasDisplay?15:14)) return fail();
+    if (shapes.length!==paths.length+rects.length+circles.length+lines.length ||
+        rects.length!==(hasDisplay?15:14)+(wp?11:0) || circles.length!==(wp?7:0) || lines.length!==(wp?1:0)) return fail();
     const cls=el=>el.getAttribute('class')||'',plain=paths.filter(el=>!['w0','w1','w2','w3','wa'].includes(cls(el)));
     const tank=m.components.tank,fm=m.components.fm,o=tank.origin,b=tank.bounds;
     const expectedPaths=[`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
       `M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`,
       hasDisplay?'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
         :'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'];
-    if (plain.length!==3 || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
+    if (plain.length!==(wp?(valveFraction===null?9:11):3) || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
     const match=(el,x,y,w,h)=>el.getAttribute('x')===String(x) && el.getAttribute('y')===String(y) &&
       el.getAttribute('width')===String(w) && el.getAttribute('height')===String(h);
     const tankRects=rects.filter(el=>match(el,o.x,o.y,130,360)),fmRects=rects.filter(el=>match(el,fm.origin.x,fm.origin.y,110,90));
-    if (tankRects.length!==3 || fmRects.length!==2 || rects.filter(el=>cls(el)==='wk').length!==6 ||
+    if (tankRects.length!==3 || fmRects.length!==2 || rects.filter(el=>cls(el)==='wk').length!==(wp?13:6) ||
         rects.filter(el=>match(el,o.x+14,o.y+30,7,300)).length!==1 ||
         rects.filter(el=>match(el,93,362,11,22)).length!==1 || rects.filter(el=>match(el,170,362,11,22)).length!==1) return fail();
     const displays=rects.filter(el=>match(el,392,62,52,34));
@@ -4365,21 +4376,57 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
         tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1 ||
         fmRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
         fmRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1) return fail();
+    let wpDisplays=[],petals=[],fanGroup,valvePath;
+    if (wp) {
+      const w=m.components.wp,v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
+      const wpRects=rects.filter(el=>match(el,w.origin.x,w.origin.y,120,222));
+      wpDisplays=rects.filter(el=>match(el,342,282,96,46));
+      if (wpRects.length!==2 || wpRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
+          wpRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1 || wpDisplays.length!==1 ||
+          wpDisplays[0].getAttribute('rx')!=='8' || wpDisplays[0].getAttribute('fill')!=='#0f1114' ||
+          wpDisplays[0].getAttribute('stroke')!=='#fff' ||
+          rects.filter(el=>cls(el)==='wm' && match(el,v.origin.x,v.origin.y+5,16,18)).length!==1) return fail();
+      const valveD=`M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}ZM${vx-9} ${vy+14}H${vx+9}L${vx} ${vy}ZM${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`;
+      valvePath=plain.find(el=>el.getAttribute('d')===valveD);
+      if (valveFraction!==null) {
+        const triangles=[[`M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}Z`,r2(0.1+0.8*valveFraction)],
+          [`M${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`,r2(0.9-0.8*valveFraction)]];
+        if (triangles.some(([d,opacity])=>plain.filter(el=>el.getAttribute('d')===d && el.getAttribute('fill-opacity')===String(opacity)).length!==1)) return fail();
+      }
+      const bladeD='M390 226Q405 213 397 192Q383 203 390 226Z';petals=plain.filter(el=>el.getAttribute('d')===bladeD);
+      if (!valvePath || petals.length!==5 || [0,72,144,216,288].some(angle=>petals.filter(el=>el.getAttribute('transform')===`rotate(${angle} 390 226)`).length!==1)) return fail();
+      fanGroup=petals[0].parentElement;
+      if (!fanGroup || fanGroup.localName!=='g' || petals.some(el=>el.parentElement!==fanGroup) || fanGroup.getAttribute('transform')!==null ||
+          (fanGroup.getAttribute('class')||null)!==(heat.wp_on || heat.wp_abtau?'wr':null) ||
+          (fanGroup.getAttribute('style')||null)!==(heat.wp_abtau?'animation-duration:4s':null)) return fail();
+      const expectedCircles=[[390,226,42],[390,226,36],[390,226,14],[390,226,25],[390,226,7],[434,353,5],[vx,vy,2.5]];
+      if (expectedCircles.some(([x,y,r])=>circles.filter(el=>el.getAttribute('cx')===String(x) && el.getAttribute('cy')===String(y) && el.getAttribute('r')===String(r)).length!==1) ||
+          lines[0].getAttribute('x1')!==String(vx) || lines[0].getAttribute('y1')!==String(vy) ||
+          lines[0].getAttribute('x2')!==String(vx-18) || lines[0].getAttribute('y2')!==String(vy)) return fail();
+    }
     const matrix=svg.getScreenCTM(),det=matrix && matrix.a*matrix.d-matrix.b*matrix.c;
     if (!matrix || !Number.isFinite(det) || !det) return fail();
     const delta={x:fm.origin.x-fm.baseOrigin.x,y:fm.origin.y-fm.baseOrigin.y},droplet=plain.find(el=>el.getAttribute('d')===expectedPaths[2]);
-    for(const el of [...rects,...plain]) {
+    const wpDelta=wp?{x:m.components.wp.origin.x-m.components.wp.baseOrigin.x,y:m.components.wp.origin.y-m.components.wp.baseOrigin.y}:null;
+    const fixedShapes=[...rects,...plain.filter(el=>!petals.includes(el)),...circles,...lines];
+    if (wp) fixedShapes.push(fanGroup.parentElement);
+    for(const el of fixedShapes) {
       const a=el.getScreenCTM();if(!a || a.is2D===false) return fail();
       const rel={a:(matrix.d*a.a-matrix.c*a.b)/det,b:(-matrix.b*a.a+matrix.a*a.b)/det,
         c:(matrix.d*a.c-matrix.c*a.d)/det,d:(-matrix.b*a.c+matrix.a*a.d)/det,
         e:(matrix.d*(a.e-matrix.e)-matrix.c*(a.f-matrix.f))/det,
         f:(-matrix.b*(a.e-matrix.e)+matrix.a*(a.f-matrix.f))/det};
-      const moved=el===droplet || displays.includes(el),x=moved?delta.x:0,y=moved?delta.y:0;
+      const moved=el===droplet || displays.includes(el),wpMoved=wp && (wpDisplays.includes(el) || (circles.includes(el) && el.getAttribute('r')!=='2.5') || el===fanGroup.parentElement),
+        x=moved?delta.x:wpMoved?wpDelta.x:0,y=moved?delta.y:wpMoved?wpDelta.y:0;
       if (![rel.a-1,rel.b,rel.c,rel.d-1,rel.e-x,rel.f-y].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8)) return fail();
     }
-    const a={x:o.x-2,y:o.y-2,width:b.width+4,height:b.height+4},d={x:fm.origin.x-2,y:fm.origin.y-2,width:fm.bounds.width+4,height:fm.bounds.height+4};
-    if (a.x<=d.x+d.width && a.x+a.width>=d.x && a.y<=d.y+d.height && a.y+a.height>=d.y) return fail();
-    return {status:'complete',scope:'simple-fm-schicht'};
+    const bodies=['tank','tank-feet','fm',...(wp?['wp','valve']:[])].map(id=>{const q=m.components[id];return {id,x:q.origin.x-2,y:q.origin.y-2,width:q.bounds.width+4,height:q.bounds.height+4};});
+    for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++) {
+      const a=bodies[i],d=bodies[j];if(a.id==='tank' && d.id==='tank-feet') continue;
+      if (![a.x,a.y,a.width,a.height,d.x,d.y,d.width,d.height].every(Number.isFinite) || a.width<=4 || a.height<=4 || d.width<=4 || d.height<=4 ||
+          (a.x<=d.x+d.width && a.x+a.width>=d.x && a.y<=d.y+d.height && a.y+a.height>=d.y)) return fail();
+    }
+    return {status:'complete',scope:wp?'fm-air-wp-schicht':'fm-schicht'};
   } catch (_) {return fail();}
 }
 function layoutRelevantHassKey(card,hass) {

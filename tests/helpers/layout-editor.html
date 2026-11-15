@@ -28,6 +28,7 @@
     <button id="viewport-real">Card + editor viewport check</button>
     <button id="simple-commit">FM-only apply + card commit</button>
     <button id="simple-stale">FM-only stale + rollback</button>
+    <button id="wp-commit">FM + air WP apply + card reload</button>
     <button id="fm-live-commit">FM live + volume apply/commit</button>
     <button id="smoke">Run smoke checks</button>
   </div>
@@ -283,13 +284,46 @@
         } catch(error) {result.textContent=`FAIL FM-only commit: ${error.message}`;}
         finally {host?.remove();}
       });
+      document.getElementById('wp-commit').addEventListener('click',async()=>{
+        let host;
+        try {
+          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'},
+            'sensor.wp':{state:'on'},'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.valve':{state:'on'}}};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'schicht',volumen:500},
+            fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'},
+            wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',ventil:'sensor.valve'}});
+          const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value),frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+          ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          const ready=async()=>{for(let i=0;i<90 && ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}`);};
+          await ready();
+          hass={...hass,states:{...hass.states,'sensor.vl':{state:'41'},'sensor.valve':{state:'off'}}};editor.hass=hass;
+          if(!ui.apply.disabled)throw Error('WP update did not invalidate receipt');await ready();
+          const preview=ui.previewRoot.querySelector('[data-layout-viewport] svg');
+          if(!preview?.textContent.includes('41.0°') || !preview.textContent.includes('3.2'))throw Error('missing live WP values');
+          ui.apply.click();if(config.layout?.components?.fm?.x!==x+30)throw Error('configuration not emitted');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;
+            host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
+          let card=mount();const committed=async()=>{for(let i=0;i<90 && card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
+            if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}`);};
+          await committed();if(!card.shadowRoot.querySelector('[data-layout-viewport] svg')?.textContent.includes('41.0°'))throw Error('card WP value differs');
+          card=mount();await committed();if(card._model.components.fm.origin.x!==x+30)throw Error('saved layout not restored');
+          card.hass={...hass,states:{...hass.states,'sensor.vl':{state:'1000000000'}}};
+          if(card._layoutCandidate || card._layoutStatus?.status==='rendered-candidate')throw Error('oversized WP value remained committed');
+          result.textContent='PASS FM + air WP editor Apply, HA update, independent card commit, reload and overflow fallback';
+        } catch(error) {result.textContent=`FAIL FM + air WP: ${error.message}`;}
+        finally {host?.remove();}
+      });
       document.getElementById('simple-stale').addEventListener('click',async()=>{
         try {
           const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve)),checks=[];
-          const setup=async(live)=>{
-            hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'}}};
+          const setup=async(live,withWp)=>{
+            hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'},
+              'sensor.wp':{state:'on'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.valve':{state:'on'}}};
             install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'schicht',...(live?{volumen:500}:{})},
-              fm:{pumpe:'sensor.fm',...(live?{temp:'sensor.temp',durchfluss:'sensor.flow'}:{})}});
+              fm:{pumpe:'sensor.fm',...(live?{temp:'sensor.temp',durchfluss:'sensor.flow'}:{})},
+              ...(withWp?{wp:{betrieb:'sensor.wp',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',leistung:'sensor.power',cop:'sensor.cop',ventil:'sensor.valve'}}:{})});
             const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value);
             ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
             ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
@@ -297,13 +331,13 @@
             if(ui.apply.disabled)throw Error(`fixture not ready: ${ui.status.textContent}`);
             return ui;
           };
-          for(const live of [false,true]) for(const kind of ['svg','font','theme','resize','hass','disconnect','emit-error']) {
-            const ui=await setup(live),svg=ui.previewRoot.querySelector('[data-layout-viewport] svg');
+          for(const [live,withWp] of [[false,false],[true,false],[true,true]]) for(const kind of ['svg','font','theme','resize','hass','disconnect','emit-error']) {
+            const ui=await setup(live,withWp),svg=ui.previewRoot.querySelector('[data-layout-viewport] svg');
             if(kind==='svg') svg.querySelector('path.w0').setAttribute('d','M0 0H999');
             if(kind==='font') document.fonts.dispatchEvent(new Event('loading'));
             if(kind==='theme') {ui.preview.style.setProperty('--primary-text-color','#123456');await frame();}
             if(kind==='resize') {ui.viewport.style.width='300px';await frame();await frame();}
-            if(kind==='hass') {hass={...hass,states:{...hass.states,'sensor.fm':{state:'off'}}};editor.hass=hass;}
+            if(kind==='hass') {hass={...hass,states:{...hass.states,...(withWp?{'sensor.wp':{state:'off'}}:{'sensor.fm':{state:'off'}})}};editor.hass=hass;}
             if(kind==='disconnect') editor.remove();
             if(kind==='emit-error') {
               editor._fire=()=>{throw Error('expected emit failure');};
@@ -313,7 +347,7 @@
               const outcome=editor._applyLayoutDraft();
               if(outcome?.status==='applied' || config.layout)throw Error(`${kind} allowed stale Apply`);
             }
-            checks.push(`${live?'live':'simple'}:${kind}`);
+            checks.push(`${withWp?'wp':live?'live':'simple'}:${kind}`);
           }
           result.textContent=`PASS real stale/rollback checks: ${checks.join(', ')}`;
         } catch(error) {result.textContent=`FAIL FM-only stale: ${error.message}`;}
