@@ -2152,14 +2152,75 @@ function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,co
       paintOrder.push(id);
     }
     fragment+=railFragment('manifold-supply'); paintOrder.push('manifold-supply');
+    const pipeFragment=fragment;
     if (model.components['heating-pump-0']) {
       const unit=model.components['heating-pump-0'];
       fragment+=`<g data-preview-pump="heating-pump-0">${renderPumpe(unit.origin.x+10,unit.origin.y+10,'d',syntheticFlow.circuitOn,syntheticFlow.activeColour)}</g>`;
       paintOrder.push('heating-pump-0');
     }
-    return {status:'unsupported',reason:operational?'operational-preview-paint-and-decoration-unvalidated':'synthetic-preview-not-operational-animation',fragment,
+    return {status:'unsupported',reason:operational?'operational-preview-paint-and-decoration-unvalidated':'synthetic-preview-not-operational-animation',fragment,pipeFragment,
       paintOrder};
   } catch (_) { return unsupported('invalid-preview-batch'); }
+}
+
+// Conservative paint bounds for the private atomic heating render. Call only
+// after complete-batch validation. Route corners and bridge arcs cannot leave
+// their waypoint bounds inflated by their radius and the actual 5px stroke.
+function internalHeatingPaintBounds(routes, rails, bridge, options) {
+  if (!Array.isArray(routes) || !Array.isArray(rails) || !bridge?.envelope || !options || typeof options !== 'object') return null;
+  const radius = options.radius ?? 8, bridgeRadius = options.bridgeRadius ?? 6;
+  const half = Math.max(5, options.halfWidth ?? 5);
+  if (![radius, bridgeRadius, half].every(n => Number.isFinite(n) && n >= 0)) return null;
+  const margin = half + Math.max(radius, bridgeRadius, bridge.radius);
+  if (!Number.isFinite(margin)) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = box => {
+    if (!box || ![box.x, box.y, box.width, box.height, box.x + box.width, box.y + box.height].every(Number.isFinite) || box.width < 0 || box.height < 0) return false;
+    minX = Math.min(minX, box.x); minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width); maxY = Math.max(maxY, box.y + box.height); return true;
+  };
+  if (!include(bridge.envelope) || !rails.length || !routes.length) return null;
+  for (const rail of rails) {
+    if (!Array.isArray(rail.areas) || !rail.areas.length || !rail.areas.every(include)) return null;
+  }
+  for (const route of routes) {
+    if (!Array.isArray(route.points) || route.points.length < 2) return null;
+    for (const point of route.points) {
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) ||
+          !include({ x: point.x - margin, y: point.y - margin, width: 2 * margin, height: 2 * margin })) return null;
+    }
+  }
+  const width = maxX - minX, height = maxY - minY;
+  return [minX, minY, width, height].every(Number.isFinite) ? { x: minX, y: minY, width, height } : null;
+}
+
+// Private test/preflight path. It runs the real full card renderer with one
+// atomic heating pipe phase; unsupported paint/text evidence never opens an
+// editor gate or installs this HTML in the live card.
+const internalHeatingRenderContexts=new WeakMap();
+function renderInternalWpHeatingCandidate(card,routes,options) {
+  const unsupported=reason=>({status:'unsupported',reason});
+  if (!card || internalHeatingRenderContexts.has(card)) return unsupported('heating-render-unavailable');
+  try {
+    const model=card._model;
+    if (!model || !model.components['heating-pump-0']) return unsupported('heating-render-scope');
+    const state=deriveLegacyWpHeatingAnimationState(card);
+    if (!heatingAnimationStateProvenance.has(state)) return state;
+    const colours={supply:state.supplyColour,return:state.returnColour};
+    const batch=renderLegacyWpHeatingBatchPreview(model,routes,options,state,colours,'operational-preview');
+    if (batch.reason!=='operational-preview-paint-and-decoration-unvalidated' || typeof batch.pipeFragment!=='string') return batch;
+    const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options), prepared=prepareLegacyWpHeatingRails(model,options);
+    if (proof.reason!=='heating-decorations-and-paint-validation-required' || prepared.reason!=='rail-batch-validation-required')
+      return unsupported('heating-bounds-unavailable');
+    const paintBounds=internalHeatingPaintBounds(routes,prepared.rails,proof.localBridge,options);
+    if (!paintBounds) return unsupported('heating-bounds-unavailable');
+    internalHeatingRenderContexts.set(card,{pipeFragment:batch.pipeFragment,paintBounds});
+    const html=card._render();
+    if (typeof html!=='string' || !html.includes(batch.pipeFragment) || html.includes('data-preview-pump="heating-pump-0"'))
+      return unsupported('heating-render-incomplete');
+    return {status:'unsupported',reason:'complete-card-text-shadow-paint-validation-required',html};
+  } catch (_) { return unsupported('heating-render-failed'); }
+  finally { internalHeatingRenderContexts.delete(card); }
 }
 
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
@@ -3256,7 +3317,7 @@ function snapshotLayout(value, ancestors = new Set()) {
 // together: anchors, painted stubs, escape direction and routing obstacles all
 // change as one unit. Every alternative starts from a fresh model.
 function resolveSeparatedLayout(config, layout) {
-  const componentMap = { tank: 'hot-tank', fm: 'fm', ...(config.wp ? { wp: 'wp', valve: 'valve' } : {}) };
+  const componentMap = { tank: 'hot-tank', buffer: 'buffer-tank', fm: 'fm', ...(config.wp ? { wp: 'wp', valve: 'valve' } : {}) };
   const fixed = { 'wp.upper-supply': ['top'], 'wp.lower-supply': ['left', 'right'], 'wp.return': ['left', 'right'],
     'tank.wp-supply': ['left', 'right'], 'tank.wp-return': ['left', 'right'],
     'buffer.lower-supply': ['left', 'right'], 'buffer.lower-return': ['left', 'right'] };
@@ -3863,6 +3924,12 @@ class WarmwasserSchemaCard extends HTMLElement {
       ...distributorSlots.map((_, i) => { const b = model.components[`distributor-slot-${i}`]; return b.origin.y + b.bounds.height + 16; }));
     if (QS) unten = Math.max(unten, 566);
     let minX = baseMinX, maxX = 486, minY = -30, maxY = unten;
+    const internalHeating = internalHeatingRenderContexts.get(this);
+    if (internalHeating?.paintBounds) {
+      const b = internalHeating.paintBounds;
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+    }
     // Internal origin changes are used by tests and must not clip moved symbols.
     for (const b of Object.values(model.components)) {
       const dx = b.origin.x - b.baseOrigin.x, dy = b.origin.y - b.baseOrigin.y;
@@ -3912,7 +3979,8 @@ class WarmwasserSchemaCard extends HTMLElement {
       if (routes) { primaryPipes[id] = svg; return ''; }
       return svg;
     };
-    o += renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT });
+    if (internalHeating) o += internalHeating.pipeFragment;
+    else o += renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT });
     // Preserve the compiler's bridge order for whole pipe groups and animation.
     if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => routes[a].paintOrder - routes[b].paintOrder)) o += primaryPipes[id];
     o += renderDomesticPipes({ TW, ZK, model, point, dc, de, dh, dw, F, zirk_on, zapf });
@@ -3922,7 +3990,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     const y_vv = HK ? point(model.connections['manifold-supply'].from).y : 420 + dyw, y_rv = HK ? point(model.connections['manifold-return'].from).y : 448 + dyw;
     const y_hm = 482 + dyw, y_he = 548 + dyw;
     if (HK) {
-      o += renderHeatingPipes({ WP, akt, distributorRunning, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
+      if (!internalHeating) o += renderHeatingPipes({ WP, akt, distributorRunning, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
       o += `<text x="${bx1 - 8}" y="${y_vv + 3}" font-size="7.5" class="we ws" font-weight="600">VL</text><text x="${bx1 - 8}" y="${y_rv + 3}" font-size="7.5" class="we ws" font-weight="600">RL</text>`;
       o += renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComponent, hks, mischer, CW, L, y_hm, pumpe, y_he, F });
     }
@@ -4589,7 +4657,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         cfg.fuehler.length === 0 && !cfg.weiche && !cfg.energie.length && !layoutIdentityMap(this._config).errors.length;
       if (supported) {
         separated = cfg.typ === 'getrennt';
-        modelIds = { ...(separated ? { tank: 'hot-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
+        modelIds = { ...(separated ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
         ids = Object.keys(modelIds);
         const candidate = checked.status === 'rendered-candidate' ? cachedLayoutCandidate(this, this._config, cfg, state.layout) : null;
         const shown = candidate?.status === 'candidate' ? candidate.model : base;
@@ -4616,7 +4684,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     ui.valveSelect.value = String(state.layout?.components?.valve?.rotation ?? 0);
     const selected = ui.select.value;
     ui.select.replaceChildren();
-    for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = id === 'tank' ? (sprache(this._config, this._hass) === 'de' ? 'Speicher' : 'Tank') : id === 'fm' ? 'FM' : id === 'valve' ? (sprache(this._config, this._hass) === 'de' ? 'Ventil' : 'Valve') : 'WP'; ui.select.appendChild(option); }
+    const german = sprache(this._config, this._hass) === 'de';
+    const labels = { tank: german ? 'Warmwasserspeicher' : 'Hot water tank', buffer: german ? 'Pufferspeicher' : 'Buffer tank',
+      fm: this._config.name_fm || 'FM', wp: this._config.name_wp || 'WP', valve: german ? 'Ventil' : 'Valve' };
+    for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = labels[id]; ui.select.appendChild(option); }
     ui.select.value = ids.includes(selected) ? selected : ids[0] || '';
     const p = this._layoutUIPosition();
     for (const axis of ['x', 'y']) {
@@ -4630,10 +4701,20 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     ui.rebind.hidden = !this._layoutDraftNeedsRebind;
     ui.unchecked = checked.status !== 'rendered-candidate';
     const de = sprache(this._config, this._hass) === 'de';
+    const layout = state.layout;
+    const emptyDraft = layoutObject(layout) && layout.version === 2 &&
+      Object.keys(layout).every(key => ['version', 'components', 'ports'].includes(key)) &&
+      ['components', 'ports'].every(key => layout[key] === undefined || (layoutObject(layout[key]) && Object.keys(layout[key]).length === 0));
+    const neutralDefault = emptyDraft && ids.length > 0 && checked.status === 'unsupported' && checked.errors?.[0]?.code !== 'unsupported-configuration';
     ui.status.textContent = checked.status === 'rendered-candidate' ? (de ? 'Entwurf geprüft' : 'Draft validated')
       : checked.status === 'unbound' ? (de ? 'Die Konfiguration hat sich geändert. Entwurf für diese Karte bestätigen oder verwerfen.' : 'Configuration changed. Confirm this draft for this card or discard it.')
-      : checked.errors?.[0]?.code === 'unmoved-candidate' ? (de ? 'Komponente bewegen, um einen Entwurf zu prüfen.' : 'Move a component to validate the draft.')
+      : (neutralDefault || checked.errors?.[0]?.code === 'unmoved-candidate') ? (de ? 'Komponente bewegen, um einen Entwurf zu prüfen.' : 'Move a component to validate the draft.')
       : checked.errors?.[0]?.code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Vorschau.' : 'A current sensor value does not fit the preview.')
+      : ['body-collision', 'body-or-domestic-collision', 'domestic-collision'].includes(checked.errors?.[0]?.code) ? (de ? 'Geräte oder Trinkwasserleitungen überlappen. Bitte eine andere Position wählen.' : 'Devices or domestic water pipes overlap. Choose another position.')
+      : checked.errors?.[0]?.code === 'paired-port-side-conflict' ? (de ? 'Gekoppelte Anschlüsse müssen auf derselben Seite liegen.' : 'Paired ports must use the same side.')
+      : checked.errors?.[0]?.code === 'invalid-side' ? (de ? 'Diese Anschlussseite wird nicht unterstützt.' : 'This port side is not supported.')
+      : checked.errors?.[0]?.code === 'unknown-id' ? (de ? 'Ein gespeichertes Gerät oder ein Anschluss ist nicht verfügbar.' : 'A saved device or port is unavailable.')
+      : checked.errors?.[0]?.code === 'unsupported-version' ? (de ? 'Die gespeicherte Layout-Version wird nicht unterstützt.' : 'The saved layout version is not supported.')
       : checked.status === 'invalid' ? (de ? 'Der Entwurf ist ungültig. Bitte Positionen oder Einstellungen prüfen.' : 'The draft is invalid. Check its positions or settings.')
       : (de ? 'Diese Position oder Gerätekonfiguration wird noch nicht unterstützt.' : 'This position or equipment configuration is not supported yet.');
     let html = checked.status === 'rendered-candidate' ? checked.html : '';

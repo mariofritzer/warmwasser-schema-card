@@ -440,7 +440,7 @@ test('invalid layout keeps a marked draft while canonical preview remains visibl
   ui.inputs.x.value = '72'; ui.inputs.x.emit('change'); ui.inputs.y.value = '14'; ui.inputs.y.emit('change');
   assert.equal(ui.apply.disabled, true); assert.equal(ui.marker.style.display, 'block');
   assert.equal(ui.marker.style.left, '72px'); assert.equal(ui.marker.style.top, '14px');
-  assert.ok(ui.previewRoot._html.includes('<svg')); assert.match(ui.status.textContent, /not supported/);
+  assert.ok(ui.previewRoot._html.includes('<svg')); assert.match(ui.status.textContent, /overlap/);
 });
 
 test('reattached editor preserves dirty history but requires explicit rebind', () => {
@@ -483,7 +483,7 @@ test('separated visual editor changes grouped connector sides and validates seve
   editor.setConfig({ speicher: { typ: 'getrennt' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' } });
   const ui = editor._layoutPanel;
   assert.equal(ui.portControls.tank.hidden, false); assert.equal(ui.portControls.fm.hidden, false);
-  assert.deepEqual(Array.from(ui.select.children, option => option.value), ['tank', 'fm', 'wp', 'valve']);
+  assert.deepEqual(Array.from(ui.select.children, option => option.value), ['tank', 'buffer', 'fm', 'wp', 'valve']);
   ui.select.value = 'fm'; ui.select.emit('change');
   ui.inputs.x.value = '-110'; ui.inputs.x.emit('change');
   ui.portControls.tankSelect.value = 'left'; ui.portControls.tankSelect.emit('change');
@@ -571,4 +571,41 @@ test('removing saved layout retains dirty draft unbound through delayed HA echo'
   editor.setConfig(editor.events[0].detail.config);
   assert.equal(editor._layoutDraftState().status, 'unbound'); assert.equal(editor._applyLayoutDraft().status, 'unbound');
   assert.deepEqual(plain(editor._layoutDraftState().layout), draft); assert.equal(editor.events.length, 1);
+});
+
+test('empty separated draft shows neutral instruction after saved-layout removal', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'de', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'getrennt' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' },
+    layout: { version: 2, components: { fm: { x: -110, y: 14 } }, ports: { 'tank.fm-supply': { mode: 'manual', side: 'left' }, 'fm.supply': { mode: 'manual', side: 'right' } } } });
+  editor._removeLayoutButton.emit('click');
+  assert.match(editor._layoutPanel.status.textContent, /Komponente bewegen/);
+  assert.equal(editor._layoutPanel.apply.disabled, true);
+});
+
+test('separated device picker shows named equipment and permits buffer positioning', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'getrennt' }, name_fm: 'FM', name_wp: 'HP', fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' },
+    layout: { version: 2, components: { fm: { x: 400, y: 29 } } } });
+  const ui = editor._layoutPanel, labels = Object.fromEntries(ui.select.children.map(option => [option.value, option.textContent]));
+  assert.equal(labels.tank, 'Hot water tank'); assert.equal(labels.buffer, 'Buffer tank'); assert.equal(labels.wp, 'HP');
+  ui.select.value = 'buffer'; ui.select.emit('change');
+  const x = Number(ui.inputs.x.value); ui.inputs.x.value = String(x + 5); ui.inputs.x.emit('change');
+  assert.equal(editor._layoutDraftState().layout.components.buffer.x, x + 5);
+  assert.equal(editor._layoutDraftState().status, 'rendered-candidate');
+});
+
+test('separated editor restores saved port groups and valve rotation from config', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  const config = { speicher: { typ: 'getrennt' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' },
+    layout: { version: 2, components: { fm: { x: 400, y: 29 }, wp: { x: -233, y: 254 }, valve: { x: 272, y: 376, rotation: 90 } },
+      ports: { 'wp.lower-supply': { mode: 'manual', side: 'right' }, 'wp.return': { mode: 'manual', side: 'right' },
+        'tank.fm-supply': { mode: 'auto' }, 'fm.supply': { mode: 'auto' } } } };
+  const before = JSON.stringify(config); editor.setConfig(config); const ui = editor._layoutPanel;
+  assert.equal(ui.portControls.wpSelect.value, 'right'); assert.equal(ui.portControls.tankSelect.value, 'auto');
+  assert.equal(ui.portControls.fmSelect.value, 'auto'); assert.equal(ui.valveSelect.value, '90');
+  ui.select.value = 'valve'; ui.select.emit('change'); assert.equal(Number(ui.inputs.x.value), 272); assert.equal(Number(ui.inputs.y.value), 376);
+  assert.equal(ui.apply.disabled, false); assert.equal(JSON.stringify(config), before);
 });

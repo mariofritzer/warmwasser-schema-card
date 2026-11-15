@@ -348,3 +348,17 @@ for (const typ of ['schicht', 'trennblech']) test(`${typ} rejects a moved FM bod
   const result = resolve({ version: 2, components: { fm: { x: 115, y: -61 } } });
   assert.equal(result.status, 'unsupported'); assert.equal(result.errors[0].code, 'body-collision'); assert.equal(result.model, undefined);
 });
+
+test('separated buffer placement moves its feet and keeps the seven routed paths', () => {
+  const { raw, card, resolve } = fixture({ speicher: { typ: 'getrennt' }, wp: { betrieb: 'sensor.wp' } });
+  const buffer = card._model.components['buffer-tank'], feet = card._model.components['tank-feet'];
+  const layout = { version: 2, components: { fm: { x: 400, y: 29 }, buffer: { x: buffer.origin.x + 5, y: buffer.origin.y } } };
+  const result = resolve(layout);
+  assert.equal(result.status, 'candidate', JSON.stringify(result.errors));
+  assert.equal(result.model.components['buffer-tank'].origin.x, buffer.origin.x + 5);
+  assert.equal(result.model.components['tank-feet'].origin.x, feet.origin.x + 5);
+  assert.equal(Object.keys(result.routes).length, 7);
+  const rendered = context.preflight(raw, layout, { language: 'en', states: {} });
+  assert.equal(rendered.status, 'rendered-candidate', JSON.stringify(rendered.errors));
+  for (const route of Object.values(result.routes)) for (const layer of ['w0', 'w1', 'w2']) assert.ok(rendered.html.includes(`<path d="${route.path}" class="${layer}"`));
+});

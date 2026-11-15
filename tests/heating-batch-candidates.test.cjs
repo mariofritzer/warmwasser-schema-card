@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {card,routeDirectedJunctionConnection,validateDirectedFixedPolyline,compileDirectedJunctionBatch,resolveLegacyWpHeatingIncidences,inspectCompleteLegacyWpHeatingBatch,prepareLegacyWpHeatingRails,checkLegacyHeatingModelBodies,renderLegacyWpHeatingBatchPreview:preview,planLegacyWpHeatingAnimations:plan,deriveLegacyWpHeatingAnimationState:derive,reverseCompiledAnimationPath:reverse}=require('./helpers/routing-harness.cjs');
+const {card,routeDirectedJunctionConnection,validateDirectedFixedPolyline,compileDirectedJunctionBatch,resolveLegacyWpHeatingIncidences,inspectCompleteLegacyWpHeatingBatch,prepareLegacyWpHeatingRails,checkLegacyHeatingModelBodies,renderLegacyWpHeatingBatchPreview:preview,renderInternalWpHeatingCandidate:renderInternal,internalHeatingPaintBounds,planLegacyWpHeatingAnimations:plan,deriveLegacyWpHeatingAnimationState:derive,reverseCompiledAnimationPath:reverse}=require('./helpers/routing-harness.cjs');
 
 test('nine-line batch with canonical primary return', () => {
   const c=card('schicht',{fm:null,wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizkreise:[{vorlauf:'sensor.vl'}]}),m=c._model;
@@ -176,6 +176,34 @@ test('one pump has a continuous model-bound animation phase, without production 
   assert.ok(rendered.fragment.includes(`d="${animation.plan['heating-supply-0'].path}" class="w3"`));
   assert.ok(rendered.fragment.indexOf('data-preview-pump="heating-pump-0"')>rendered.fragment.indexOf('data-preview-rail="manifold-supply"'));
   assert.ok(rendered.fragment.includes('class="wp"'));
+  const legacy=c._render(), full=renderInternal(c,routes,policy);
+  assert.equal(full.reason,'complete-card-text-shadow-paint-validation-required');
+  assert.equal(full.status,'unsupported');
+  const actualRails = prepareLegacyWpHeatingRails(m, policy);
+  const paint = internalHeatingPaintBounds(routes, actualRails.rails, inspected.localBridge, policy);
+  const [, viewX, viewY, viewW, viewH] = full.html.match(/viewBox="([^ ]+) ([^ ]+) ([^ ]+) ([^"]+)"/).map(Number);
+  assert.ok(viewX <= paint.x && viewY <= paint.y && viewX + viewW >= paint.x + paint.width && viewY + viewH >= paint.y + paint.height);
+  assert.ok(full.html.includes(rendered.pipeFragment));
+  assert.equal((full.html.match(/data-preview-route="/g)||[]).length,11);
+  assert.equal((full.html.match(/data-preview-rail="/g)||[]).length,2);
+  assert.equal((full.html.match(/<circle cx="154" cy="514" r="10" fill="#2b2f35"/g)||[]).length,1);
+  assert.ok(!full.html.includes('data-preview-pump="heating-pump-0"'));
+  assert.equal(full.html.match(/<defs>[\s\S]*?<\/defs>/)[0],legacy.match(/<defs>[\s\S]*?<\/defs>/)[0]);
+  const pumpMarker='data-more="switch.hk"',legacyPump=legacy.indexOf(pumpMarker),candidatePump=full.html.indexOf(pumpMarker);
+  assert.ok(legacyPump>=0 && candidatePump>=0);
+  assert.equal(full.html.slice(candidatePump),legacy.slice(legacyPump),'pump, labels, valve, tank and WP rendering stay byte-identical');
+  for (const id of ['heating-supply-0','wp-lower-supply','wp-lower-return']) {
+    const group=full.html.match(new RegExp(`<g data-preview-route="${id}">([\\s\\S]*?)</g>`))[1];
+    const paths=[...group.matchAll(/<path d="([^"]+)" class="(w[0-3])"/g)];
+    assert.deepEqual(paths.map(p=>p[2]),['w0','w1','w2','w3']);
+    assert.equal(paths[3][1],animation.plan[id].path);
+  }
+  assert.equal(c._render(),legacy,'normal renderer is byte-identical after internal render');
+  assert.equal(renderInternal(c,routes.slice(1),policy).reason,'incomplete-heating-batch');
+  assert.equal(c._render(),legacy,'failed batch leaves no rendering context');
+  const originalRender=c._render; c._render=()=>{throw Error('test failure');};
+  assert.equal(renderInternal(c,routes,policy).reason,'heating-render-failed');
+  c._render=originalRender; assert.equal(c._render(),legacy,'throwing renderer clears the context');
   assert.equal(preview(m,routes,policy,actual,{...colours,supply:'#000000'},'operational-preview').reason,'invalid-preview-colour');
   c._hass.states['sensor.valve'].state='0';
   const lower=derive(c),lowerPlan=plan(m,routes,policy,lower);
@@ -189,6 +217,11 @@ test('one pump has a continuous model-bound animation phase, without production 
   assert.equal(offPlan.plan['wp-lower-supply'],null);
   const offPreview=preview(m,routes,policy,off,{supply:off.supplyColour,return:off.returnColour},'operational-preview');
   assert.ok(!offPreview.fragment.includes('class="wp"'));
+  const fullOff=renderInternal(c,routes,policy);
+  assert.equal(fullOff.reason,'complete-card-text-shadow-paint-validation-required');
+  assert.ok(!fullOff.html.includes('class="wp"'));
+  const legacyOff=c._render();
+  assert.equal(fullOff.html.slice(fullOff.html.indexOf(pumpMarker)),legacyOff.slice(legacyOff.indexOf(pumpMarker)));
   assert.equal(inspectCompleteLegacyWpHeatingBatch(m,routes.filter(r=>r.id!=='heating-pump-out-0'),policy).reason,'incomplete-heating-batch');
   const prepared=prepareLegacyWpHeatingRails(m,policy);
   const intruder={id:'hk-return',points:[{x:125,y:514},{x:180,y:514}]};
@@ -199,4 +232,16 @@ test('one pump has a continuous model-bound animation phase, without production 
   pump.origin.x+=10; pump.ports.in.x-=10; pump.ports.out.x-=10;
   m.connections['heating-pump-through-0'].to='heating-circuit-0.return';
   assert.equal(resolveLegacyWpHeatingIncidences(m).status,'unsupported');
+});
+
+
+test('internal paint bounds contain negative detours, wide rails, A11 bridges and actual stroke', () => {
+  const routes = [{ points: [{ x: -1000, y: -250 }, { x: -1000, y: 900 }, { x: 1500, y: 900 }] }];
+  const rails = [{ areas: [{ x: -4, y: 10, width: 40, height: 18 }, { x: -5.4, y: 8.6, width: 5.8, height: 20.8 }] }];
+  const bridge = { radius: 11, envelope: { x: 1479, y: 879, width: 42, height: 42 } };
+  const bounds = internalHeatingPaintBounds(routes, rails, bridge, { radius: 4, bridgeRadius: 6, halfWidth: 2 });
+  assert.equal(bounds.x, -1016); assert.equal(bounds.y, -266);
+  assert.ok(bounds.x + bounds.width >= 1521); assert.ok(bounds.y + bounds.height >= 921);
+  assert.equal(internalHeatingPaintBounds(routes, [{ areas: [{ x: 0, y: 0, width: Infinity, height: 1 }] }], bridge, {}), null);
+  assert.equal(internalHeatingPaintBounds([{ points: [{ x: NaN, y: 0 }, { x: 1, y: 1 }] }], rails, bridge, {}), null);
 });
