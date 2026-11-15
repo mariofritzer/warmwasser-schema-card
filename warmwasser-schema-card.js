@@ -1463,6 +1463,21 @@ function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localB
     if (![box.x,box.y,box.x+box.width,box.y+box.height].every(Number.isFinite)) return unsupported('invalid-model-body');
     bodies.push(box);
   }
+  // These are the seven `stub(...)` calls visible in this narrow WP+1HK
+  // configuration. The .wk stroke extends 0.4px on every side.
+  const stubRefs=['wp.upper-supply','wp.lower-supply','wp.return',
+    'tank.wp-supply','tank.wp-return','tank.lower-supply','tank.lower-return'];
+  for (const ref of stubRefs) {
+    const [id,name]=ref.split('.'), c=model.components[id], p=c && c.ports[name], s=p && p.stub;
+    if (!s || ![s.x,s.y,s.width,s.height,p.x,p.y].every(Number.isFinite) || s.width<0 || s.height<0 ||
+        p.x<s.x || p.x>s.x+s.width || p.y<s.y || p.y>s.y+s.height) return unsupported('invalid-model-stub');
+    const shape=p.direction==='top' ? [p.x-6,p.y-4,12,10] : p.direction==='left' ? [p.x-4,p.y-6,10,12]
+      : p.direction==='right' ? [p.x-8,p.y-6,14,12] : null;
+    if (!shape || [s.x,s.y,s.width,s.height].some((v,i)=>v!==shape[i])) return unsupported('invalid-model-stub');
+    const box={id,ref,x:c.origin.x+s.x-0.4,y:c.origin.y+s.y-0.4,width:s.width+0.8,height:s.height+0.8};
+    if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite)) return unsupported('invalid-model-stub');
+    bodies.push(box);
+  }
   const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
   if (prepared.rails.some(r=>r.areas.some(a=>bodies.some(b=>hit(a,b))))) return unsupported('model-body-rail-contact');
   if (!localBridge || !localBridge.envelope || bodies.some(b=>hit(localBridge.envelope,b))) return unsupported('model-body-bridge-contact');
@@ -1477,8 +1492,9 @@ function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localB
       const box={x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
         width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half};
       if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
-      const collision=bodies.find(body=>hit(box,body) && !(i===0 && body.id===from) && !(i===route.points.length-2 && body.id===to));
-      if (collision) return {status:'unsupported',reason:'model-body-line-contact',connectionId:route.id,bodyId:collision.id,segment:i};
+      const collision=bodies.find(body=>hit(box,body) && !(i===0 && (body.ref ? body.ref===edge.from : body.id===from)) &&
+        !(i===route.points.length-2 && (body.ref ? body.ref===edge.to : body.id===to)));
+      if (collision) return {status:'unsupported',reason:collision.ref?'model-stub-line-contact':'model-body-line-contact',connectionId:route.id,bodyId:collision.id,segment:i};
     }
     for (let i=1;i<route.points.length-1;i++) {
       const p=route.points[i], extent=radius+half;
@@ -3222,7 +3238,7 @@ const aufraeumen = (o) => {
 };
 
 class WarmwasserSchemaCardEditor extends HTMLElement {
-  // Private editor state only. No UI consumes these methods yet.
+  // Draft state is private until the visual editor is ready for release.
   _beginLayoutDraft() {
     let initial;
     try { initial = snapshotLayout(Object.prototype.hasOwnProperty.call(this._config, 'layout') ? this._config.layout : { version: 2 }); }
@@ -3231,15 +3247,15 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     return this._layoutDraftState();
   }
 
-  _layoutDraftState() {
+  _layoutDraftState(includePreview = false) {
     if (!this._layoutDraft) return null;
     const { history, index } = this._layoutDraft, layout = history[index];
     const checked = preflightLayoutRender(this._config, layout, this._hass);
     return { layout, canUndo: index > 0, canRedo: index + 1 < history.length,
-      status: checked.status, errors: checked.errors || [] };
+      status: checked.status, errors: checked.errors || [], ...(includePreview ? { html: checked.html } : {}) };
   }
 
-  _editLayoutDraft(layout) {
+  _editLayoutDraft(layout, evaluate = true) {
     if (!this._layoutDraft) this._beginLayoutDraft();
     let next;
     try { next = snapshotLayout(layout); }
@@ -3247,19 +3263,19 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const draft = this._layoutDraft;
     draft.history = [...draft.history.slice(0, draft.index + 1), next];
     draft.index++;
-    return this._layoutDraftState();
+    return evaluate ? this._layoutDraftState() : null;
   }
 
-  _undoLayoutDraft() {
+  _undoLayoutDraft(evaluate = true) {
     if (!this._layoutDraft) return null;
     if (this._layoutDraft.index > 0) this._layoutDraft.index--;
-    return this._layoutDraftState();
+    return evaluate ? this._layoutDraftState() : null;
   }
 
-  _redoLayoutDraft() {
+  _redoLayoutDraft(evaluate = true) {
     if (!this._layoutDraft) return null;
     if (this._layoutDraft.index + 1 < this._layoutDraft.history.length) this._layoutDraft.index++;
-    return this._layoutDraftState();
+    return evaluate ? this._layoutDraftState() : null;
   }
 
   _applyLayoutDraft() {
@@ -3293,6 +3309,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._config = c;
     if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
+    if (this._layoutPanel) { this._beginLayoutDraft(); this._refreshLayoutUI(); }
   }
 
   set hass(hass) {
@@ -3300,6 +3317,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._hass = hass;
     if (this._forms) this._forms.forEach((f) => { f.hass = hass; });
     if (first && this._config) this._build();
+    else if (this._layoutPanel) this._refreshLayoutUI({ preserveFocusedInput: true });
   }
 
   _L() { return LBL[sprache(this._config, this._hass)]; }
@@ -3375,6 +3393,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     }
     cfg.type = this._config.type || 'custom:warmwasser-schema-card';
     this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
+    if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
 
   _setList(key, arr) {
@@ -3382,11 +3401,121 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(this._config[k]) ? this._config[k].length : 0)).join(',') + `|${!!this._config.verteiler}`;
   }
 
+  // Deliberately closed until full scope, interaction and painted-envelope
+  // checks are complete. No YAML value or user setting opens this gate.
+  _visualLayoutEditorEnabled() { return false; }
+
+  _buildLayoutUI(parent) {
+    if (!this._layoutDraft) this._beginLayoutDraft();
+    const panel = document.createElement('section'); panel.className = 'layout-editor';
+    const de = sprache(this._config, this._hass) === 'de';
+    const label = (deText, enText) => de ? deText : enText;
+    const heading = document.createElement('h3'); heading.textContent = label('Layout-Entwurf', 'Layout draft'); panel.appendChild(heading);
+    const selectLabel = document.createElement('label'); selectLabel.textContent = label('Komponente ', 'Component ');
+    const select = document.createElement('select'); select.setAttribute('aria-label', label('Komponente', 'Component')); selectLabel.appendChild(select); panel.appendChild(selectLabel);
+    const controls = document.createElement('div'); controls.className = 'layout-controls';
+    const inputs = {};
+    for (const axis of ['x', 'y']) {
+      const wrapper = document.createElement('label'); wrapper.textContent = axis.toUpperCase() + ' ';
+      const input = document.createElement('input'); input.type = 'number'; input.step = '1'; input.inputMode = 'decimal'; input.setAttribute('aria-label', axis.toUpperCase());
+      input.addEventListener('change', () => {
+        if (input.value.trim() === '' || !Number.isFinite(Number(input.value))) { this._refreshLayoutUI(); return; }
+        const position = this._layoutUIPosition(); if (!position) return;
+        this._setLayoutUIPosition({ ...position, [axis]: Number(input.value) });
+      });
+      wrapper.appendChild(input); controls.appendChild(wrapper); inputs[axis] = input;
+    }
+    const button = (text, action, aria) => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = text;
+      if (aria) b.setAttribute('aria-label', aria); b.addEventListener('click', action); controls.appendChild(b); return b;
+    };
+    const move = (dx, dy) => { const p = this._layoutUIPosition(); if (p) this._setLayoutUIPosition({ x: p.x + dx, y: p.y + dy }); };
+    for (const [text, dx, dy, name] of [['←', -1, 0, label('Links', 'Left')], ['↑', 0, -1, label('Hoch', 'Up')], ['↓', 0, 1, label('Runter', 'Down')], ['→', 1, 0, label('Rechts', 'Right')]]) button(text, () => move(dx, dy), name);
+    const undo = button(label('Rückgängig', 'Undo'), () => { this._undoLayoutDraft(false); this._refreshLayoutUI(); });
+    const redo = button(label('Wiederholen', 'Redo'), () => { this._redoLayoutDraft(false); this._refreshLayoutUI(); });
+    const apply = button(label('Anwenden', 'Apply'), () => { this._applyLayoutDraft(); if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); });
+    panel.appendChild(controls);
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.appendChild(status);
+    const preview = document.createElement('div'); preview.className = 'layout-preview'; preview.tabIndex = 0;
+    preview.setAttribute('aria-label', label('Layout-Vorschau; Pfeiltasten bewegen die Komponente', 'Layout preview; arrow keys move the component'));
+    const previewRoot = preview.attachShadow({ mode: 'open' }); panel.appendChild(preview);
+    select.addEventListener('change', () => this._refreshLayoutUI());
+    panel.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault(); if (event.shiftKey) this._redoLayoutDraft(false); else this._undoLayoutDraft(false); this._refreshLayoutUI(); return;
+      }
+      if (event.target !== preview || event.ctrlKey || event.metaKey || event.altKey) return;
+      const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+      if (direction) { event.preventDefault(); const step = event.shiftKey ? 10 : 1; move(direction[0] * step, direction[1] * step); }
+    });
+    this._layoutPanel = { panel, select, inputs, undo, redo, apply, status, previewRoot };
+    parent.appendChild(panel); this._refreshLayoutUI();
+  }
+
+  _layoutUIPosition() {
+    const ui = this._layoutPanel, draft = this._layoutDraft;
+    if (!ui || !draft || !ui.select.value) return null;
+    const layout = draft.history[draft.index], id = ui.select.value;
+    const existing = layoutObject(layout?.components) && layout.components[id];
+    if (layoutObject(existing) && Number.isFinite(existing.x) && Number.isFinite(existing.y)) return { x: existing.x, y: existing.y };
+    try {
+      const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
+      const origin = card._model.components[id]?.origin;
+      return origin ? { x: origin.x, y: origin.y } : null;
+    } catch (_) { return null; }
+  }
+
+  _setLayoutUIPosition(position) {
+    const ui = this._layoutPanel, draft = this._layoutDraft;
+    if (!ui || !draft || !ui.select.value || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+    const current = draft.history[draft.index];
+    // Do not silently replace malformed or unknown data with a fresh layout.
+    if (!layoutObject(current) || current.version !== 2 || (current.components !== undefined && !layoutObject(current.components))) return;
+    const existing = current.components?.[ui.select.value];
+    this._editLayoutDraft({ ...current, components: { ...(current.components || {}),
+      [ui.select.value]: { ...(layoutObject(existing) ? existing : {}), ...position } } }, false);
+    this._refreshLayoutUI();
+  }
+
+  _refreshLayoutUI({ preserveFocusedInput = false } = {}) {
+    const ui = this._layoutPanel;
+    if (!ui || !this._layoutDraft) return;
+    const state = this._layoutDraftState(true), checked = state;
+    let ids = [];
+    try {
+      const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
+      const candidate = resolveLayoutCandidate(this._config, card._cfg, { version: 2 });
+      if (candidate.status === 'candidate') ids = Object.keys(candidate.capabilities.components);
+    } catch (_) { /* configuration remains unavailable */ }
+    const selected = ui.select.value;
+    ui.select.replaceChildren();
+    for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = id === 'fm' ? 'FM' : 'WP'; ui.select.appendChild(option); }
+    ui.select.value = ids.includes(selected) ? selected : ids[0] || '';
+    const p = this._layoutUIPosition();
+    for (const axis of ['x', 'y']) {
+      const input = ui.inputs[axis];
+      input.disabled = !p;
+      // A HA state update can arrive while the user is typing, before change
+      // fires. Leave that field alone until it is committed or cancelled.
+      if (!(preserveFocusedInput && p && this.shadowRoot?.activeElement === input)) input.value = p ? String(p[axis]) : '';
+    }
+    ui.undo.disabled = !state.canUndo; ui.redo.disabled = !state.canRedo; ui.apply.disabled = checked.status !== 'rendered-candidate';
+    ui.status.textContent = checked.status === 'rendered-candidate' ? (sprache(this._config, this._hass) === 'de' ? 'Entwurf geprüft' : 'Draft validated') : `${checked.status}: ${(checked.errors || []).map(e => e.code).join(', ')}`;
+    let html = checked.status === 'rendered-candidate' ? checked.html : '';
+    if (!html && this._hass && layoutObject(this._hass.states)) {
+      // An invalid draft never reaches the renderer; show the canonical card.
+      try { const card = new WarmwasserSchemaCard(); card.setConfig(this._config); card._hass = this._hass; html = card._render(); }
+      catch (_) { html = ''; }
+    }
+    ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
+  }
+
   _build() {
     if (!this._config) return;
     const L = this._L();
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
     const root = this.shadowRoot;
+    this._layoutPanel = null;
     root.innerHTML = `<style>
       .sec{margin-top:18px}.kopf{display:flex;align-items:center;gap:8px;font-weight:500;margin-bottom:6px;color:var(--primary-text-color)}
       .item{border:1px solid var(--divider-color,#ddd);border-radius:10px;padding:8px 10px 4px;margin-bottom:8px}
@@ -3394,6 +3523,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button{font:inherit;cursor:pointer;border:1px solid var(--divider-color,#ccc);background:var(--card-background-color,#fff);color:var(--primary-text-color);border-radius:8px;padding:6px 12px}
       button.rm{border:none;background:none;color:var(--error-color,#db4437);padding:2px 6px}
       button.add{color:var(--primary-color)}
+      .layout-editor{margin-top:20px;border:1px solid var(--divider-color,#ddd);padding:12px;border-radius:10px}
+      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-preview{width:100%;overflow:auto}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
     if (this._config.verteiler) {
@@ -3438,6 +3569,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       sec.appendChild(add);
       w.appendChild(sec);
     }
+    if (this._visualLayoutEditorEnabled()) this._buildLayoutUI(w);
   }
 }
 

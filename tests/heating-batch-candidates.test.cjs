@@ -46,6 +46,26 @@ test('nine-line batch with canonical primary return', () => {
   assert.equal(bodyResult.reason,'model-body-line-contact');
   assert.equal(bodyResult.bodyId,'wp');
   assert.equal(bodyResult.segment,2);
+  // A different WP port's stub is an obstacle even on this route's first leg.
+  const foreignStub={id:'wp-lower-supply',points:[{x:330,y:140},{x:370,y:140}]};
+  assert.equal(checkLegacyHeatingModelBodies(m,prepared,[foreignStub],{routes:{}},complete.localBridge,policy).reason,'model-stub-line-contact');
+  // Both strokes clear the WP body and its upper stub; only the A6 envelope
+  // around their crossing reaches the stub's 0.4px stroke at y=141.6.
+  const make=(id,a,b)=>validateDirectedFixedPolyline({id,points:[a,b],nodes:[{ref:id+'-a',...a},{ref:id+'-b',...b}]},policy);
+  const h=make('hk-supply',{x:342,y:131},{x:382,y:131});
+  const v=make('hk-return',{x:362,y:111},{x:362,y:143});
+  for (const route of [h,v]) {
+    const single=compileDirectedJunctionBatch([route],policy);
+    assert.equal(single.status,'routed');
+    assert.equal(checkLegacyHeatingModelBodies(m,prepared,[route],single,complete.localBridge,policy).status,'clear');
+  }
+  const crossing=compileDirectedJunctionBatch([h,v],policy);
+  assert.equal(crossing.status,'routed');
+  assert.equal(checkLegacyHeatingModelBodies(m,prepared,[h,v],crossing,complete.localBridge,policy).reason,'model-body-bridge-contact');
+  const stub=m.components.wp.ports['upper-supply'].stub;
+  stub.width++;
+  assert.equal(inspectCompleteLegacyWpHeatingBatch(m,routes,policy).reason,'invalid-model-stub');
+  stub.width--;
   m.components['tank-feet'].bounds.x=107;
   m.components['tank-feet'].bounds.y=-22;
   m.components['tank-feet'].bounds.width=150;

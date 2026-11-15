@@ -10,7 +10,10 @@ class Element {
   constructor(tag = '') { this.tagName = tag; this.children = []; this.listeners = {}; }
   appendChild(child) { this.children.push(child); return child; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
-  emit(type, detail) { for (const fn of this.listeners[type] || []) fn({ detail, stopPropagation() {} }); }
+  setAttribute(name, value) { (this.attributes ||= {})[name] = value; }
+  replaceChildren(...children) { this.children = children; }
+  attachShadow() { return this.shadowRoot = new Element('shadow'); }
+  emit(type, detail) { for (const fn of this.listeners[type] || []) fn({ detail, target: this, stopPropagation() {}, preventDefault() {}, ...(detail || {}) }); }
   set innerHTML(value) { this._html = value; this.children = []; }
   getElementById() { return this.appendChild(new Element('container')); }
 }
@@ -174,4 +177,88 @@ test('apply revalidates after an unrelated form enables unsupported equipment', 
   assert.equal(editor.events.length, 1);
   assert.equal(editor._config.layout, undefined);
   assert.equal(editor._layoutDraftState().status, 'unsupported');
+});
+
+test('visual editor remains absent behind its default gate', () => {
+  const { editor } = layoutEditor();
+  assert.equal(editor._layoutPanel, null);
+  assert.equal(descendants(editor.shadowRoot).some(node => node.className === 'layout-editor'), false);
+});
+
+test('guarded visual editor previews, edits, undoes and applies via real callbacks', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  const config = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, wp: { betrieb: 'sensor.wp' } };
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.wp': { state: 'on' } } };
+  editor.setConfig(config);
+  const ui = editor._layoutPanel;
+  assert.ok(ui); assert.ok(ui.previewRoot._html.includes('<svg'));
+  assert.equal(ui.select.value, 'fm'); assert.equal(ui.apply.disabled, true);
+  const originalX = Number(ui.inputs.x.value), originalY = Number(ui.inputs.y.value);
+  ui.inputs.x.value = String(originalX + 30); ui.inputs.x.emit('change');
+  ui.inputs.y.value = String(Number(ui.inputs.y.value) + 15); ui.inputs.y.emit('change');
+  assert.equal(ui.apply.disabled, false); assert.ok(ui.previewRoot._html.includes('<svg'));
+  const validHtml = ui.previewRoot._html;
+  assert.equal(editor.events, undefined);
+  ui.undo.emit('click'); assert.equal(Number(ui.inputs.y.value), originalY);
+  ui.redo.emit('click'); assert.equal(ui.previewRoot._html, validHtml);
+  ui.select.value = 'wp'; ui.select.emit('change'); assert.equal(ui.select.value, 'wp');
+  ui.apply.emit('click'); assert.equal(editor.events.length, 1);
+  assert.equal(editor.events[0].detail.config.layout.components.fm.x, originalX + 30);
+});
+
+test('guarded visual editor keyboard and touch buttons preserve draft and block invalid apply', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel, original = Number(ui.inputs.x.value);
+  const right = descendants(ui.panel).find(node => node.attributes?.['aria-label'] === 'Right');
+  right.emit('click'); assert.equal(Number(ui.inputs.x.value), original + 1);
+  // The preview host itself receives arrow input; child shadow content is not required.
+  const previewHost = descendants(ui.panel).find(node => node.className === 'layout-preview');
+  ui.panel.emit('keydown', { target: previewHost, key: 'ArrowRight', shiftKey: true });
+  assert.equal(Number(ui.inputs.x.value), original + 11);
+  ui.panel.emit('keydown', { target: previewHost, key: 'z', ctrlKey: true });
+  assert.equal(Number(ui.inputs.x.value), original + 1);
+  ui.inputs.x.value = '72'; ui.inputs.x.emit('change'); ui.inputs.y.value = '14'; ui.inputs.y.emit('change');
+  assert.equal(ui.apply.disabled, true); assert.ok(ui.previewRoot._html.includes('<svg'));
+  ui.apply.emit('click'); assert.equal(editor.events, undefined);
+});
+
+test('visual editor keeps a focused uncommitted number during hass updates', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  const states = value => ({ language: 'de', states: { 'sensor.fm': { state: value } } });
+  editor.hass = states('on');
+  editor.setConfig({ sprache: 'de', speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel, original = Number(ui.inputs.x.value);
+  editor.shadowRoot.activeElement = ui.inputs.x;
+  ui.inputs.x.value = String(original + 30);
+  editor.hass = states('off');
+  assert.equal(ui.inputs.x.value, String(original + 30));
+  assert.equal(editor._layoutDraft.history.length, 1);
+  ui.inputs.x.emit('change');
+  assert.equal(editor._layoutDraft.history.length, 2);
+  assert.equal(editor._layoutDraftState().layout.components.fm.x, original + 30);
+  editor.shadowRoot.activeElement = null;
+  editor._undoLayoutDraft(); editor._refreshLayoutUI();
+  assert.equal(Number(ui.inputs.x.value), original);
+});
+
+test('visual refresh performs one live preflight render per valid draft', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  const state = value => ({ language: 'en', states: { 'sensor.fm': { state: value } } });
+  editor.hass = state('on');
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel;
+  ui.inputs.x.value = String(Number(ui.inputs.x.value) + 30); ui.inputs.x.emit('change');
+  ui.inputs.y.value = String(Number(ui.inputs.y.value) + 15); ui.inputs.y.emit('change');
+  assert.equal(ui.apply.disabled, false);
+  const Card = registry.get('warmwasser-schema-card'), render = Card.prototype._render;
+  let calls = 0;
+  try {
+    Card.prototype._render = function() { calls++; return render.call(this); };
+    editor.hass = state('off');
+    assert.equal(calls, 1);
+    assert.ok(ui.previewRoot._html.includes('<svg'));
+    assert.equal(ui.apply.disabled, false);
+  } finally { Card.prototype._render = render; }
 });
