@@ -26,6 +26,11 @@ test('nine-line batch with canonical primary return', () => {
   assert.equal(result.status,'routed',JSON.stringify(result));
   const complete=inspectCompleteLegacyWpHeatingBatch(m,routes,policy);
   assert.equal(complete.reason,'heating-decorations-and-paint-validation-required',JSON.stringify(complete));
+  const tankShadow=complete.shadows.find(s=>s.id==='tank');
+  assert.deepEqual([tankShadow.x,tankShadow.y,tankShadow.width,tankShadow.height],[33,-94,208,576]);
+  assert.ok(complete.shadowContacts.some(c=>c.connections.length>0));
+  assert.ok(complete.unmeasuredText.includes('wp-status-and-readings'));
+  assert.ok(complete.unresolved.includes('paint-order-and-animation'));
   const feet=m.components['tank-feet'], original={...feet.bounds};
   // Only the corner of the A11 envelope touches this point obstacle.
   Object.assign(feet.bounds,{x:138-feet.origin.x,y:464-feet.origin.y,width:0,height:0});

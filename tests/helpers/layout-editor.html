@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Local layout editor harness</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 1050px; margin: auto; padding: 1rem; color: #222; }
+    .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+    button { font: inherit; padding: .5rem; } pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #editor { display: block; border: 1px solid #aaa; padding: 1rem; }
+    ha-form { display: block; padding: .4rem; border: 1px dotted #aaa; }
+    #result { font-weight: bold; } .pass { color: #075; } .fail { color: #b12; }
+  </style>
+</head>
+<body>
+  <h1>Local layout editor harness</h1>
+  <p>Test instance only. The normal editor and card gates remain closed. Mock entities are local to this page.</p>
+  <div class="actions">
+    <button id="reset">Reset fixture</button>
+    <button id="temperature">Toggle FM label overflow</button>
+    <button id="wp">Disable / restore WP</button>
+    <button id="smoke">Run smoke checks</button>
+  </div>
+  <p id="result" role="status"></p>
+  <div id="editor"></div>
+  <h2>Last emitted configuration</h2><pre id="config">No event yet</pre>
+  <script>
+    // Minimal stand-in for HA's form: the actual editor and card remain real.
+    customElements.define('ha-form', class extends HTMLElement {
+      connectedCallback() { this.textContent = 'Home Assistant form mock'; }
+    });
+    customElements.define('ha-icon', class extends HTMLElement {});
+  </script>
+  <script src="../../warmwasser-schema-card.js"></script>
+  <script>
+    (() => {
+      const fixture = () => ({ type: 'custom:warmwasser-schema-card', sprache: 'en',
+        speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm', temp: 'sensor.temp' },
+        wp: { betrieb: 'sensor.wp' } });
+      let config, hass, editor, enabledWp;
+      const copy = value => JSON.parse(JSON.stringify(value));
+      const output = document.getElementById('config'), result = document.getElementById('result');
+      function install(nextConfig) {
+        config = copy(nextConfig);
+        const host = document.getElementById('editor'); host.replaceChildren();
+        editor = document.createElement('warmwasser-schema-card-editor');
+        editor._visualLayoutEditorEnabled = () => true; // Test instance only.
+        editor.addEventListener('config-changed', event => {
+          config = copy(event.detail.config);
+          output.textContent = JSON.stringify(config, null, 2);
+          editor.setConfig(copy(config)); // Match the synchronous HA echo.
+        });
+        host.appendChild(editor); editor.hass = hass; editor.setConfig(copy(config));
+      }
+      function reset() {
+        enabledWp = true;
+        hass = { language: 'en', states: { 'sensor.fm': { state: 'on' }, 'sensor.temp': { state: '42' }, 'sensor.wp': { state: 'on' } } };
+        output.textContent = 'No event yet'; result.textContent = '';
+        install(fixture());
+      }
+      function temperature() {
+        const states = { ...hass.states, 'sensor.temp': { state: hass.states['sensor.temp'].state === '42' ? '1000000000' : '42' } };
+        hass = { ...hass, states }; editor.hass = hass;
+      }
+      function wp() {
+        enabledWp = !enabledWp;
+        config = { ...config, wp: enabledWp ? { betrieb: 'sensor.wp' } : {} };
+        editor.setConfig(copy(config));
+      }
+      function canonicalSvg() {
+        const card = document.createElement('warmwasser-schema-card');
+        card.setConfig(copy(config)); card._hass = hass;
+        const container = document.createElement('div'); container.innerHTML = card._render();
+        return container.querySelector('svg')?.outerHTML;
+      }
+      function smoke() {
+        const checks = [];
+        const check = (condition, label) => { checks.push({ ok: !!condition, label }); if (!condition) throw new Error(label); };
+        try {
+          reset();
+          let ui = editor._layoutPanel;
+          check(!!ui.previewRoot.querySelector('svg'), 'canonical SVG preview');
+          const x = Number(ui.inputs.x.value), y = Number(ui.inputs.y.value);
+          ui.inputs.x.value = String(x + 30); ui.inputs.x.dispatchEvent(new Event('change', { bubbles: true }));
+          ui.inputs.y.value = String(y + 15); ui.inputs.y.dispatchEvent(new Event('change', { bubbles: true }));
+          const candidateSvg = ui.previewRoot.querySelector('svg')?.outerHTML;
+          check(!ui.apply.disabled && !!candidateSvg && candidateSvg !== canonicalSvg(), 'candidate preview and valid apply');
+          ui.undo.click(); check(Number(ui.inputs.y.value) === y, 'undo');
+          ui.redo.click(); check(Number(ui.inputs.y.value) === y + 15, 'redo');
+          ui.apply.click(); check(config.layout.components.fm.x === x + 30, 'apply and synchronous HA echo');
+          check(!!editor._layoutPanel.previewRoot.querySelector('svg'), 'preview after echo');
+          temperature();
+          const fallbackSvg = editor._layoutPanel.previewRoot.querySelector('svg')?.outerHTML;
+          check(editor._layoutPanel.apply.disabled && !!fallbackSvg && fallbackSvg === canonicalSvg(), 'unsafe label uses canonical preview');
+          temperature(); check(!editor._layoutPanel.apply.disabled, 'live recovery');
+          install(config); ui = editor._layoutPanel;
+          check(Number(ui.inputs.x.value) === x + 30 && !ui.apply.disabled, 'reload stored layout');
+          result.textContent = `PASS (${checks.length}): ${checks.map(c => c.label).join('; ')}`; result.className = 'pass';
+        } catch (error) { result.textContent = `FAIL: ${error.message}`; result.className = 'fail'; }
+        return checks;
+      }
+      document.getElementById('reset').addEventListener('click', reset);
+      document.getElementById('temperature').addEventListener('click', temperature);
+      document.getElementById('wp').addEventListener('click', wp);
+      document.getElementById('smoke').addEventListener('click', smoke);
+      window.layoutHarness = { reset, temperature, wp, smoke, get editor() { return editor; }, get config() { return copy(config); } };
+      reset();
+      if (new URLSearchParams(location.search).has('smoke')) smoke();
+    })();
+  </script>
+</body>
+</html>

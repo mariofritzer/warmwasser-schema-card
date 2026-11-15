@@ -1512,6 +1512,48 @@ function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localB
   return {status:'clear'};
 }
 
+// `wwShadow` uses SVG's objectBoundingBox filter region x/y=-30%,
+// width/height=160%. This inventories its clipped region, not a claim that
+// the entire region is opaque or that intersecting it is visually safe.
+// Text bounds depend on rendered strings and fonts and are intentionally not
+// estimated from character count or these component bounds.
+function inventoryLegacyHeatingDecorations(model, prepared, routes, compiled, localBridge, options = {}) {
+  const unsupported = reason => ({status:'unsupported',reason});
+  const shadows=[];
+  for (const id of ['tank','wp']) {
+    const c=model.components[id], b=c && c.bounds, o=c && c.origin;
+    if (!b || !o || ![o.x,o.y,b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<=0 || b.height<=0)
+      return unsupported('invalid-decoration-inventory');
+    // Both rendered shadowed rectangles use origin x/y and bounds width/height.
+    const box={id,x:o.x-0.3*b.width,y:o.y-0.3*b.height,width:1.6*b.width,height:1.6*b.height};
+    if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite))
+      return unsupported('invalid-decoration-inventory');
+    shadows.push(box);
+  }
+  const half=options.halfWidth ?? 5, corner=(options.radius ?? 8)+half, bridge=(options.bridgeRadius ?? 6)+half;
+  const boxes=[];
+  for (const route of routes) {
+    for (let i=0;i<route.points.length-1;i++) {
+      const a=route.points[i],b=route.points[i+1];
+      boxes.push({id:route.id,x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
+        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half});
+    }
+    for (const p of route.points.slice(1,-1)) boxes.push({id:route.id,x:p.x-corner,y:p.y-corner,width:2*corner,height:2*corner});
+  }
+  for (const r of prepared.rails) for (const area of r.areas) boxes.push({id:r.id,...area});
+  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
+    const p=crossing.point; boxes.push({id:route.id,x:p.x-bridge,y:p.y-bridge,width:2*bridge,height:2*bridge});
+  }
+  boxes.push({id:localBridge.owner,...localBridge.envelope});
+  if (boxes.some(b=>![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite)))
+    return unsupported('invalid-decoration-inventory');
+  const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+  const shadowContacts=shadows.map(shadow=>({shadow:shadow.id,connections:[...new Set(boxes.filter(b=>hit(b,shadow)).map(b=>b.id))].sort()}));
+  return {status:'unsupported',reason:'heating-decorations-and-paint-validation-required',shadows,shadowContacts,
+    unmeasuredText:['tank-volume','wp-manufacturer','wp-name','wp-status-and-readings','heating-circuit-labels'],
+    unresolved:['text-bounds','shadow-paint-policy','other-decorations','paint-order-and-animation']};
+}
+
 // Bind the complete canonical WP/one-circuit inventory to one model before
 // invoking the shared geometry checker. A clear geometry result alone is not
 // permission to render: paint order and animated paths still need validation.
@@ -1603,10 +1645,9 @@ function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
     if (compiled.status!=='routed') return compiled;
     const bodyCheck=checkLegacyHeatingModelBodies(model,prepared,routes,compiled,checked.localBridge,options);
     if (bodyCheck.status!=='clear') return bodyCheck;
-    // The supplied policy is not yet derived from all model bodies, labels and
-    // decorations. No rendering clearance can be inferred from this result.
-    return {status:'unsupported', reason:'heating-decorations-and-paint-validation-required',
-      inventory:{ordinary:[...ordinary],rails:[...rails]}, localBridge:checked.localBridge};
+    const decorations=inventoryLegacyHeatingDecorations(model,prepared,routes,compiled,checked.localBridge,options);
+    if (decorations.reason!=='heating-decorations-and-paint-validation-required') return decorations;
+    return {...decorations,inventory:{ordinary:[...ordinary],rails:[...rails]},localBridge:checked.localBridge};
   } catch (_) { return unsupported('unproven-connection-inventory'); }
 }
 
