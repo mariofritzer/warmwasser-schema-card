@@ -514,3 +514,61 @@ test('dragging a rotated valve uses its origin rather than its offset bounds', (
   const valve = editor._layoutDraft.history[editor._layoutDraft.index].components.valve;
   assert.equal(valve.x, 233); assert.equal(valve.y, 271.5); assert.equal(valve.rotation, 90);
 });
+
+test('editor reports saved invalid layout, then updates notice when config recovers', () => {
+  const editor = editorFor({ sprache: 'de', speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, layout: { version: 1 } });
+  editor.hass = { language: 'de', states: { 'sensor.fm': { state: 'on' } } };
+  assert.equal(editor._layoutNotice.attributes.role, 'status');
+  assert.equal(editor._layoutNotice.attributes['aria-live'], 'polite');
+  assert.match(editor._layoutNotice.textContent, /Layout-Version wird nicht unterstützt/);
+  editor.setConfig({ sprache: 'de', speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, layout: { version: 2, components: { fm: { x: 370, y: 29 } } } });
+  assert.doesNotMatch(editor._layoutNotice.textContent, /Layout-Version/);
+  assert.match(editor._layoutNotice.textContent, /Layoutfunktion ist derzeit deaktiviert/);
+  editor.setConfig({ sprache: 'de', speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  assert.equal(editor._layoutNotice.hidden, true);
+});
+
+test('remove saved layout emits only that deletion, preserves opaque data and tolerates HA echo', () => {
+  const raw = { type: 'custom:warmwasser-schema-card', sprache: 'en', titel: '', fm: true, trennung: false, layout: { version: 2, strange: false },
+    future: { empty: '', enabled: false, values: [0, null] }, heizkreise: [{ id: 'kept', custom: false }] };
+  const editor = editorFor(raw), before = plain(raw), events = [];
+  editor.dispatchEvent = event => { events.push(event); editor.setConfig(event.detail.config); return true; };
+  assert.equal(editor._removeLayoutButton.textContent, 'Remove saved layout');
+  editor._removeLayoutButton.emit('click');
+  assert.equal(events.length, 1); assert.equal(events[0].type, 'config-changed');
+  assert.equal(events[0].bubbles, true); assert.equal(events[0].composed, true);
+  delete before.layout;
+  assert.deepEqual(plain(events[0].detail.config), before);
+  assert.equal(Object.hasOwn(editor._config, 'layout'), false); assert.equal(editor._removeLayoutButton.hidden, true);
+  editor._removeSavedLayout(); assert.equal(events.length, 1);
+});
+
+for (const echo of ['none', 'delayed']) test(`removing saved layout clears clean draft before ${echo} HA echo`, () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  const config = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, layout: { version: 2, components: { fm: { x: 370, y: 29 } } } };
+  editor.setConfig(config); const ui = editor._layoutPanel;
+  assert.equal(ui.apply.disabled, false);
+  ui.select.value = 'fm'; editor._removeLayoutButton.emit('click');
+  assert.equal(editor.events.length, 1); assert.equal(Object.hasOwn(editor.events[0].detail.config, 'layout'), false);
+  assert.equal(editor._layoutDraftState().layout.components, undefined); assert.equal(ui.apply.disabled, true);
+  assert.notEqual(editor._applyLayoutDraft().status, 'applied'); assert.equal(editor.events.length, 1);
+  if (echo === 'delayed') {
+    editor.setConfig(editor.events[0].detail.config);
+    assert.equal(editor._layoutDraftState().layout.components, undefined);
+    assert.equal(ui.apply.disabled, true); assert.equal(editor.events.length, 1);
+  }
+});
+
+test('removing saved layout retains dirty draft unbound through delayed HA echo', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, layout: { version: 2, components: { fm: { x: 370, y: 29 } } } });
+  const ui = editor._layoutPanel; ui.inputs.x.value = '380'; ui.inputs.x.emit('change');
+  const draft = plain(editor._layoutDraftState().layout);
+  editor._removeLayoutButton.emit('click');
+  assert.equal(editor._layoutDraftState().status, 'unbound'); assert.deepEqual(plain(editor._layoutDraftState().layout), draft);
+  editor.setConfig(editor.events[0].detail.config);
+  assert.equal(editor._layoutDraftState().status, 'unbound'); assert.equal(editor._applyLayoutDraft().status, 'unbound');
+  assert.deepEqual(plain(editor._layoutDraftState().layout), draft); assert.equal(editor.events.length, 1);
+});

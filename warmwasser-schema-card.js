@@ -1196,6 +1196,7 @@ function resolveLegacyWpHeatingIncidences(model) {
     if (pump) {
       const unit=c['heating-pump-0'], pin=port('heating-pump-0.in'), pout=port('heating-pump-0.out');
       if (unit.parent!=='heating-circuit-0' || unit.bounds.x!==0 || unit.bounds.y!==0 || unit.bounds.width!==20 || unit.bounds.height!==20 ||
+          unit.ports.in.x!==10 || unit.ports.in.y!==0 || unit.ports.out.x!==10 || unit.ports.out.y!==20 ||
           pin.x!==hs.x || pout.x!==hs.x || pin.y!==hs.y-44 || pout.y!==hs.y-24) return unsupported();
     }
     // The renderer's fixed bends and bridges place local legs on these axes.
@@ -1991,7 +1992,8 @@ function deriveLegacyWpHeatingAnimationState(card) {
     const position=model.components['heating-circuit-0'].origin.x+22;
     const heating=heatingCircuitState(c,[position],L,S,U,ON,NUM,pump.CW,pump.CK);
     const value=Object.freeze({wpOn:!!pump.wp_on,wpUpper:!!pump.wpO,wpLower:!!pump.wpU,
-      circuitOn:!!heating.hks[0].on,hkFlow:heating.hk_fl,upperDuration:pump.tO,lowerDuration:pump.tU});
+      circuitOn:!!heating.hks[0].on,hkFlow:heating.hk_fl,upperDuration:pump.tO,lowerDuration:pump.tU,
+      supplyColour:pump.CW,returnColour:pump.CK,activeColour:F.aktiv});
     heatingAnimationStateProvenance.set(value,{card,model,configSnapshot,stateSnapshot});
     return value;
   } catch (_) { return unsupported('animation-state-unsupported'); }
@@ -2031,9 +2033,6 @@ function planLegacyWpHeatingAnimations(model,routes,options,state) {
   try {
     const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options);
     if (proof.reason!=='heating-decorations-and-paint-validation-required') return proof;
-    // The three pump pieces must share one uninterrupted dash phase underneath
-    // the pump symbol; this phase contract is not yet established.
-    if (model.components['heating-pump-0']) return unsupported('pump-animation-phase-unproven');
     const provenance=state && heatingAnimationStateProvenance.get(state);
     if (!provenance || provenance.model!==model || provenance.card._model!==model ||
         JSON.stringify(provenance.card._cfg)!==provenance.configSnapshot ||
@@ -2044,7 +2043,19 @@ function planLegacyWpHeatingAnimations(model,routes,options,state) {
     const owner=compiled.routes[proof.localBridge.owner], source=routes.find(r=>r.id===proof.localBridge.owner);
     if (!owner || owner.crossings.length || !source || source.points.length!==2) return unsupported('preview-bridge-composition-required');
     const {point:p,radius}=proof.localBridge,first=source.points[0],last=source.points[1];
-    const ownerPath=`M${first.x} ${first.y}L${p.x} ${p.y-radius}A${radius} ${radius} 0 0 1 ${p.x} ${p.y+radius}L${last.x} ${last.y}`;
+    let ownerPath=`M${first.x} ${first.y}L${p.x} ${p.y-radius}A${radius} ${radius} 0 0 1 ${p.x} ${p.y+radius}L${last.x} ${last.y}`;
+    if (model.components['heating-pump-0']) {
+      const through=routes.find(r=>r.id==='heating-pump-through-0'),out=routes.find(r=>r.id==='heating-pump-out-0');
+      if (!through || !out || through.points.length!==2 || out.points.length!==2 ||
+          compiled.routes[through.id].crossings.length || compiled.routes[out.id].crossings.length ||
+          through.points[0].x!==last.x || through.points[0].y!==last.y ||
+          through.points[1].x!==last.x || out.points[0].x!==last.x || out.points[1].x!==last.x ||
+          through.points[1].y!==out.points[0].y || through.points[0].y>=through.points[1].y || out.points[0].y>=out.points[1].y)
+        return unsupported('pump-animation-phase-unproven');
+      // One w3 path preserves dash phase from rail, across A11 and through the
+      // pump, to the circuit symbol; the symbol paints later as in the card.
+      ownerPath+=`L${out.points[1].x} ${out.points[1].y}`;
+    }
     const split=(id,ref,part)=>{
       const route=routes.find(r=>r.id===id),node=route.nodes.find(n=>n.ref===ref),path=compiled.routes[id].path;
       if (!node) return null;
@@ -2070,6 +2081,7 @@ function planLegacyWpHeatingAnimations(model,routes,options,state) {
     set('hk-return',hkFlow>0.04,hkDuration);
     set('heating-supply-0',state.circuitOn,1,ownerPath);
     set('heating-return-0',state.circuitOn,1);
+    if (model.components['heating-pump-0']) {plan['heating-pump-through-0']=null;plan['heating-pump-out-0']=null;}
     for (const [id,from,to] of [['manifold-return','manifold-return-0','manifold-primary-return'],['manifold-supply','manifold-primary-supply','manifold-supply-0']]) {
       const a=model.junctions[from],b=model.junctions[to];
       plan[id]=state.circuitOn?{path:`M${a.x} ${a.y}H${b.x}`,duration:hkDuration}:null;
@@ -2086,7 +2098,7 @@ function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,co
     if (!['synthetic-full-route','operational-preview'].includes(mode)) return unsupported('synthetic-preview-opt-in-required');
     const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options);
     if (proof.reason!=='heating-decorations-and-paint-validation-required') return proof;
-    if (model.components['heating-pump-0']) return unsupported('pump-animation-phase-unproven');
+    if (model.components['heating-pump-0'] && mode!=='operational-preview') return unsupported('pump-animation-phase-unproven');
     const ids=proof.inventory.ordinary, railIds=proof.inventory.rails;
     if (mode==='synthetic-full-route' && (!syntheticFlow || typeof syntheticFlow!=='object' || Array.isArray(syntheticFlow) || Object.keys(syntheticFlow).length!==ids.length+railIds.length ||
         [...ids,...railIds].some(id=>!Object.hasOwn(syntheticFlow,id) || typeof syntheticFlow[id]!=='boolean')))
@@ -2099,7 +2111,10 @@ function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,co
     if (compiled.status!=='routed') return compiled;
     const operational=mode==='operational-preview'?planLegacyWpHeatingAnimations(model,routes,options,syntheticFlow):null;
     if (operational && operational.reason!=='animation-plan-paint-validation-required') return operational;
-    if (routes.some(route=>route.role!==(route.id.includes('supply')?'supply':'neutral')))
+    if (operational && (colours.supply!==syntheticFlow.supplyColour || colours.return!==syntheticFlow.returnColour ||
+        typeof syntheticFlow.activeColour!=='string' || !/^#[0-9a-f]{6}$/i.test(syntheticFlow.activeColour)))
+      return unsupported('invalid-preview-colour');
+    if (routes.some(route=>route.role!==(route.id.includes('supply') || route.id.startsWith('heating-pump-')?'supply':'neutral')))
       return unsupported('invalid-preview-role');
     const owner=compiled.routes[proof.localBridge.owner], source=routes.find(r=>r.id===proof.localBridge.owner);
     // This construction replaces the owner's straight segment with A11.
@@ -2137,6 +2152,11 @@ function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,co
       paintOrder.push(id);
     }
     fragment+=railFragment('manifold-supply'); paintOrder.push('manifold-supply');
+    if (model.components['heating-pump-0']) {
+      const unit=model.components['heating-pump-0'];
+      fragment+=`<g data-preview-pump="heating-pump-0">${renderPumpe(unit.origin.x+10,unit.origin.y+10,'d',syntheticFlow.circuitOn,syntheticFlow.activeColour)}</g>`;
+      paintOrder.push('heating-pump-0');
+    }
     return {status:'unsupported',reason:operational?'operational-preview-paint-and-decoration-unvalidated':'synthetic-preview-not-operational-animation',fragment,
       paintOrder};
   } catch (_) { return unsupported('invalid-preview-batch'); }
@@ -2202,10 +2222,11 @@ function routeDiagramConnections(model, ids, options = {}) {
 }
 
 // Select and validate the complete routed batch before drawing any pipe.
-function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
+function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L, prepared }) {
   const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
   const movedRouting = FM && (model.layoutSeparatedPreview === true || [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; }));
-  const routes = movedRouting ? routeDiagramConnections(model, routingIds) : null;
+  const reusable = prepared?.model === model && Object.keys(prepared.routes).length === routingIds.length && routingIds.every(id => prepared.routes[id]?.status === 'routed');
+  const routes = movedRouting ? (reusable ? prepared.routes : routeDiagramConnections(model, routingIds)) : null;
   if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
     error.code = route.code || route.reason; throw error;
@@ -3392,6 +3413,24 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
     component.origin.x = position.x; component.origin.y = position.y;
   }
   const ids = ['fm-supply', 'fm-return', ...(config.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  // Router obstacles protect pipes, but do not by themselves prevent two
+  // devices (or a fixed domestic pipe and another body) from overlapping.
+  const bodies = ['tank', 'tank-feet', 'fm', ...(config.wp ? ['wp', 'valve'] : [])].map(id => {
+    const component = model.components[id], b = component.bounds;
+    return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height };
+  });
+  const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+    if (bodies[i].id === 'tank' && bodies[j].id === 'tank-feet') continue;
+    if (intersects(bodies[i], bodies[j])) return { status: 'unsupported', errors: [{ code: 'body-collision', path: 'layout.components' }] };
+  }
+  for (const id of ['domestic-cold', 'domestic-hot']) {
+    const edge = model.connections[id], a = diagramPort(model, edge.from), b = diagramPort(model, edge.to), w = 5;
+    const segments = [{ x: a.x - w, y: Math.min(a.y, b.y) - w, width: 2 * w, height: Math.abs(a.y - b.y) + 2 * w }];
+    if (a.x !== b.x) segments.push({ x: Math.min(a.x, b.x) - w, y: b.y - w, width: Math.abs(a.x - b.x) + 2 * w, height: 2 * w });
+    if (segments.some(segment => bodies.some(body => body.id !== 'fm' && intersects(segment, body))))
+      return { status: 'unsupported', errors: [{ code: 'domestic-collision', path: 'layout.components' }] };
+  }
   const routes = routeDiagramConnections(model, ids);
   for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     return { status: 'unsupported', errors: [{ code: route.code || route.reason, path: `layout.connections.${id}` }] };
@@ -3403,10 +3442,12 @@ function resolveLayoutCandidate(rawConfig, config, layout) {
 // no complete text measurement or painted-envelope validation yet. Never
 // expose partial HTML on failure. A moved candidate takes the renderer's
 // all-routed branch, including its live-label checks.
+const layoutRenderRoutes = new WeakMap();
 function renderLayoutCandidate(card, candidate) {
   const previous = card._model;
   try {
     card._model = candidate.model;
+    layoutRenderRoutes.set(card, candidate);
     const html = card._render();
     const complete = Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
       html.includes(`<path d="${route.path}" class="${layer}"`)));
@@ -3415,13 +3456,90 @@ function renderLayoutCandidate(card, candidate) {
   } catch (error) {
     return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
   } finally {
+    layoutRenderRoutes.delete(card);
     card._model = previous;
   }
 }
 
-function prepareLayoutCandidate(card, rawConfig, layout) {
+// Two private geometry candidates per editor (saved and draft). Cache only plain, fully serializable
+// inputs; unusual values fall back to recomputation rather than risking a false hit.
+const layoutGeometryCache = new WeakMap();
+const layoutIntegrityIds = new WeakMap();
+let layoutNextIntegrityId = 0;
+function layoutIntegrityIdentity(value) {
+  if (value === null) return 0;
+  if (!layoutIntegrityIds.has(value)) layoutIntegrityIds.set(value, ++layoutNextIntegrityId);
+  return layoutIntegrityIds.get(value);
+}
+// Candidate models contain parent-linked accessor properties. Track descriptors,
+// accessor identities and their current values so a changed live model cannot
+// silently make cached routing evidence stale.
+function layoutCandidateIntegrity(candidate) {
+  const seen = new WeakSet();
+  function inspect(value) {
+    if (value === null || ['string', 'boolean', 'undefined'].includes(typeof value)) return [typeof value, value];
+    if (typeof value === 'number' && Number.isFinite(value)) return ['number', value];
+    if (!value || typeof value !== 'object' || seen.has(value) || Object.getOwnPropertySymbols(value).length) throw new Error('uncacheable');
+    seen.add(value);
+    const properties = [];
+    for (const [key, desc] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+      const flags = [desc.enumerable, desc.configurable];
+      if (Object.hasOwn(desc, 'value')) properties.push([key, flags, desc.writable, inspect(desc.value)]);
+      else properties.push([key, flags, layoutIntegrityIdentity(desc.get || null), layoutIntegrityIdentity(desc.set || null), inspect(desc.get?.call(value))]);
+    }
+    seen.delete(value);
+    return [layoutIntegrityIdentity(Object.getPrototypeOf(value)), properties];
+  }
+  try { return JSON.stringify(inspect([candidate.model, candidate.routes])); } catch (_) { return null; }
+}
+function layoutGeometryKey(rawConfig, config, layout) {
+  const seen = new WeakSet();
+  function copy(value) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (!value || typeof value !== 'object' || seen.has(value)) throw new Error('uncacheable');
+    const proto = Object.getPrototypeOf(value);
+    // Accept other realms' intrinsic prototypes but never an inherited-data
+    // prototype such as Object.create({x: ...}).
+    if (proto !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, 'constructor'), constructor = descriptor?.value;
+      const native = typeof constructor === 'function' && constructor.prototype === proto &&
+        Function.prototype.toString.call(constructor) === `function ${Array.isArray(value) ? 'Array' : 'Object'}() { [native code] }`;
+      if (!native) throw new Error('uncacheable');
+    } else if (Array.isArray(value)) throw new Error('uncacheable');
+    if (Object.getOwnPropertySymbols(value).length) throw new Error('uncacheable');
+    seen.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const result = Array.isArray(value) ? [] : Object.create(null);
+    for (const [key, desc] of Object.entries(descriptors)) {
+      if (Array.isArray(value) && key === 'length') continue;
+      if (Array.isArray(value) && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) throw new Error('uncacheable');
+      if (!desc.enumerable || !Object.hasOwn(desc, 'value')) throw new Error('uncacheable');
+      result[key] = copy(desc.value);
+    }
+    if (Array.isArray(value) && (result.length !== value.length || Object.keys(result).length !== value.length)) throw new Error('uncacheable');
+    seen.delete(value); return result;
+  }
+  try { return JSON.stringify(copy([rawConfig, config, layout])); } catch (_) { return null; }
+}
+function cachedLayoutCandidate(owner, rawConfig, config, layout) {
+  if (!owner) return resolveLayoutCandidate(rawConfig, config, layout);
+  const key = layoutGeometryKey(rawConfig, config, layout), entries = layoutGeometryCache.get(owner) || [];
+  const cached = key === null ? null : entries.find(entry => entry.key === key);
+  if (cached && layoutCandidateIntegrity(cached.candidate) === cached.integrity) {
+    layoutGeometryCache.set(owner, [cached, ...entries.filter(entry => entry !== cached)]); return cached.candidate;
+  }
+  const candidate = resolveLayoutCandidate(rawConfig, config, layout);
+  if (key !== null && candidate.status === 'candidate') {
+    const integrity = layoutCandidateIntegrity(candidate);
+    if (integrity !== null) layoutGeometryCache.set(owner, [{ key, candidate, integrity }, ...entries.filter(entry => entry.key !== key)].slice(0, 2));
+  }
+  return candidate;
+}
+
+function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
   if (!card._hass || !layoutObject(card._hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
-  const candidate = resolveLayoutCandidate(rawConfig, card._cfg, layout);
+  const candidate = cachedLayoutCandidate(cacheOwner, rawConfig, card._cfg, layout);
   if (candidate.status !== 'candidate') return candidate;
   const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
   const sideChanged = candidate.model.layoutSeparatedPreview && (candidate.model.layoutValveRotation || ['hot-tank', 'buffer-tank', 'fm', ...(card._cfg.wp ? ['wp'] : [])].some(id =>
@@ -3431,16 +3549,33 @@ function prepareLayoutCandidate(card, rawConfig, layout) {
   return rendered.status === 'rendered-candidate' ? { ...rendered, candidate } : rendered;
 }
 
-function preflightLayoutRender(rawConfig, layout, hass) {
+function preflightLayoutRender(rawConfig, layout, hass, cacheOwner) {
   if (!hass || !layoutObject(hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
   const card = new WarmwasserSchemaCard();
   try { card.setConfig(rawConfig); }
   catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-configuration', path: 'config' }] }; }
   card._hass = hass;
-  const result = prepareLayoutCandidate(card, rawConfig, layout);
+  const result = prepareLayoutCandidate(card, rawConfig, layout, cacheOwner);
   // Keep the existing preflight API free of mutable candidate models.
   if (result.status === 'rendered-candidate') return { status: result.status, html: result.html };
   return result;
+}
+
+// A saved layout is user data even while the visual feature is gated. Explain
+// why it was not used without exposing partially routed SVG or raw values.
+function savedLayoutNotice(result, language, disabled = false) {
+  const de = language === 'de', code = result?.errors?.[0]?.code;
+  const reason = code === 'invalid-hass' ? (de ? 'Warte auf aktuelle Home-Assistant-Daten.' : 'Waiting for current Home Assistant data.')
+    : code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Darstellung.' : 'A current sensor value does not fit the diagram.')
+    : code === 'unsupported-version' ? (de ? 'Die Layout-Version wird nicht unterstützt.' : 'The layout version is not supported.')
+    : code === 'unknown-id' || code === 'inactive-id' ? (de ? 'Ein gespeicherter Anschluss oder ein Gerät ist nicht verfügbar.' : 'A saved device or port is unavailable.')
+    : code === 'body-or-domestic-collision' || code === 'body-collision' || code === 'domestic-collision' ? (de ? 'Geräte oder Trinkwasserleitungen überlappen.' : 'Devices or domestic water pipes overlap.')
+    : result?.status === 'invalid' ? (de ? 'Das gespeicherte Layout ist ungültig.' : 'The saved layout is invalid.')
+    : result?.status === 'unsupported' && code !== 'unmoved-candidate' ? (de ? 'Die Positionen oder Leitungen können derzeit nicht sicher dargestellt werden.' : 'The positions or pipes cannot currently be displayed safely.') : '';
+  const off = disabled ? (de ? 'Die Layoutfunktion ist derzeit deaktiviert.' : 'The layout feature is currently disabled.') : '';
+  if (!reason && !off) return '';
+  const fallback = reason && code !== 'invalid-hass' ? (de ? 'Die Standardansicht wird angezeigt.' : 'The standard diagram is shown.') : '';
+  return [reason, off, fallback].filter(Boolean).join(' ');
 }
 
 class WarmwasserSchemaCard extends HTMLElement {
@@ -3596,15 +3731,20 @@ class WarmwasserSchemaCard extends HTMLElement {
     try {
       const tpl = document.createElement('template');
       let nextModel = this._model, nextCandidate = this._layoutCandidate, nextStatus = this._layoutStatus, html;
-      const selectedLayout = this._layoutFeatureEnabled() && (this._layoutDraft || this._savedLayout);
+      const enabled = this._layoutFeatureEnabled();
+      const selectedLayout = enabled && (this._layoutDraft || this._savedLayout);
       if (selectedLayout) {
         // Re-evaluate with current live values, allowing a previously unsafe
         // label to recover without losing the saved layout or inactive entries.
-        const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, selectedLayout.value);
+        const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, selectedLayout.value, this);
         nextStatus = { status: result.status, errors: result.errors || [] };
         if (result.status === 'rendered-candidate') {
           nextCandidate = result.candidate; nextModel = result.candidate.model; html = result.html;
         } else { nextCandidate = null; nextModel = diagramModel(this._cfg); }
+      } else if (!enabled && this._savedLayout && !nextCandidate) {
+        // Validation is read-only; the gated layout is never committed.
+        const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, this._savedLayout.value, this);
+        nextStatus = { status: result.status, errors: result.errors || [] };
       } else if (nextCandidate) {
         const result = renderLayoutCandidate(this, nextCandidate);
         if (result.status === 'rendered-candidate') html = result.html;
@@ -3615,6 +3755,8 @@ class WarmwasserSchemaCard extends HTMLElement {
         try { this._model = nextModel; html = this._render(); }
         finally { this._model = model; }
       }
+      const notice = this._savedLayout ? savedLayoutNotice(nextStatus, sprache(this._cfg, this._hass), !enabled) : '';
+      if (notice) html += `<div role="status" aria-live="polite" style="padding:8px 12px;color:var(--secondary-text-color)">${esc(notice)}</div>`;
       tpl.innerHTML = html;
       if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
       else this._box.replaceChildren(tpl.content);
@@ -3711,7 +3853,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     /* ---------- Kopfzeile ---------- */
     let o = renderCardHeader({ chip, avg, col, titel, L, c, S, NUM, SO, so_on, K, kTyp, t_k, k_feuer, WP, W, kuehl, wp, wp_on, HS, hs_hatP, hs_p, hs_on });
 
-    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
+    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L, prepared: layoutRenderRoutes.get(this) });
 
     /* ---------- Abmessungen ---------- */
     const QS = WP && QT !== 'luft';
@@ -3947,7 +4089,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     }
     if (this._layoutDraftNeedsRebind) return { layout, canUndo: false, canRedo: false,
       status: 'unbound', errors: [{ code: 'draft-needs-rebind', path: 'layout' }] };
-    const checked = preflightLayoutRender(this._config, layout, this._hass);
+    const checked = preflightLayoutRender(this._config, layout, this._hass, this);
     return { layout, canUndo: index > 0, canRedo: index + 1 < history.length,
       status: checked.status, errors: checked.errors || [], ...(includePreview ? { html: checked.html } : {}) };
   }
@@ -4033,10 +4175,12 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       }
     }
     this._layoutConfigFingerprint = fingerprint;
+    this._layoutRawConfig = { ...config };
     this._config = c;
     if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
     if (this._layoutPanel) { if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); }
+    this._refreshSavedLayoutNotice();
   }
 
   set hass(hass) {
@@ -4045,6 +4189,52 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (this._forms) this._forms.forEach((f) => { f.hass = hass; });
     if (first && this._config) this._build();
     else if (this._layoutPanel) this._refreshLayoutUI({ preserveFocusedInput: true });
+    this._refreshSavedLayoutNotice();
+  }
+
+  _refreshSavedLayoutNotice() {
+    if (!this._config || !this._layoutNoticeContainer) return;
+    const hasLayout = Object.prototype.hasOwnProperty.call(this._config, 'layout');
+    if (!hasLayout) {
+      if (this._layoutNotice) this._layoutNotice.hidden = true;
+      if (this._removeLayoutButton) this._removeLayoutButton.hidden = true;
+      return;
+    }
+    if (!this._layoutNotice) {
+      this._layoutNotice = document.createElement('p');
+      this._layoutNotice.setAttribute('role', 'status'); this._layoutNotice.setAttribute('aria-live', 'polite');
+      this._layoutNoticeContainer.appendChild(this._layoutNotice);
+      this._removeLayoutButton = document.createElement('button'); this._removeLayoutButton.type = 'button';
+      this._removeLayoutButton.addEventListener('click', () => this._removeSavedLayout());
+      this._layoutNoticeContainer.appendChild(this._removeLayoutButton);
+    }
+    const de = sprache(this._config, this._hass) === 'de';
+    const result = preflightLayoutRender(this._config, this._config.layout, this._hass, this);
+    this._layoutNotice.textContent = savedLayoutNotice(result, de ? 'de' : 'en', true);
+    this._layoutNotice.hidden = !this._layoutNotice.textContent;
+    this._removeLayoutButton.textContent = de ? 'Gespeichertes Layout entfernen' : 'Remove saved layout';
+    this._removeLayoutButton.hidden = false;
+  }
+
+  _removeSavedLayout() {
+    if (!this._config || !Object.prototype.hasOwnProperty.call(this._config, 'layout')) return;
+    this._endLayoutDrag(true);
+    const previous = this._config, previousRaw = this._layoutRawConfig, previousBinding = this._layoutDraftNeedsRebind;
+    const previousDraft = this._layoutDraft, previousFingerprint = this._layoutConfigFingerprint;
+    const config = { ...(previousRaw || previous) }; delete config.layout;
+    this._config = { ...previous }; delete this._config.layout;
+    this._layoutRawConfig = config;
+    try { this._layoutConfigFingerprint = JSON.stringify(this._config); } catch (_) { this._layoutConfigFingerprint = null; }
+    if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
+    else { this._layoutDraft = null; this._layoutDraftNeedsRebind = false; }
+    try {
+      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config }, bubbles: true, composed: true }));
+    } catch (error) {
+      this._config = previous; this._layoutRawConfig = previousRaw; this._layoutDraftNeedsRebind = previousBinding;
+      this._layoutDraft = previousDraft; this._layoutConfigFingerprint = previousFingerprint; throw error;
+    }
+    this._refreshSavedLayoutNotice();
+    if (this._layoutPanel) { if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); }
   }
 
   _L() { return LBL[sprache(this._config, this._hass)]; }
@@ -4120,7 +4310,9 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     }
     cfg.type = this._config.type || 'custom:warmwasser-schema-card';
     if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
+    this._layoutRawConfig = cfg;
     this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
+    this._refreshSavedLayoutNotice();
     if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
 
@@ -4399,7 +4591,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         separated = cfg.typ === 'getrennt';
         modelIds = { ...(separated ? { tank: 'hot-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
         ids = Object.keys(modelIds);
-        const candidate = checked.status === 'rendered-candidate' ? resolveLayoutCandidate(this._config, cfg, state.layout) : null;
+        const candidate = checked.status === 'rendered-candidate' ? cachedLayoutCandidate(this, this._config, cfg, state.layout) : null;
         const shown = candidate?.status === 'candidate' ? candidate.model : base;
         hitBoxes = ids.map(id => {
           const component = shown.components[modelIds[id]], b = component.bounds;
@@ -4476,6 +4668,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;touch-action:none;cursor:grab}.layout-drag-overlay:active{cursor:grabbing}.layout-draft-marker{position:absolute;display:none;pointer-events:none;border:2px dashed var(--error-color,#c22);box-sizing:border-box;color:var(--error-color,#c22);font-size:12px;font-weight:bold}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
+    this._layoutNoticeContainer = w; this._layoutNotice = null; this._removeLayoutButton = null;
+    this._refreshSavedLayoutNotice();
     if (this._config.verteiler) {
       const note = document.createElement('p');
       note.textContent = sprache(this._config, this._hass) === 'de'

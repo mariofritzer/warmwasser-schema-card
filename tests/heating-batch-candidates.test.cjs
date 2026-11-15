@@ -56,7 +56,8 @@ test('nine-line batch with canonical primary return', () => {
   assert.equal(reverse('M206 340L240 340'),'M240 340L206 340');
   assert.equal(reverse('M0 0L2 0Q4 0 4 2'),'M4 2Q4 0 2 0L0 0');
   assert.equal(reverse('M0 0C1 2 3 4 5 6'),null);
-  const livePreview=preview(m,routes,policy,upper,colours,'operational-preview');
+  const boundColours={supply:upper.supplyColour,return:upper.returnColour};
+  const livePreview=preview(m,routes,policy,upper,boundColours,'operational-preview');
   assert.equal(livePreview.reason,'operational-preview-paint-and-decoration-unvalidated');
   const lowerGroup=livePreview.fragment.match(/data-preview-route="wp-lower-supply">([\s\S]*?)<\/g>/)[1];
   assert.ok(!lowerGroup.includes('class="w3"'));
@@ -66,7 +67,7 @@ test('nine-line batch with canonical primary return', () => {
   const splitState=state('on','25','on'),split=plan(m,routes,policy,splitState);
   assert.equal(split.plan['wp-upper-supply'].duration,4);
   assert.ok(Math.abs(split.plan['wp-lower-supply'].duration-4/3)<1e-12);
-  assert.ok(preview(m,routes,policy,splitState,colours,'operational-preview').fragment.includes('animation-duration:1.33s'));
+  assert.ok(preview(m,routes,policy,splitState,{supply:splitState.supplyColour,return:splitState.returnColour},'operational-preview').fragment.includes('animation-duration:1.33s'));
   const boundaryLow=plan(m,routes,policy,state('on','4','off'));
   assert.equal(boundaryLow.plan['wp-upper-supply'],null);
   const boundaryHigh=plan(m,routes,policy,state('on','96','off'));
@@ -136,9 +137,9 @@ test('nine-line batch with canonical primary return', () => {
   assert.equal(inspectCompleteLegacyWpHeatingBatch(m,routes,policy).reason,'model-body-line-contact');
 });
 
-test('one pump joins the complete batch but animation remains fail-closed',()=>{
-  const c=card('schicht',{fm:null,wp:{betrieb:'sensor.wp'},heizkreise:[{pumpe:'switch.hk'}]}),m=c._model,policy={radius:4};
-  c._hass.states={'sensor.wp':{state:'on',attributes:{}},'switch.hk':{state:'on',attributes:{}}};
+test('one pump has a continuous model-bound animation phase, without production release',()=>{
+  const c=card('schicht',{fm:null,wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizkreise:[{pumpe:'switch.hk'}]}),m=c._model,policy={radius:4};
+  c._hass.states={'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:'100',attributes:{}},'switch.hk':{state:'on',attributes:{}}};
   const incidence=resolveLegacyWpHeatingIncidences(m);
   assert.equal(incidence.status,'resolved');
   const resolve=ref=>{const j=m.junctions[ref];if(j)return {...j,ref};const [id,name]=ref.split('.'),b=m.components[id],p=b.ports[name];return {...p,x:b.origin.x+p.x,y:b.origin.y+p.y,ref,owner:id};};
@@ -162,12 +163,40 @@ test('one pump joins the complete batch but animation remains fail-closed',()=>{
   assert.equal(inspected.reason,'heating-decorations-and-paint-validation-required',JSON.stringify(inspected));
   const actual=derive(c);
   assert.equal(actual.circuitOn,true);
-  assert.equal(plan(m,routes,policy,actual).reason,'pump-animation-phase-unproven');
+  const animation=plan(m,routes,policy,actual);
+  assert.equal(animation.reason,'animation-plan-paint-validation-required');
+  assert.equal(animation.plan['wp-lower-supply'].path,'M206 213L256 213A6 6 0 0 0 268 213L295 213');
+  assert.equal(animation.plan['wp-lower-return'].path,'M240 340L206 340');
+  assert.ok(animation.plan['heating-supply-0'].path.includes('A11 11 0 0 1'));
+  assert.ok(animation.plan['heating-supply-0'].path.endsWith('L154 504L154 548'));
+  assert.equal(animation.plan['heating-pump-through-0'],null); assert.equal(animation.plan['heating-pump-out-0'],null);
+  const colours={supply:actual.supplyColour,return:actual.returnColour};
+  const rendered=preview(m,routes,policy,actual,colours,'operational-preview');
+  assert.equal(rendered.reason,'operational-preview-paint-and-decoration-unvalidated',JSON.stringify(rendered));
+  assert.ok(rendered.fragment.includes(`d="${animation.plan['heating-supply-0'].path}" class="w3"`));
+  assert.ok(rendered.fragment.indexOf('data-preview-pump="heating-pump-0"')>rendered.fragment.indexOf('data-preview-rail="manifold-supply"'));
+  assert.ok(rendered.fragment.includes('class="wp"'));
+  assert.equal(preview(m,routes,policy,actual,{...colours,supply:'#000000'},'operational-preview').reason,'invalid-preview-colour');
+  c._hass.states['sensor.valve'].state='0';
+  const lower=derive(c),lowerPlan=plan(m,routes,policy,lower);
+  assert.equal(lowerPlan.plan['wp-lower-supply'].path,compileDirectedJunctionBatch(routes,policy).routes['wp-lower-supply'].path);
+  assert.equal(lowerPlan.plan['wp-upper-supply'],null);
+  assert.ok(lowerPlan.plan['heating-supply-0'].path.endsWith('L154 504L154 548'));
+  c._hass.states['sensor.valve'].state='100';
+  c._hass.states['switch.hk'].state='off';
+  const off=derive(c),offPlan=plan(m,routes,policy,off);
+  assert.equal(offPlan.plan['heating-supply-0'],null);
+  assert.equal(offPlan.plan['wp-lower-supply'],null);
+  const offPreview=preview(m,routes,policy,off,{supply:off.supplyColour,return:off.returnColour},'operational-preview');
+  assert.ok(!offPreview.fragment.includes('class="wp"'));
   assert.equal(inspectCompleteLegacyWpHeatingBatch(m,routes.filter(r=>r.id!=='heating-pump-out-0'),policy).reason,'incomplete-heating-batch');
   const prepared=prepareLegacyWpHeatingRails(m,policy);
   const intruder={id:'hk-return',points:[{x:125,y:514},{x:180,y:514}]};
   const halo=checkLegacyHeatingModelBodies(m,prepared,[intruder],{routes:{}},inspected.localBridge,policy);
   assert.equal(halo.reason,'model-body-line-contact'); assert.equal(halo.bodyId,'heating-pump-0');
+  const pump=m.components['heating-pump-0']; pump.origin.x-=10; pump.ports.in.x+=10; pump.ports.out.x+=10;
+  assert.equal(resolveLegacyWpHeatingIncidences(m).status,'unsupported','fixed absolute ports cannot mask a shifted symbol');
+  pump.origin.x+=10; pump.ports.in.x-=10; pump.ports.out.x-=10;
   m.connections['heating-pump-through-0'].to='heating-circuit-0.return';
   assert.equal(resolveLegacyWpHeatingIncidences(m).status,'unsupported');
 });

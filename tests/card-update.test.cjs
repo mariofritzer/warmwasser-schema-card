@@ -145,9 +145,11 @@ test('guarded layout fails to canonical output and recovers on live state change
   card.hass = state('42'); assert.equal(card._model.components.fm.origin.x, x + 30);
   card.hass = state('1000000000'); assert.equal(card._model.components.fm.origin.x, x);
   assert.equal(card._layoutStatus.errors[0].code, 'label-overflow');
-  const canonical = cardWithCommit(); canonical.setConfig({ ...raw, layout: undefined }); canonical.hass = state('1000000000');
-  assert.equal(card._box.html, canonical._box.html);
+  const canonical = cardWithCommit(); const { layout: _saved, ...plain } = raw; canonical.setConfig(plain); canonical.hass = state('1000000000');
+  assert.ok(card._box.html.startsWith(canonical._box.html));
+  assert.match(card._box.html, /role="status".*current sensor value.*standard diagram/);
   card.hass = state('42'); assert.equal(card._model.components.fm.origin.x, x + 30);
+  assert.doesNotMatch(card._box.html, /role="status"/);
   card.setConfig({ ...raw, layout: { version: 1 } });
   assert.equal(card._layoutStatus.status, 'invalid'); assert.equal(card._model.components.fm.origin.x, x);
 });
@@ -159,7 +161,8 @@ test('default gate keeps saved layout inert and preserves canonical output', () 
   a.setConfig(raw); const { x, y } = a._model.components.fm.origin;
   b.setConfig({ ...raw, layout: { version: 2, components: { fm: { x: x + 30, y: y + 15 } } } });
   a.hass = hass; b.hass = hass;
-  assert.equal(a._box.html, b._box.html); assert.equal(b._model.components.fm.origin.x, x);
+  assert.ok(b._box.html.startsWith(a._box.html)); assert.match(b._box.html, /role="status".*layout feature is currently disabled/);
+  assert.equal(b._model.components.fm.origin.x, x);
 });
 
 test('unsupported stored configuration renders the exact canonical diagram', () => {
@@ -169,7 +172,8 @@ test('unsupported stored configuration renders the exact canonical diagram', () 
   card.setConfig(raw); card.hass = hass;
   const canonical = cardWithCommit(); const { layout, ...plain } = raw; canonical.setConfig(plain); canonical.hass = hass;
   assert.equal(card._layoutStatus.errors[0].code, 'unsupported-configuration');
-  assert.equal(card._box.html, canonical._box.html);
+  assert.ok(card._box.html.startsWith(canonical._box.html));
+  assert.match(card._box.html, /role="status".*cannot currently be displayed safely/);
 });
 
 test('guarded live update restores DOM and model on post-render failure', () => {
@@ -205,4 +209,15 @@ test('guarded explicit draft takes precedence over saved layout until setConfig'
   assert.equal(JSON.stringify(raw.layout), saved);
   card.setConfig(raw); assert.equal(card._model.components.fm.origin.x, x + 30);
   assert.equal(card._layoutDraft, null);
+});
+
+for (const [language, message] of [['de', /Layout-Version wird nicht unterstützt/], ['en', /layout version is not supported/]]) test(`${language} saved invalid layout reports failure and keeps standard output`, () => {
+  const card = cardWithCommit(); card._layoutFeatureEnabled = () => true;
+  const raw = { speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' }, layout: { version: 1 } };
+  card.setConfig(raw); card.hass = { language, states: { 'sensor.fm': { state: 'on' } } };
+  assert.match(card._box.html, message); assert.match(card._box.html, /role="status" aria-live="polite"/);
+  const standard = cardWithCommit(); const { layout, ...plain } = raw; standard.setConfig(plain); standard.hass = card._hass;
+  assert.ok(card._box.html.startsWith(standard._box.html));
+  card.setConfig({ ...plain, layout: { version: 2, components: { fm: { x: 370, y: 29 } } } });
+  assert.doesNotMatch(card._box.html, /role="status"/);
 });

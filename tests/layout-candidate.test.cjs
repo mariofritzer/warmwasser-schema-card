@@ -342,3 +342,9 @@ test('stored WP and valve placement survives disabled WP and tank type round tri
   assert.equal(result.status, 'candidate', JSON.stringify(result.errors));
   assert.equal(result.model.components.wp.origin.x, 330); assert.equal(result.model.layoutValveRotation, 90);
 });
+
+for (const typ of ['schicht', 'trennblech']) test(`${typ} rejects a moved FM body overlapping the tank`, () => {
+  const { resolve } = fixture({ speicher: { typ } });
+  const result = resolve({ version: 2, components: { fm: { x: 115, y: -61 } } });
+  assert.equal(result.status, 'unsupported'); assert.equal(result.errors[0].code, 'body-collision'); assert.equal(result.model, undefined);
+});
