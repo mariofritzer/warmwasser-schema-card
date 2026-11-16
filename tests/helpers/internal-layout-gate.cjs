@@ -5,7 +5,7 @@ module.exports = `\n{
   const realTextGate=requestLayoutVolumeMeasurement;
   requestLayoutVolumeMeasurement=(owner,card,html,candidate)=>{
     const value=card._cfg.volumen;
-    if (card._cfg.typ==='getrennt' || (value!==null && value!==undefined && value!==''))
+    if (candidate?.status==='heating-candidate' || card._cfg.typ==='getrennt' || (value!==null && value!==undefined && value!==''))
       return realTextGate(owner,card,html,candidate);
     const match=html.match(/<svg viewBox="([^"]+)"/);
     const viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});

@@ -1813,7 +1813,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
   const attributes=new Set(['id','class','cx','cy','d','dx','dy','fill','fill-opacity','filter','flood-color','flood-opacity',
     'font-size','font-weight','gradientUnits','height','letter-spacing','offset','opacity','patternUnits','r','rx','ry',
     'stdDeviation','stop-color','stop-opacity','stroke','stroke-linecap','stroke-linejoin','stroke-opacity','stroke-width','style','transform',
-    'viewBox','width','x','x1','x2','y','y1','y2','data-act','data-more','href','xlink:href','xmlns','aria-label']);
+    'viewBox','width','x','x1','x2','y','y1','y2','data-act','data-more','data-preview-route','data-preview-rail','href','xlink:href','xmlns','aria-label']);
   const ids=new Map();
   for (const el of all) {
     if (!elements.has(el.localName) || el.namespaceURI!=='http://www.w3.org/2000/svg') return fail('text-stage-invalid-candidate');
@@ -1832,6 +1832,13 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
     if (!attributes.has(name) || (name==='xmlns' && value!=='http://www.w3.org/2000/svg') || /@import/i.test(value) || /\\|\/\*/.test(value))
       return fail('text-stage-invalid-candidate');
     if (name==='id') continue;
+    // Atomic heating preview adds inert identifiers to pipe groups only.
+    if (name==='data-preview-route' || name==='data-preview-rail') {
+      const routes=['wp-upper-supply','wp-upper-return','wp-valve-return','wp-lower-supply','wp-lower-return','hk-supply','hk-return','heating-supply-0','heating-return-0','heating-pump-through-0','heating-pump-out-0'];
+      const rails=['manifold-supply','manifold-return'];
+      if (el.localName!=='g' || !(name==='data-preview-route'?routes:rails).includes(value)) return fail('text-stage-invalid-candidate');
+      continue;
+    }
     if (name==='style') {
       const declaration=el.style;
       if (!declaration || !Number.isInteger(declaration.length) || typeof declaration.getPropertyValue!=='function' ||
@@ -1927,8 +1934,19 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
 // Internal staging only. It provides a real connected measurement of the
 // supplied candidate in the caller's Shadow Root; it never authorizes a paint
 // or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false,holdForFinalCheck=false,isOwner=isCurrent,invalidateTarget=()=>{}) {
+async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false,holdForFinalCheck=false,isOwner=isCurrent,invalidateTarget=()=>{},paintMode='fm') {
   const unsupported=reason=>({status:'unsupported',reason});
+  // The diagnostic heating mode permits reversible probes only; the internal
+  // editor mode requires the complete target verifier before receipt issuance.
+  if (!['fm','heating-probe','heating-internal'].includes(paintMode)) return unsupported('text-stage-invalidated');
+  const symbolStrokes=node=>paintMode.startsWith('heating-')
+    ? (inspectStagedLayoutAmbientPaint(node,node.isConnected && !node.closest('[aria-hidden="true"]')).reason==='layout-ambient-paint-bound-only'
+      ? {reason:'layout-symbol-strokes-bound-only'} : {reason:'layout-symbol-stroke-unproven'})
+    : inspectStagedLayoutSymbolStrokes(node);
+  const pipeStrokes=node=>paintMode.startsWith('heating-')
+    ? (inspectInternalHeatingComputedStrokes(node).reason==='heating-computed-strokes-bound-only'
+      ? {reason:'layout-pipe-strokes-bound-only'} : {reason:'layout-pipe-stroke-unproven'})
+    : inspectStagedLayoutPipeStrokes(node);
   const wait=promise=>{
     if (!signal) return promise;
     if (signal.aborted) return Promise.resolve(null);
@@ -2088,7 +2106,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
           !sameScreen(stageInitial,stageBeforeCleanup,allMatrix) ||
           !sameScreen(referenceBeforeCleanup,stageBeforeCleanup,linearMatrix))
         return unsupported('text-stage-viewport-unproven');
-      if (independent) {symbolStrokeProof=inspectStagedLayoutSymbolStrokes(svg);pipeStrokeProof=inspectStagedLayoutPipeStrokes(svg);
+      if (independent) {symbolStrokeProof=symbolStrokes(svg);pipeStrokeProof=pipeStrokes(svg);
         ambientPaintProof=inspectStagedLayoutAmbientPaint(svg);}
       // Recheck the visible SVG after removing the staged sibling: structural
       // selectors such as :last-child must not alter the on-screen styles.
@@ -2124,8 +2142,8 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
             if (!same(active.entries,referenceNow.entries)) return reject('reference-changed');
             if (checkMeasuredTextReserve(current,candidateNow,contextKey).textReserve!=='fits') return reject('candidate-reserve');
             if (checkMeasuredTextReserve(active,referenceNow,contextKey).textReserve!=='fits') return reject('reference-reserve');
-            if (inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only') return reject('symbol-stroke');
-            if (inspectStagedLayoutPipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only') return reject('pipe-stroke');
+            if (symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only') return reject('symbol-stroke');
+            if (pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only') return reject('pipe-stroke');
             if (inspectStagedLayoutAmbientPaint(svg).reason!=='layout-ambient-paint-bound-only') return reject('ambient-paint');
             if (!structureValid()) return reject('svg-mutated');
             lastReason='';lastDetail=null;return true;
@@ -2143,6 +2161,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
         // rolls back before returning. It is not a commit or an Apply ticket.
         let probed=false,consumed=false;
         const transition=(verify,commit)=>{
+          if (commit && paintMode==='heating-probe') return {status:'unsupported',reason:'heating-commit-unproven'};
           if ((commit?(!probed || consumed):probed) || typeof verify!=='function' || !validate())
             return {status:'unsupported',reason:'target-probe-invalidated'};
           if(commit)consumed=true;else probed=true;
@@ -2164,15 +2183,15 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
             if (!isCurrent(generation) || !sameScreen(referenceInitial,screen(svg),allMatrix) || !actual.entries ||
                 !unchanged(svg,targetSnapshot) ||
                 !same(current.entries,actual.entries,true,true) ||
-                inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
-                inspectStagedLayoutPipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
+                symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
+                pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
                 inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
                 verify(svg,records(actual.entries))!==true || !isCurrent(generation) ||
                 !sameScreen(referenceInitial,screen(svg),allMatrix) || !unchanged(svg,targetSnapshot)) return result;
             const afterVerify=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
             if (!afterVerify.entries || !same(actual.entries,afterVerify.entries) ||
-                inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
-                inspectStagedLayoutPipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
+                symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
+                pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
                 inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
                 inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
                 !isCurrent(generation) || !sameScreen(referenceInitial,screen(svg),allMatrix) || !unchanged(svg,targetSnapshot) ||
@@ -2196,8 +2215,8 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
                       !unchanged(svg,targetSnapshot) || !targetScreenValid(svg)) return false;
                   const live=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
                   if (!live.entries || live.fontEpoch!==afterVerify.fontEpoch || !same(afterVerify.entries,live.entries) ||
-                      inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
-                      inspectStagedLayoutPipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
+                      symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
+                      pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
                       inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
                       inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
                       verify(svg,records(live.entries))!==true || !isCurrent(generation) || !isOwner(generation) ||
@@ -2711,6 +2730,640 @@ function renderInternalWpHeatingCandidate(card,routes,options) {
     return {status:'unsupported',reason:'complete-card-text-shadow-paint-validation-required',html};
   } catch (_) { return unsupported('heating-render-failed'); }
   finally { internalHeatingRenderContexts.delete(card); }
+}
+
+// Bound the two decorative filter regions in the narrow WP/HK experiment.
+// Filter overlaps are deliberately decorative, not collision-free evidence.
+function inspectInternalHeatingShadows(card,candidate,html) {
+  const fail=()=>({status:'unsupported',reason:'heating-shadow-policy-unproven'});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if (!c || !m || card._model!==m || typeof html!=='string' || !['schicht','trennblech'].includes(c.typ) ||
+        inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required') return fail();
+    const filter='<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter>';
+    if (html.split(filter).length!==2 || (html.match(/<filter\b/g)||[]).length!==1 ||
+        (html.match(/\bfilter\s*=/g)||[]).length!==2 || (html.match(/filter="url\(#wwShadow\)"/g)||[]).length!==2) return fail();
+    const shadows=[];
+    for (const [id,width,height,rx,fill] of [['tank',130,m.components.tank?.bounds?.height,'65" ry="22','wwTemp'],['wp',120,222,'14','wwRed']]) {
+      const b=m.components[id],o=b?.origin,box=b?.bounds;
+      if (!o || !box || box.x!==0 || box.y!==0 || box.width!==width || box.height!==height ||
+          ![o.x,o.y,width,height].every(Number.isFinite) || height<44) return fail();
+      const mark=`<rect x="${o.x}" y="${o.y}" width="${width}" height="${height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`;
+      if (html.split(mark).length!==2) return fail();
+      const shadow={owner:id,x:o.x-.3*width,y:o.y-.3*height,width:1.6*width,height:1.6*height};
+      if (![shadow.x,shadow.y,shadow.width,shadow.height,shadow.x+shadow.width,shadow.y+shadow.height].every(Number.isFinite)) return fail();
+      shadows.push(shadow);
+    }
+    return {status:'unsupported',reason:'heating-shadow-policy-bound-only',shadows,
+      unresolved:['remaining-global-paint','connected-style-and-commit-freshness']};
+  } catch (_) { return fail(); }
+}
+
+// Inventory the actual private atomic pipe phase against fresh operational
+// state and the full renderer. This evidence never authorizes a live commit.
+function inspectInternalHeatingPipePaint(card,candidate,html) {
+  const fail=()=>({status:'unsupported',reason:'heating-pipe-paint-unproven'});
+  try {
+    if (!card || !candidate || card._model!==candidate.model || typeof html!=='string') return fail();
+    const m=candidate.model,routes=candidate.routes,policy=candidate.policy;
+    const state=deriveLegacyWpHeatingAnimationState(card);
+    if (!heatingAnimationStateProvenance.has(state)) return fail();
+    const batch=renderLegacyWpHeatingBatchPreview(m,routes,policy,state,
+      {supply:state.supplyColour,return:state.returnColour},'operational-preview');
+    if (batch.reason!=='operational-preview-paint-and-decoration-unvalidated' || !batch.pipeFragment ||
+        html.split(batch.pipeFragment).length!==2) return fail();
+    const rendered=renderInternalWpHeatingCandidate(card,routes,policy);
+    if (rendered.reason!=='complete-card-text-shadow-paint-validation-required' || rendered.html!==html) return fail();
+    for (const layer of ['w0','w1','w2','w3']) {
+      const count=value=>(value.match(new RegExp(`class="${layer}"`,'g')) || []).length;
+      if (count(html)!==count(batch.pipeFragment)) return fail();
+    }
+    const refs=['wp.upper-supply','wp.lower-supply','wp.return','tank.wp-supply','tank.wp-return','tank.lower-supply','tank.lower-return'];
+    if ((html.match(/class="wk"/g)||[]).length!==(batch.pipeFragment.match(/class="wk"/g)||[]).length+refs.length ||
+        refs.some(ref=>html.split(stub(...diagramStub(m,ref))).length!==2)) return fail();
+    const unit=m.components['heating-pump-0'],entity=card._cfg.heizkreise[0].pumpe;
+    const pump=`<g data-more="${esc(entity)}" class="wx">${renderPumpe(unit.origin.x+10,unit.origin.y+10,'d',state.circuitOn,state.activeColour)}</g>`;
+    const pipeAt=html.indexOf(batch.pipeFragment),pumpAt=html.indexOf(pump);
+    if (pumpAt<pipeAt+batch.pipeFragment.length || html.split(pump).length!==2) return fail();
+    return {status:'unsupported',reason:'heating-pipe-paint-bound-only',
+      unresolved:['other-symbols-and-text','connected-style-and-commit-freshness']};
+  } catch (_) { return fail(); }
+}
+
+// Partial, fail-closed evidence for the single unmixed HK text inventory. The
+// records must come from the connected SVG measurement stage; this does not
+// validate the other card text, global paint, or authorize a layout commit.
+function inspectInternalHeatingTexts(card, candidate, records) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    const c=card?._cfg,m=candidate?.model,routes=candidate?.routes,policy=candidate?.policy;
+    if (!c || !m || card._model!==m || !Array.isArray(records) || !Array.isArray(routes) || c.heizkreise.length!==1 ||
+        !c.heizkreise[0].pumpe || c.heizkreise[0].mischer || c.weiche || c.verteiler ||
+        inspectCompleteLegacyWpHeatingBatch(m,routes,policy).reason!=='heating-decorations-and-paint-validation-required')
+      return fail('heating-text-inventory-unproven');
+    const branch=m.components['heating-circuit-0'],pump=m.components['heating-pump-0'];
+    if (!branch || !pump) return fail('heating-text-inventory-unproven');
+    const dx=branch.origin.x-branch.baseOrigin.x,dy=branch.origin.y-branch.baseOrigin.y;
+    const {S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],F=c.farben;
+    const heat=heatPumpState(c,L,F,S,ON,NUM);
+    const x=branch.baseOrigin.x+22;
+    const hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
+    const items=[{x:String(x),y:'564',className:`wc wt${hk.on?'':' wv'}`,text:String(hk.name)},
+      ...hk.zeilen.map((z,i)=>({x:String(x),y:String(576+12*i),className:'wc ws wx',text:String(z.t)}))];
+    const boxes=[], selected=new Set();
+    for (const item of items) {
+      const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.className && r.text===item.text);
+      if (matches.length!==1 || selected.has(matches[0])) return fail('heating-text-inventory-unproven');
+      const r=matches[0], b=r.box,t=r.matrix; selected.add(r);
+      if (!b || !t || ![b.x,b.y,b.width,b.height,t.a,t.b,t.c,t.d,t.e,t.f,dx,dy].every(Number.isFinite) ||
+          b.width<0 || b.height<0 || Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 ||
+          Math.abs(t.d-1)>1e-8 || Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8)
+        return fail('heating-text-inventory-unproven');
+      boxes.push({x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2});
+    }
+    const rendered=renderInternalWpHeatingCandidate(card,routes,policy);
+    if (rendered.reason!=='complete-card-text-shadow-paint-validation-required') return fail('heating-text-inventory-unproven');
+    const match=rendered.html.match(/<svg viewBox="([^"]+)"/);
+    const viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});
+    if (!viewport) return fail('heating-text-inventory-unproven');
+    if (boxes.some(b=>b.x<viewport.x || b.y<viewport.y || b.x+b.width>viewport.x+viewport.width || b.y+b.height>viewport.y+viewport.height))
+      return fail('heating-text-viewport-overflow');
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    const obstacles=[];
+    const rect=(x,y,width,height)=>{if (![x,y,width,height,x+width,y+height].every(Number.isFinite) || width<0 || height<0) throw Error('invalid bounds');obstacles.push({x,y,width,height});};
+    for (const [id,b] of Object.entries(m.components)) {
+      if (id==='heating-circuit-0' || id==='manifolds' || id==='heating-pump-0') continue;
+      rect(b.origin.x+b.bounds.x-1,b.origin.y+b.bounds.y-1,b.bounds.width+2,b.bounds.height+2);
+    }
+    const halo=resolveHeatingGeometry(m).bodies.find(b=>b.owner==='heating-pump-0');
+    if (!halo) return fail('heating-text-inventory-unproven');
+    rect(halo.x,halo.y,halo.width,halo.height);
+    const rails=prepareLegacyWpHeatingRails(m,policy);
+    if (rails.reason!=='rail-batch-validation-required') return fail('heating-text-inventory-unproven');
+    for (const rail of rails.rails) for (const b of rail.areas) rect(b.x,b.y,b.width,b.height);
+    const half=5,corner=half+Math.max(policy.radius??8,policy.bridgeRadius??6);
+    for (const route of routes) {
+      for (let i=1;i<route.points.length;i++) {const a=route.points[i-1],b=route.points[i];
+        rect(Math.min(a.x,b.x)-half,Math.min(a.y,b.y)-half,Math.abs(a.x-b.x)+2*half,Math.abs(a.y-b.y)+2*half);}
+      for (const p of route.points.slice(1,-1)) rect(p.x-corner,p.y-corner,2*corner,2*corner);
+    }
+    const compiled=compileDirectedJunctionBatch(routes,policy);
+    if (compiled.status!=='routed') return fail('heating-text-inventory-unproven');
+    for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings || []) if (crossing.bridge) {
+      const p=crossing.point,extent=half+(policy.bridgeRadius??6);
+      if (!p) return fail('heating-text-inventory-unproven');
+      rect(p.x-extent,p.y-extent,2*extent,2*extent);
+    }
+    const bridge=inspectCompleteLegacyWpHeatingBatch(m,routes,policy).localBridge?.envelope;
+    if (!bridge) return fail('heating-text-inventory-unproven');
+    rect(bridge.x,bridge.y,bridge.width,bridge.height);
+    const y=576+12*hk.zeilen.length;
+    // The arrows and optional circuit icon are painted in the branch's group.
+    rect(x-21+dx,538+dy,43,12);
+    if (['fussboden','fussbodenheizung','floor','heizkoerper','radiator'].includes(hk.typ)) rect(x-23+dx,y-3+dy,46,23);
+    for (let i=0;i<boxes.length;i++) {
+      if (obstacles.some(b=>hit(boxes[i],b))) return fail('heating-text-obstacle-contact',{index:i});
+      // One SVG unit of separation between text boxes, as in the shared inspector.
+      const textBox=b=>({x:b.x+.5,y:b.y+.5,width:b.width-1,height:b.height-1});
+      for (let j=i+1;j<boxes.length;j++) if (hit(textBox(boxes[i]),textBox(boxes[j]))) return fail('heating-text-overlap',{first:i,second:j,boxes:[boxes[i],boxes[j]]});
+      for (const r of records) if (!selected.has(r)) {
+        const b=r?.box;if (!b || ![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite) || b.width<0 || b.height<0)
+          return fail('heating-text-inventory-unproven');
+        if (hit(boxes[i],b)) return fail('heating-text-overlap',{index:i});
+      }
+    }
+    return {status:'unsupported',reason:'heating-text-bound-only',count:boxes.length,
+      unresolved:['remaining-text-and-paint','connected-style-and-commit-freshness']};
+  } catch (_) { return fail('heating-text-inventory-unproven'); }
+}
+
+// Inventory remaining text for the narrow single-pump card. These measured
+// slots do not by themselves prove all symbol/pipe interactions or target style.
+function inspectInternalHeatingRemainingTexts(card,candidate,records) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if (!c || !m || card._model!==m || !Array.isArray(records) || !c.wp || c.fm || c.weiche || c.verteiler ||
+        c.fuehler.length || c.energie.length || c.heizkreise.length!==1 || c.heizkreise[0].mischer ||
+        inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required') return fail('heating-remaining-text-unproven');
+    const {S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],F=c.farben,W=c.wp;
+    const heat=heatPumpState(c,L,F,S,ON,NUM),display=heatPumpDisplay(c,heat,L,F,S,NUM);
+    const items=[];
+    const add=(owner,x,y,css,text,slot)=>items.push({owner,x:String(x),y:String(y),className:css,text:String(text),slot});
+    add('wp',342,168,'wt',c.hersteller,{x:336,y:154,width:74,height:20});
+    if (W.cop) add('wp',438,168,'we wt wx',display.wpCopText,{x:390,y:154,width:54,height:20});
+    if (W.leistung) add('wp',390,305,'wc wt',display.wpPowerText,{x:343,y:283,width:94,height:27});
+    add('wp',390,W.leistung?320:309,'wc',display.wpStatus[0],{x:343,y:W.leistung?308:283,width:94,height:W.leistung?17:43});
+    if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
+    add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
+    if (W.sg_ready) add('wp',424,356,'we wt wx',`SG ${S(W.sg_ready)}`,{x:336,y:343,width:91,height:20});
+    if (W.quelle_ein || W.quelle_aus) add('wp',390,382,'wc wv wx',`${L.luft} ${[W.quelle_ein?fmt(S(W.quelle_ein)):'',W.quelle_aus?fmt(S(W.quelle_aus)):''].filter(Boolean).join(' → ')}`,
+      {x:300,y:372,width:180,height:18});
+    const v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
+    add(null,vx-26,vy+3,'wc wt','M',{x:vx-33,y:vy-8,width:14,height:16});
+    const manifold=m.components.manifolds,bx=manifold.origin.x;
+    const supply=diagramPort(m,m.connections['manifold-supply'].from),ret=diagramPort(m,m.connections['manifold-return'].from);
+    add(null,bx-8,supply.y+3,'we ws','VL',{x:bx-40,y:supply.y-10,width:34,height:20});
+    add(null,bx-8,ret.y+3,'we ws','RL',{x:bx-40,y:ret.y-10,width:34,height:20});
+    if (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') {
+      const tank=m.components.tank;add('tank',137,338,'wc wt wo',`${c.volumen} l`,{x:tank.baseOrigin.x+27,y:tank.baseOrigin.y+6,width:76,height:tank.bounds.height-12});
+    }
+    const branch=m.components['heating-circuit-0'],hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
+    const hx=branch.baseOrigin.x+22;
+    add('heating-circuit-0',hx,564,`wc wt${hk.on?'':' wv'}`,hk.name,null);
+    hk.zeilen.forEach((z,i)=>add('heating-circuit-0',hx,576+12*i,'wc ws wx',z.t,null));
+    if (records.length!==items.length) return fail('heating-remaining-text-unproven',{expected:items.length,actual:records.length});
+    const used=new Set(),boxes=[];
+    for (const item of items) {
+      const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.className && r.text===item.text);
+      if (matches.length!==1 || used.has(matches[0])) return fail('heating-remaining-text-unproven',{item});
+      const r=matches[0],b=r.box,t=r.matrix,owner=item.owner && m.components[item.owner];used.add(r);
+      const dx=owner?owner.origin.x-owner.baseOrigin.x:0,dy=owner?owner.origin.y-owner.baseOrigin.y:0;
+      if (!b || !t || ![b.x,b.y,b.width,b.height,t.a,t.b,t.c,t.d,t.e,t.f,dx,dy].every(Number.isFinite) || b.width<0 || b.height<0 ||
+          Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 || Math.abs(t.d-1)>1e-8 ||
+          Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8) return fail('heating-remaining-text-unproven',{item});
+      const q={x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2};
+      if (item.slot) {const slot={...item.slot,x:item.slot.x+dx,y:item.slot.y+dy};
+        if(q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
+          return fail('heating-remaining-text-overflow',{item,box:q,slot});}
+      boxes.push({item,...q});
+    }
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    const half=b=>({x:b.x+.5,y:b.y+.5,width:b.width-1,height:b.height-1});
+    for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++)if(hit(half(boxes[i]),half(boxes[j])))
+      return fail('heating-remaining-text-overlap',{first:boxes[i],second:boxes[j]});
+    return {status:'unsupported',reason:'heating-all-text-inventory-only',count:items.length,
+      unresolved:['remaining-symbol-and-pipe-clearance','connected-style-and-commit-freshness']};
+  } catch (_) { return fail('heating-remaining-text-unproven'); }
+}
+
+// Bind the connected WP/HK SVG to a fresh complete render, including all
+// pump, rail, tank, WP, valve and decorative elements in their paint order.
+// This exact inventory is not a substitute for geometric clearance or style.
+function inspectInternalHeatingSvgInventory(card,candidate,svg,allowTargetStyle=false,viewport=null) {
+  const fail=()=>({status:'unsupported',reason:'heating-svg-inventory-unproven'});
+  try {
+    if (!card || card._model!==candidate?.model || !svg?.isConnected || !svg.ownerDocument || svg.localName!=='svg') return fail();
+    if (inspectCompleteLegacyWpHeatingBatch(candidate.model,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required') return fail();
+    const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
+    if (rendered.reason!=='complete-card-text-shadow-paint-validation-required') return fail();
+    const boundedHtml=viewport ? renderLayoutViewport(rendered.html,viewport) : rendered.html;
+    if (!boundedHtml) return fail();
+    const template=svg.ownerDocument.createElement('template');template.innerHTML=boundedHtml;
+    const expected=template.content.querySelectorAll('svg');
+    if (viewport && expected.length===1) expected[0].removeAttribute('style');
+    if (expected.length!==1 || typeof svg.isEqualNode!=='function') return fail();
+    let actual=svg;
+    if (allowTargetStyle) {
+      const style=svg.ownerDocument.createElementNS('http://www.w3.org/2000/svg','svg');
+      style.style.cssText='position:absolute;inset:0;width:100%;height:100%;';
+      if (svg.style.cssText!==style.style.cssText) return fail();
+      actual=svg.cloneNode(true);actual.removeAttribute('style');
+    }
+    if (!actual.isEqualNode(expected[0])) return fail();
+    return {status:'unsupported',reason:'heating-svg-inventory-bound-only',
+      unresolved:['symbol-clearance','ambient-and-stage-target-parity','commit-freshness']};
+  } catch (_) {return fail();}
+}
+
+// Bound connected non-pipe contours by their modeled component hull, the
+// maximal animated pump halo, or the two named tee decorations. The caller
+// must separately bind the SVG inventory, ambient paint and pipe/stub checks.
+function inspectInternalHeatingContourContainment(card,candidate,svg) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    const m=candidate?.model,c=card?._cfg,view=svg?.ownerDocument?.defaultView;
+    if(!m || card._model!==m || !c || !svg?.isConnected || !view?.getComputedStyle ||
+       inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required')return fail('heating-contour-unproven');
+    const boxes=[];
+    for(const [id,b] of Object.entries(m.components))if(id!=='manifolds'){
+      if(!b?.origin || !b.bounds)return fail('heating-contour-unproven');
+      let q={id,x:b.origin.x+b.bounds.x-2,y:b.origin.y+b.bounds.y-2,width:b.bounds.width+4,height:b.bounds.height+4};
+      if(id==='heating-pump-0'){const h=resolveHeatingGeometry(m).bodies.find(h=>h.owner===id);if(!h)return fail('heating-contour-unproven');q={id,x:h.x,y:h.y,width:h.width,height:h.height};}
+      boxes.push(q);
+    }
+    const branch=m.components['heating-circuit-0'],{S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=heatPumpState(c,L,c.farben,S,ON,NUM);
+    const hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
+    if(['floor','fussboden','fussbodenheizung','radiator','heizkoerper'].includes(hk.typ))boxes.push({id:'heating-icon',x:branch.origin.x-1,y:576+12*hk.zeilen.length+(branch.origin.y-branch.baseOrigin.y)-3,width:46,height:23});
+    const tees=['supply-tee','return-tee'].map(id=>m.junctions[id]);
+    if(tees.some(p=>!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)))return fail('heating-contour-unproven');
+    const teeCounts=tees.map(()=>({outer:0,inner:0}));
+    const viewport=layoutCandidateViewport(svg);if(!viewport)return fail('heating-contour-unproven');
+    const matrix=svg.getScreenCTM();if(!matrix || matrix.is2D===false)return fail('heating-contour-unproven');
+    const inv=matrix.inverse(),contains=(a,b)=>b.x>=a.x-1e-7 && b.y>=a.y-1e-7 && b.x+b.width<=a.x+a.width+1e-7 && b.y+b.height<=a.y+a.height+1e-7;
+    // An animation can escape any measured single-frame hull later. The
+    // separately proven pump and fan animations are the only exceptions;
+    // other element/ancestor animations may change opacity only.
+    const checkedAnimations=new Set();
+    for(const shape of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
+      if(shape.closest('defs,[data-preview-route],[data-preview-rail]') || shape.getAttribute('class')==='wk')continue;
+      for(let node=shape;node && node!==svg;node=node.parentElement) {
+        if(checkedAnimations.has(node))continue;checkedAnimations.add(node);
+        if(node.matches?.('circle.wp,g.wr'))continue;
+        const animations=node.getAnimations?.();if(!animations)return fail('heating-contour-unproven');
+        for(const animation of animations) {
+          const effect=animation.effect,frames=effect?.getKeyframes?.();
+          if(effect?.target!==node || !Array.isArray(frames) || !frames.length)return fail('heating-contour-unproven');
+          const allowed=new Set(['offset','computedOffset','easing','composite','opacity']);
+          if(frames.some(frame=>Object.keys(frame).some(key=>!allowed.has(key)) ||
+              (frame.opacity!==undefined && (!Number.isFinite(Number(frame.opacity)) || Number(frame.opacity)<0 || Number(frame.opacity)>1))))
+            return fail('heating-contour-animation-unproven');
+        }
+      }
+    }
+    let count=0;
+    for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
+      if(el.closest('defs,[data-preview-route],[data-preview-rail]') || el.getAttribute('class')==='wk')continue;
+      const b=el.getBBox(),t=inv.multiply(el.getScreenCTM()),style=view.getComputedStyle(el),sw=style.stroke==='none'?0:Number.parseFloat(style.strokeWidth);
+      if(!b || !t || ![b.x,b.y,b.width,b.height,t.a,t.b,t.c,t.d,t.e,t.f,sw].every(Number.isFinite) || sw<0)return fail('heating-contour-unproven');
+      const points=[[b.x,b.y],[b.x+b.width,b.y],[b.x,b.y+b.height],[b.x+b.width,b.y+b.height]].map(([x,y])=>({x:t.a*x+t.c*y+t.e,y:t.b*x+t.d*y+t.f}));
+      const minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y));
+      const pad=sw*Math.max(Math.abs(t.a)+Math.abs(t.c),Math.abs(t.b)+Math.abs(t.d))/2,q={x:minX-pad,y:minY-pad,width:maxX-minX+2*pad,height:maxY-minY+2*pad};
+      if(q.x<viewport.x || q.y<viewport.y || q.x+q.width>viewport.x+viewport.width || q.y+q.height>viewport.y+viewport.height)
+        return fail('heating-contour-viewport-overflow');
+      let tee=false;
+      if(el.localName==='circle') for(let i=0;i<tees.length;i++) {const p=tees[i],cx=el.getAttribute('cx'),cy=el.getAttribute('cy'),r=el.getAttribute('r');
+        if(cx===String(p.x) && cy===String(p.y) && r==='5.5' && el.getAttribute('class')==='wn'){teeCounts[i].outer++;tee=true;}
+        if(cx===String(p.x-1.5) && cy===String(p.y-1.5) && r==='1.6' && !el.getAttribute('class')){teeCounts[i].inner++;tee=true;}}
+      if(!tee && !boxes.some(box=>contains(box,q)))return fail('heating-contour-outside-hull',{tag:el.localName,cls:el.getAttribute('class'),d:el.getAttribute('d'),box:q});
+      count++;
+    }
+    if(!count || teeCounts.some(x=>x.outer!==1 || x.inner!==1))return fail('heating-contour-unproven');
+    // Bind each non-animated element to its own authored transform chain.
+    // The target inventory guarantees that this chain is the expected SVG;
+    // comparing CTMs catches CSS moving a shape into a different body hull.
+    if(typeof view.DOMMatrix!=='function')return fail('heating-contour-unproven');
+    for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
+      if(el.closest('defs,[data-preview-route],[data-preview-rail]') || el.getAttribute('class')==='wk' ||
+         el.matches('circle.wp') || el.closest('g.wr'))continue;
+      let authored=new view.DOMMatrix(),node=el;
+      while(node && node!==svg){let local=new view.DOMMatrix(),list=node.transform?.baseVal;
+        if(list)for(let i=0;i<list.numberOfItems;i++)local=local.multiply(list.getItem(i).matrix);
+        authored=local.multiply(authored);node=node.parentElement;}
+      if(node!==svg)return fail('heating-contour-unproven');
+      const actual=inv.multiply(el.getScreenCTM());
+      if(!['a','b','c','d','e','f'].every(k=>Number.isFinite(actual[k]) && Number.isFinite(authored[k]) && Math.abs(actual[k]-authored[k])<=1e-7))
+        return fail('heating-contour-transform-mismatch',{tag:el.localName,cls:el.getAttribute('class'),d:el.getAttribute('d')});
+    }
+    return {status:'unsupported',reason:'heating-contours-contained-only',count,unresolved:['tee-foreign-clearance','stage-target-parity','commit-freshness']};
+  }catch(_){return fail('heating-contour-unproven');}
+}
+
+// Bound the entire CSS animation, rather than only its current frame. The
+// pump ring is centered and scales at most 1.8; the five fan blades rotate
+// around the center of a WP housing that encloses their full swept radius.
+function inspectInternalHeatingAnimations(card,candidate,svg) {
+  const fail=detail=>({status:'unsupported',reason:'heating-animation-unproven',...(detail?{detail}:{})});
+  try {
+    const m=candidate?.model,c=card?._cfg,view=svg?.ownerDocument?.defaultView,root=svg?.getScreenCTM();
+    if(!m || card._model!==m || !c || !svg?.isConnected || !view || !root)return fail('check-1');
+    const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=heatPumpState(c,L,c.farben,S,ON,NUM);
+    if(heat.QT!=='luft')return fail('check-2');
+    const hk=heatingCircuitState(c,[m.components['heating-circuit-0'].origin.x+22],L,S,()=>'',ON,NUM,heat.CW,heat.CK).hks[0];
+    const rings=Array.from(svg.querySelectorAll('circle.wp'));
+    if(rings.length!==(hk.on?1:0))return fail('check-3');
+    if(hk.on) {
+      const ring=rings[0],pump=m.components['heating-pump-0'],style=view.getComputedStyle(ring),animations=ring.getAnimations?.(),animation=animations?.[0],effect=animation?.effect,
+        timing=effect?.getTiming?.(),frames=effect?.getKeyframes?.(),a=ring.getScreenCTM(),det=root.a*root.d-root.b*root.c,x=pump.origin.x+10,y=pump.origin.y+10;
+      if(!Number.isFinite(det) || !det || !style || style.animationName!=='wp' || style.animationDuration!=='1.6s' || style.animationIterationCount!=='infinite' ||
+         style.transformBox!=='fill-box' || style.transformOrigin!=='10px 10px' || !animations || animations.length!==1 || animation.animationName!=='wp' || animation.playbackRate!==1 ||
+         effect?.target!==ring || !timing || timing.duration!==1600 || timing.iterations!==Infinity || timing.delay!==0 || timing.direction!=='normal' || timing.easing!=='linear' ||
+         !frames || frames.length!==2 || frames[0].computedOffset!==0 || frames[1].computedOffset!==1 || frames[0].easing!=='ease' ||
+         ![undefined,'none'].includes(frames[0].transform) || frames[0].opacity!=='0.8' || frames[1].opacity!=='0' || frames[1].transform!=='scale(1.8)' || !a)return fail('check-4');
+      const allowed=new Set(['offset','computedOffset','easing','composite','opacity','transform']);
+      if(frames.some(f=>Object.keys(f).some(k=>!allowed.has(k)) || ![undefined,'auto'].includes(f.composite)))return fail('check-5');
+      const rel={a:(root.d*a.a-root.c*a.b)/det,b:(-root.b*a.a+root.a*a.b)/det,c:(root.d*a.c-root.c*a.d)/det,d:(-root.b*a.c+root.a*a.d)/det,
+        e:(root.d*(a.e-root.e)-root.c*(a.f-root.f))/det,f:(-root.b*(a.e-root.e)+root.a*(a.f-root.f))/det};
+      if(!Object.values(rel).every(Number.isFinite) || rel.a<1-1e-7 || rel.a>1.8+1e-7 || Math.abs(rel.a-rel.d)>1e-7 || Math.abs(rel.b)>1e-7 || Math.abs(rel.c)>1e-7 ||
+         Math.abs(rel.e-x*(1-rel.a))>1e-6 || Math.abs(rel.f-y*(1-rel.a))>1e-6)return fail('check-6');
+    }
+    const blades=Array.from(svg.querySelectorAll('path')).filter(el=>el.getAttribute('d')==='M390 226Q405 213 397 192Q383 203 390 226Z');
+    if(blades.length!==5 || [0,72,144,216,288].some(a=>blades.filter(el=>el.getAttribute('transform')===`rotate(${a} 390 226)`).length!==1))return fail('check-7');
+    const group=blades[0].parentElement,active=heat.wp_on || heat.wp_abtau;
+    if(!group || blades.some(el=>el.parentElement!==group) || (group.getAttribute('class')||null)!==(active?'wr':null) ||
+       (group.getAttribute('style')||null)!==(heat.wp_abtau?'animation-duration:4s':null))return fail('check-8');
+    if(blades.some(blade=>{const own=blade.getAnimations?.();return !own || own.length!==0;}))return fail('blade-animation');
+    const animations=group.getAnimations?.() || [];
+    if(active) {
+      const style=view.getComputedStyle(group),animation=animations[0],effect=animation?.effect,timing=effect?.getTiming?.(),frames=effect?.getKeyframes?.();
+      const duration=heat.wp_abtau?4000:1200;
+      if(animations.length!==1 || animation.animationName!=='wr' || animation.playbackRate!==1 || effect?.target!==group ||
+         style.animationName!=='wr' || style.animationIterationCount!=='infinite' || style.animationTimingFunction!=='linear' ||
+         style.transformOrigin!=='390px 226px' || !timing || timing.duration!==duration || timing.iterations!==Infinity || timing.delay!==0 ||
+         timing.direction!=='normal' || timing.easing!=='linear' || !frames || frames.length!==2 || frames[0].computedOffset!==0 || frames[1].computedOffset!==1 ||
+         ![undefined,'none'].includes(frames[0].transform) || frames[1].transform!=='rotate(360deg)')return fail('check-9');
+      const allowed=new Set(['offset','computedOffset','easing','composite','transform']);
+      if(frames.some(f=>Object.keys(f).some(k=>!allowed.has(k)) || ![undefined,'auto','replace'].includes(f.composite) || f.easing!=='linear'))return fail('check-10');
+      // The current matrix must also rotate around the authored fan center in
+      // the moved WP's own coordinate system, never around a foreign body.
+      const det=root.a*root.d-root.b*root.c,a=group.getScreenCTM(),wp=m.components.wp;
+      if(!Number.isFinite(det) || !det || !a)return fail('check-11');
+      const rel={a:(root.d*a.a-root.c*a.b)/det,b:(-root.b*a.a+root.a*a.b)/det,c:(root.d*a.c-root.c*a.d)/det,d:(-root.b*a.c+root.a*a.d)/det,
+        e:(root.d*(a.e-root.e)-root.c*(a.f-root.f))/det,f:(-root.b*(a.e-root.e)+root.a*(a.f-root.f))/det};
+      const dx=wp.origin.x-wp.baseOrigin.x,dy=wp.origin.y-wp.baseOrigin.y;
+      if(!Object.values(rel).every(Number.isFinite) || Math.abs(rel.a*rel.a+rel.b*rel.b-1)>1e-6 ||
+         Math.abs(rel.c+rel.b)>1e-6 || Math.abs(rel.d-rel.a)>1e-6 ||
+         Math.abs(rel.e-(dx+390-rel.a*390-rel.c*226))>1e-5 || Math.abs(rel.f-(dy+226-rel.b*390-rel.d*226))>1e-5)return fail('check-12');
+      const inverse=a.inverse();
+      for(const blade of blades) {
+        const angle=Number(blade.getAttribute('transform').match(/^rotate\((\d+) 390 226\)$/)?.[1]);
+        if(!Number.isFinite(angle))return fail('check-13');
+        const angleRad=angle*Math.PI/180,cos=Math.cos(angleRad),sin=Math.sin(angleRad),actual=inverse.multiply(blade.getScreenCTM());
+        const expected={a:cos,b:sin,c:-sin,d:cos,e:390-cos*390+sin*226,f:226-sin*390-cos*226};
+        if(!['a','b','c','d','e','f'].every(k=>Number.isFinite(actual[k]) && Math.abs(actual[k]-expected[k])<=1e-6))return fail('check-14');
+      }
+    } else if(animations.length)return fail('check-15');
+    const wp=m.components.wp;
+    // The exact five paths lie within a 38-unit radius of (390,226); even a
+    // full turn stays inside the 120x222 housing with ample stroke clearance.
+    if(wp.bounds.width!==120 || wp.bounds.height!==222 || wp.baseOrigin.x!==330 || wp.baseOrigin.y!==150)return fail('check-16');
+    return {status:'unsupported',reason:'heating-animations-bound-only'};
+  } catch (_) {return fail('check-17');}
+}
+
+// Computed-stroke evidence on a connected WP/HK SVG. This checks neither
+// staged/target parity nor ambient paint and cannot authorize commit.
+function inspectInternalHeatingComputedStrokes(svg) {
+  const fail=()=>({status:'unsupported',reason:'heating-computed-strokes-unproven'});
+  try {
+    const view=svg?.ownerDocument?.defaultView;
+    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
+    const controlled=new Set(['w0','w1','w2','w3','wk']);
+    for(const el of svg.querySelectorAll('[class]')) {
+      const raw=el.getAttribute('class')||'',used=raw.trim().split(/\s+/).filter(t=>controlled.has(t));
+      if(used.length && (used.length!==1 || raw!==used[0] || el.localName!==(used[0]==='wk'?'rect':'path')))return fail();
+    }
+    const paths=Array.from(svg.querySelectorAll('path')),byClass=name=>paths.filter(el=>el.getAttribute('class')===name);
+    const layers=['w0','w1','w2'].map(byClass),stubs=Array.from(svg.querySelectorAll('rect')).filter(el=>el.getAttribute('class')==='wk');
+    if(layers.some(g=>g.length!==11) || stubs.length!==11) return fail();
+    const root=svg.getScreenCTM(),keys=['a','b','c','d','e','f'];
+    if (!root || root.is2D===false || !keys.every(k=>Number.isFinite(root[k])))return fail();
+    const bounded=(el,max,round)=>{
+      const style=view.getComputedStyle(el),v=style?.strokeWidth,m=el.getScreenCTM();
+      if(!style || style.stroke==='none' || (style.vectorEffect && style.vectorEffect!=='none') || typeof v!=='string' ||
+          !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(v.trim()) || !m || m.is2D===false ||
+          !keys.every(k=>Number.isFinite(m[k]) && Math.abs(m[k]-root[k])<=1e-9) ||
+          (round && (style.strokeLinecap!=='round' || style.strokeLinejoin!=='round'))) return false;
+      const width=Number.parseFloat(v);return Number.isFinite(width) && width>=0 && width<=max;
+    };
+    if(layers.some((g,i)=>g.some(el=>!bounded(el,[10,7,2][i],true))) || stubs.some(el=>!bounded(el,.8,false)) ||
+       byClass('w3').some(el=>!bounded(el,10,false))) return fail();
+    return {status:'unsupported',reason:'heating-computed-strokes-bound-only',unresolved:['ambient-paint','stage-target-parity','commit-freshness']};
+  } catch (_) {return fail();}
+}
+
+// Partial global text/symbol clearance: bound the WP fan/LED, tank contour
+// and baffle, and the heating pump's maximum animated halo. The remaining
+// symbol inventory and computed target styles still require separate proof.
+function inspectInternalHeatingSymbolText(card,candidate,records,html) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    const m=candidate?.model,c=card?._cfg;
+    if (!m || card._model!==m || !c || !Array.isArray(records) || typeof html!=='string' ||
+        inspectInternalHeatingRemainingTexts(card,candidate,records).reason!=='heating-all-text-inventory-only') return fail('heating-symbol-text-unproven');
+    const wp=m.components.wp,tank=m.components.tank,dx=wp.origin.x-wp.baseOrigin.x,dy=wp.origin.y-wp.baseOrigin.y;
+    const icons=[{id:'wp-fan',x:346.5+dx,y:182.5+dy,width:87,height:87},
+      {id:'wp-led',x:428.5+dx,y:347.5+dy,width:11,height:11},
+      {id:'tank-top',x:tank.origin.x-.6,y:tank.origin.y+25.4,width:131.2,height:21.2},
+      {id:'tank-bottom',x:tank.origin.x-.6,y:tank.origin.y+tank.bounds.height-26.6,width:131.2,height:21.2}];
+    if (html.split('<circle cx="390" cy="226" r="42"').length!==2 || html.split('<circle cx="434" cy="353" r="5"').length!==2 ||
+        html.split(`M${tank.origin.x} ${tank.origin.y+26}Q${tank.origin.x+65} ${tank.origin.y+46} ${tank.origin.x+130} ${tank.origin.y+26}`).length!==2 ||
+        html.split(`M${tank.origin.x} ${tank.origin.y+tank.bounds.height-26}Q${tank.origin.x+65} ${tank.origin.y+tank.bounds.height-6} ${tank.origin.x+130} ${tank.origin.y+tank.bounds.height-26}`).length!==2) return fail('heating-symbol-text-unproven');
+    if (c.typ==='trennblech') {const y=m.geometry.yt;
+      if (!Number.isFinite(y) || html.split(`M73 ${y-2}H201M73 ${y+2}H201`).length!==2) return fail('heating-symbol-text-unproven');
+      icons.push({id:'tank-baffle',x:72.65,y:y-2.35,width:128.7,height:4.7});}
+    const halo=resolveHeatingGeometry(m).bodies.find(b=>b.owner==='heating-pump-0');
+    if (!halo) return fail('heating-symbol-text-unproven');
+    icons.push({id:'heating-pump',x:halo.x,y:halo.y,width:halo.width,height:halo.height});
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    if (icons.some(b=>![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite))) return fail('heating-symbol-text-unproven');
+    for (const r of records) {const b=r?.box;if(!b || ![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite))return fail('heating-symbol-text-unproven');
+      const q={x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2};
+      for(const icon of icons)if(hit(q,icon))return fail('heating-symbol-text-contact',{text:r.text,icon:icon.id});}
+    return {status:'unsupported',reason:'heating-symbol-text-bound-only',unresolved:['remaining-symbol-inventory','connected-style-and-commit-freshness']};
+  } catch (_) {return fail('heating-symbol-text-unproven');}
+}
+
+// Conservative text clearance from every heating pipe and rail. No endpoint
+// exemptions are inferred for labels; uncertain contacts remain unsupported.
+function inspectInternalHeatingAllTextPipes(card,candidate,records) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    if(inspectInternalHeatingRemainingTexts(card,candidate,records).reason!=='heating-all-text-inventory-only') return fail('heating-text-pipes-unproven');
+    const {model:m,routes,policy}=candidate,prepared=prepareLegacyWpHeatingRails(m,policy),proof=inspectCompleteLegacyWpHeatingBatch(m,routes,policy);
+    if(prepared.reason!=='rail-batch-validation-required' || proof.reason!=='heating-decorations-and-paint-validation-required')return fail('heating-text-pipes-unproven');
+    const obstacles=[];const rect=(x,y,width,height)=>{if(![x,y,width,height,x+width,y+height].every(Number.isFinite)||width<0||height<0)throw Error('bounds');obstacles.push({x,y,width,height});};
+    for(const rail of prepared.rails)for(const b of rail.areas)rect(b.x,b.y,b.width,b.height);
+    const half=5,corner=half+Math.max(policy.radius??8,policy.bridgeRadius??6);
+    for(const route of routes){for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i];rect(Math.min(a.x,b.x)-half,Math.min(a.y,b.y)-half,Math.abs(a.x-b.x)+2*half,Math.abs(a.y-b.y)+2*half);}
+      for(const p of route.points.slice(1,-1))rect(p.x-corner,p.y-corner,2*corner,2*corner);}
+    const compiled=compileDirectedJunctionBatch(routes,policy);
+    if(compiled.status!=='routed')return fail('heating-text-pipes-unproven');
+    for(const route of Object.values(compiled.routes))for(const crossing of route.crossings||[])if(crossing.bridge){const p=crossing.point,e=half+(policy.bridgeRadius??6);if(!p)return fail('heating-text-pipes-unproven');rect(p.x-e,p.y-e,2*e,2*e);}
+    const bridge=proof.localBridge?.envelope;if(!bridge)return fail('heating-text-pipes-unproven');rect(bridge.x,bridge.y,bridge.width,bridge.height);
+    for(const id of ['supply-tee','return-tee']){const p=m.junctions[id];if(!p)return fail('heating-text-pipes-unproven');rect(p.x-6,p.y-6,12,12);}
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    for(const record of records){const b=record.box,q={x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2};
+      const obstacle=obstacles.find(o=>hit(q,o));if(obstacle)return fail('heating-text-pipe-contact',{text:record.text,box:q,obstacle});}
+    return {status:'unsupported',reason:'heating-all-text-pipes-bound-only',unresolved:['remaining-symbol-clearance','stage-target-parity','commit-freshness']};
+  }catch(_){return fail('heating-text-pipes-unproven');}
+}
+
+// Bound optional radiator/floor symbols outside the nominal branch hull.
+// This is separate from text and full SVG style/commit validation.
+function inspectInternalHeatingCircuitIcon(card,candidate,records,html) {
+  const fail=reason=>({status:'unsupported',reason});
+  try {
+    const c=card?._cfg,m=candidate?.model;
+    if(!c || !m || card._model!==m || inspectInternalHeatingRemainingTexts(card,candidate,records).reason!=='heating-all-text-inventory-only')return fail('heating-icon-unproven');
+    const branch=m.components['heating-circuit-0'],{S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)];
+    const heat=heatPumpState(c,L,c.farben,S,ON,NUM),hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
+    const floor=['fussboden','fussbodenheizung','floor'].includes(hk.typ),radiator=['heizkoerper','radiator'].includes(hk.typ);
+    if(!floor && !radiator)return {status:'unsupported',reason:'heating-icon-bound-only'};
+    const x=branch.baseOrigin.x+22,y=576+12*hk.zeilen.length,dx=branch.origin.x-branch.baseOrigin.x,dy=branch.origin.y-branch.baseOrigin.y;
+    const marker=floor?`M${x-22} ${y}h40a3 3 0 0 1 0 6h-40a3 3 0 0 0 0 6h40a3 3 0 0 1 0 6h-40`:
+      `<rect x="${x-20}" y="${y-2}" width="40" height="20" rx="3"`;
+    if(typeof html!=='string' || html.split(marker).length!==2)return fail('heating-icon-unproven');
+    const icon={x:x-23+dx,y:y-3+dy,width:46,height:23};
+    const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy),match=rendered.html?.match(/<svg viewBox="([^"]+)"/);
+    const viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});
+    if(!viewport || icon.x<viewport.x || icon.y<viewport.y || icon.x+icon.width>viewport.x+viewport.width || icon.y+icon.height>viewport.y+viewport.height)return fail('heating-icon-viewport-overflow');
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    for(const [id,b] of Object.entries(m.components))if(id!=='heating-circuit-0' && id!=='manifolds'){
+      const q={x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2};
+      if(![q.x,q.y,q.width,q.height].every(Number.isFinite) || hit(icon,q))return fail('heating-icon-obstacle-contact');}
+    for(const r of records){const b=r.box;if(!b || hit(icon,{x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2}))return fail('heating-icon-text-contact');}
+    for(const route of candidate.routes)for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i],e=5+Math.max(candidate.policy.radius??8,candidate.policy.bridgeRadius??6,11);
+      if(hit(icon,{x:Math.min(a.x,b.x)-e,y:Math.min(a.y,b.y)-e,width:Math.abs(a.x-b.x)+2*e,height:Math.abs(a.y-b.y)+2*e}))return fail('heating-icon-pipe-contact');}
+    const prepared=prepareLegacyWpHeatingRails(m,candidate.policy);if(prepared.reason!=='rail-batch-validation-required' || prepared.rails.some(r=>r.areas.some(b=>hit(icon,b))))return fail('heating-icon-pipe-contact');
+    return {status:'unsupported',reason:'heating-icon-bound-only',unresolved:['remaining-svg-paint','stage-target-parity','commit-freshness']};
+  }catch(_){return fail('heating-icon-unproven');}
+}
+
+// Pairwise bounds for foreign component bodies. Tank feet deliberately share
+// their tank; connected port stubs and pipes are checked by the batch proof.
+function inspectInternalHeatingBodyClearance(card,candidate) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    const m=candidate?.model;
+    if(!m || card?._model!==m || inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required')return fail('heating-body-clearance-unproven');
+    const ids=['tank','tank-feet','wp','valve','heating-circuit-0','heating-pump-0'],boxes=[];
+    for(const id of ids){const b=m.components[id];if(!b?.origin || !b.bounds)return fail('heating-body-clearance-unproven');
+      let q={id,x:b.origin.x+b.bounds.x-1.5,y:b.origin.y+b.bounds.y-1.5,width:b.bounds.width+3,height:b.bounds.height+3};
+      if(id==='heating-pump-0'){const halo=resolveHeatingGeometry(m).bodies.find(x=>x.owner===id);if(!halo)return fail('heating-body-clearance-unproven');q={id,x:halo.x,y:halo.y,width:halo.width,height:halo.height};}
+      if(![q.x,q.y,q.width,q.height,q.x+q.width,q.y+q.height].every(Number.isFinite)||q.width<0||q.height<0)return fail('heating-body-clearance-unproven');boxes.push(q);}
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++){
+      const a=boxes[i],b=boxes[j];if(a.id==='tank' && b.id==='tank-feet')continue;
+      if(hit(a,b))return fail('heating-body-contact',{first:a.id,second:b.id});}
+    return {status:'unsupported',reason:'heating-body-clearance-bound-only',unresolved:['symbol-containment','stage-target-parity','commit-freshness']};
+  }catch(_){return fail('heating-body-clearance-unproven');}
+}
+
+// Tee discs may touch their named incident pipes only; keep their painted
+// extent clear of all other component bodies, rails and routed segments.
+function inspectInternalHeatingTeeClearance(card,candidate) {
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
+  try {
+    const m=candidate?.model,policy=candidate?.policy,routes=candidate?.routes;
+    if(!m || card?._model!==m || inspectInternalHeatingBodyClearance(card,candidate).reason!=='heating-body-clearance-bound-only')return fail('heating-tee-clearance-unproven');
+    const prepared=prepareLegacyWpHeatingRails(m,policy),incidence=resolveLegacyWpHeatingIncidences(m);
+    if(prepared.reason!=='rail-batch-validation-required' || incidence.status!=='resolved')return fail('heating-tee-clearance-unproven');
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    for(const id of ['supply-tee','return-tee']){
+      const p=m.junctions[id],q={x:p.x-6,y:p.y-6,width:12,height:12},allowed=new Set(incidence.junctions.find(j=>j.ref===id)?.incidences.map(i=>i.connectionId));
+      if(!allowed.size)return fail('heating-tee-clearance-unproven');
+      for(const [name,b] of Object.entries(m.components))if(name!=='manifolds'){
+        let area={x:b.origin.x+b.bounds.x-1.5,y:b.origin.y+b.bounds.y-1.5,width:b.bounds.width+3,height:b.bounds.height+3};
+        if(name==='heating-pump-0'){const h=resolveHeatingGeometry(m).bodies.find(x=>x.owner===name);if(!h)return fail('heating-tee-clearance-unproven');area=h;}
+        if(hit(q,area))return fail('heating-tee-body-contact',{tee:id,body:name});}
+      if(prepared.rails.some(r=>r.areas.some(a=>hit(q,a))))return fail('heating-tee-rail-contact',{tee:id});
+      for(const route of routes)if(!allowed.has(route.id)){
+        for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i],e=5+Math.max(policy.radius??8,policy.bridgeRadius??6);
+          const box={x:Math.min(a.x,b.x)-e,y:Math.min(a.y,b.y)-e,width:Math.abs(a.x-b.x)+2*e,height:Math.abs(a.y-b.y)+2*e};
+          if(hit(q,box))return fail('heating-tee-pipe-contact',{tee:id,route:route.id});}}
+    }
+    return {status:'unsupported',reason:'heating-tee-clearance-bound-only',unresolved:['stage-target-parity','commit-freshness']};
+  }catch(_){return fail('heating-tee-clearance-unproven');}
+}
+
+// Aggregate only private evidence. The caller must provide independently
+// measured records; the result is never a commit receipt or a public gate.
+function inspectInternalHeatingEvidence(card,candidate,html,records) {
+  const fail=reason=>({status:'unsupported',reason});
+  try {
+    const before=layoutCandidateIntegrity(candidate),state=layoutRelevantHassKey(card,card?._hass);
+    if (before===null || state===null) return fail('heating-evidence-stale');
+    const bodies=inspectInternalHeatingBodyClearance(card,candidate);
+    if (bodies.reason!=='heating-body-clearance-bound-only') return bodies;
+    const tees=inspectInternalHeatingTeeClearance(card,candidate);
+    if (tees.reason!=='heating-tee-clearance-bound-only') return tees;
+    const text=inspectInternalHeatingTexts(card,candidate,records);
+    if (text.reason!=='heating-text-bound-only') return text;
+    const remaining=inspectInternalHeatingRemainingTexts(card,candidate,records);
+    if (remaining.reason!=='heating-all-text-inventory-only') return remaining;
+    const textPipes=inspectInternalHeatingAllTextPipes(card,candidate,records);
+    if (textPipes.reason!=='heating-all-text-pipes-bound-only') return textPipes;
+    const icon=inspectInternalHeatingCircuitIcon(card,candidate,records,html);
+    if (icon.reason!=='heating-icon-bound-only') return icon;
+    const symbols=inspectInternalHeatingSymbolText(card,candidate,records,html);
+    if (symbols.reason!=='heating-symbol-text-bound-only') return symbols;
+    const pipe=inspectInternalHeatingPipePaint(card,candidate,html);
+    if (pipe.reason!=='heating-pipe-paint-bound-only') return pipe;
+    const shadow=inspectInternalHeatingShadows(card,candidate,html);
+    if (shadow.reason!=='heating-shadow-policy-bound-only') return shadow;
+    if (before!==layoutCandidateIntegrity(candidate) || state!==layoutRelevantHassKey(card,card._hass)) return fail('heating-evidence-stale');
+    return {status:'unsupported',reason:'heating-partial-evidence-only',
+      unresolved:['remaining-text-and-symbols','connected-style-and-commit-freshness']};
+  } catch (_) { return fail('heating-evidence-unproven'); }
+}
+
+// Private end-to-end diagnostic: measure an isolated stage, synchronously
+// probe the same SVG in the real target, then always roll it back. This does
+// not install a layout or produce a commit receipt.
+async function probeInternalHeatingTarget(card,candidate,rawConfig,layout,referenceSvg,signal,canonicalReference=false) {
+  const fail=reason=>({status:'unsupported',reason});
+  let held;
+  try {
+    if (!card || card._model!==candidate?.model || !referenceSvg?.isConnected || !referenceSvg.parentNode) return fail('heating-probe-unavailable');
+    const viewport=layoutCandidateViewport(referenceSvg);
+    if (!viewport) return fail('heating-probe-unavailable');
+    if (canonicalReference) {
+      const previous=card._model;let baseline;
+      try {card._model=diagramModel(card._cfg);baseline=card._render();} finally {card._model=previous;}
+      const bounded=renderLayoutViewport(baseline,viewport);if(!bounded)return fail('heating-probe-unavailable');
+      const template=referenceSvg.ownerDocument.createElement('template');template.innerHTML=bounded;
+      const expected=template.content.querySelectorAll('svg');
+      if(expected.length!==1 || !referenceSvg.isEqualNode(expected[0]))return fail('heating-probe-unavailable');
+    } else if (inspectInternalHeatingSvgInventory(card,candidate,referenceSvg,true).reason!=='heating-svg-inventory-bound-only') return fail('heating-probe-unavailable');
+    const parent=referenceSvg.parentNode,integrity=layoutCandidateIntegrity(candidate),hass=layoutRelevantHassKey(card,card._hass),
+      geometry=layoutGeometryKey(rawConfig,card._cfg,layout),token={};
+    if(integrity===null || hass===null || geometry===null)return fail('heating-probe-unavailable');
+    const current=t=>t===token && !signal?.aborted && parent.isConnected && card._model===candidate.model &&
+      layoutCandidateIntegrity(candidate)===integrity &&
+      layoutRelevantHassKey(card,card._hass)===hass && layoutGeometryKey(rawConfig,card._cfg,layout)===geometry;
+    const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
+    if(rendered.reason!=='complete-card-text-shadow-paint-validation-required')return fail('heating-probe-unavailable');
+    const bounded=renderLayoutViewport(rendered.html,viewport);if(!bounded)return fail('heating-probe-unavailable');
+    const template=referenceSvg.ownerDocument.createElement('template');template.innerHTML=bounded;
+    const svgs=template.content.querySelectorAll('svg');if(svgs.length!==1)return fail('heating-probe-unavailable');
+    svgs[0].removeAttribute('style');
+    const result=await stageLegacyHeatingTextCandidate(parent,svgs[0].outerHTML,'heating-target-probe',token,current,
+      referenceSvg,signal,true,'independent',true,true,current,()=>{},'heating-probe');
+    held=result.held;
+    if(result.textStyleParity!=='independent-text-measurements-only' || !held?.validate() || !current(token))return fail(result.reason||'heating-probe-unavailable');
+    const staged=inspectInternalHeatingEvidence(card,candidate,rendered.html,result.textRecords);
+    if(staged.reason!=='heating-partial-evidence-only')return staged;
+    const probe=held.probe((target,records)=>current(token) &&
+      inspectInternalHeatingSvgInventory(card,candidate,target,true,viewport).reason==='heating-svg-inventory-bound-only' &&
+      inspectInternalHeatingContourContainment(card,candidate,target).reason==='heating-contours-contained-only' &&
+      inspectInternalHeatingComputedStrokes(target).reason==='heating-computed-strokes-bound-only' &&
+      inspectInternalHeatingAnimations(card,candidate,target).reason==='heating-animations-bound-only' &&
+      inspectInternalHeatingEvidence(card,candidate,rendered.html,records).reason==='heating-partial-evidence-only' && current(token));
+    if(probe.status!=='validated-target-probe' || !current(token) || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)return fail('heating-target-probe-unproven');
+    return {status:'unsupported',reason:'heating-target-probe-only',unresolved:['commit-freshness','editor-apply-reload-lifecycle']};
+  } catch (_) {return fail('heating-probe-unavailable');}
+  finally {held?.release();}
 }
 
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
@@ -5143,6 +5796,8 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
     if (!owner?.isConnected || !parent?.isConnected || !host?.isConnected || !view?.AbortController ||
         !view.MutationObserver || !view.ResizeObserver || !doc.fonts?.addEventListener || !doc.fonts?.removeEventListener)
       return unsupported('text-measurement-unavailable');
+    const heating=candidate?.status==='heating-candidate';
+    const withHeatingModel=fn=>{const before=card._model;try{card._model=candidate.model;return fn();}finally{card._model=before;}};
     const hassKey=layoutRelevantHassKey(card,owner._hass || card._hass);
     if (hassKey===null) return unsupported('text-measurement-unavailable');
     const draftKey=layoutMeasurementDraftKey(owner);
@@ -5207,6 +5862,36 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       try {
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
       const independent=result?.textStyleParity==='independent-text-measurements-only' && held?.validate?.()===true;
+      if (heating) {
+        const evidence=independent ? withHeatingModel(()=>inspectInternalHeatingEvidence(card,candidate,html,result.textRecords)) : {reason:'heating-evidence-unproven'};
+        const refs=independent ? inspectLayoutTargetReferences(parent,html) : {reason:'layout-target-references-unproven'};
+        if(evidence.reason==='heating-partial-evidence-only' && refs.reason==='layout-target-references-bound-only' &&
+           result.ambientPaintProof?.reason==='layout-ambient-paint-bound-only' && current(generation) && held.validate()) {
+          const verify=(svg,records)=>withHeatingModel(()=>inspectInternalHeatingSvgInventory(card,candidate,svg,true,viewport).reason==='heating-svg-inventory-bound-only' &&
+            inspectInternalHeatingContourContainment(card,candidate,svg).reason==='heating-contours-contained-only' &&
+            inspectInternalHeatingComputedStrokes(svg).reason==='heating-computed-strokes-bound-only' &&
+            inspectInternalHeatingAnimations(card,candidate,svg).reason==='heating-animations-bound-only' &&
+            inspectInternalHeatingEvidence(card,candidate,html,records).reason==='heating-partial-evidence-only');
+          const probe=held.probe?.(verify);
+          if(probe?.status==='validated-target-probe' && held.validate() && current(generation)) {
+            const target=held.consume?.(verify);targetReceipt=target;
+            if(target?.status==='committed-target' && target.validate?.() && current(generation)) {
+              if(owner===card) {
+                if(target.consume() && current(generation)) {
+                  const previous={model:card._model,candidate:card._layoutCandidate,status:card._layoutStatus};
+                  try {card._model=candidate.model;card._layoutCandidate=candidate;card._layoutStatus={status:'rendered-candidate',errors:[]};
+                    if(!current(generation) || layoutTextMeasurementJobs.get(owner)!==job){job.cleanup();return;}
+                    target.seal();layoutTextMeasurementJobs.delete(owner);job.cleanup();card._box?.querySelector?.('[data-layout-status]')?.remove?.();return;
+                  }catch(error){if(layoutTextMeasurementJobs.get(owner)===job){card._model=previous.model;card._layoutCandidate=previous.candidate;card._layoutStatus=previous.status;target.rollback();}throw error;}
+                }
+                target.rollback();
+              } else {job.pending=false;job.ready=true;job.receipt=target;owner._refreshLayoutUI();return;}
+            } else target?.rollback?.();
+          }
+        }
+        if(!current(generation) || layoutTextMeasurementJobs.get(owner)!==job){job.cleanup();return;}
+        layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,evidence.reason);return;
+      }
       const heaterExperiment=!!(card._cfg.heizstab_oben || card._cfg.heizstab_unten);
       const checkTexts=records=>heaterExperiment?inspectInternalHeaterCandidateText(card,candidate,records,html):inspectMeasuredLayoutTexts(card,candidate,records);
       const textReady=value=>value.reason===(heaterExperiment?'heater-combined-text-bound-only':'text-inventory-staged-only');
@@ -5296,7 +5981,7 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
         return {status:'unsupported',reason:'text-stage-viewport-unproven'};
       job.width=rect.width;job.height=rect.height;
       return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'independent',true,true,
-        ()=>layoutTextMeasurementJobs.get(owner)===job,invalidate);
+        ()=>layoutTextMeasurementJobs.get(owner)===job,invalidate,heating?'heating-internal':'fm');
     })
       .then(finish,finish);
     return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
@@ -5306,9 +5991,13 @@ function renderLayoutCandidate(card, candidate, owner=card) {
   const previous = card._model;
   try {
     card._model = candidate.model;
-    layoutRenderRoutes.set(card, candidate);
-    const html = card._render();
-    const complete = Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
+    const heating=candidate.status==='heating-candidate';
+    if (!heating) layoutRenderRoutes.set(card, candidate);
+    const rendered=heating ? renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy) : null;
+    if (heating && rendered.reason!=='complete-card-text-shadow-paint-validation-required')
+      return {status:'unsupported',errors:[{code:rendered.reason||'heating-render-failed',path:'layout'}]};
+    const html = heating ? rendered.html : card._render();
+    const complete = heating ? typeof html==='string' : Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
       html.includes(`<path d="${route.path}" class="${layer}"`)));
     if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
     const viewBox=html.match(/<svg viewBox="([^"]+)"/);
@@ -5352,7 +6041,7 @@ function layoutCandidateIntegrity(candidate) {
     seen.delete(value);
     return [layoutIntegrityIdentity(Object.getPrototypeOf(value)), properties];
   }
-  try { return JSON.stringify(inspect([candidate.model, candidate.routes])); } catch (_) { return null; }
+  try { return JSON.stringify(inspect([candidate.model, candidate.routes, candidate.policy])); } catch (_) { return null; }
 }
 function layoutGeometryKey(rawConfig, config, layout) {
   const seen = new WeakSet();
@@ -5414,13 +6103,8 @@ function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
   const candidate=heaterExperiment?(trial.reason==='heater-route-inventory-only'?{...trial.candidate,status:'candidate'}:
     {status:'unsupported',errors:[{code:trial.reason || 'unsupported-configuration',path:'layout'}]}):cachedLayoutCandidate(cacheOwner, rawConfig, card._cfg, layout);
   if (candidate.status==='heating-candidate') {
-    const previous=card._model;
-    try {
-      card._model=candidate.model;
-      const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
-      const code=rendered.reason==='complete-card-text-shadow-paint-validation-required' ? 'heating-paint-not-validated' : rendered.reason;
-      return {status:'unsupported',errors:[{code:code || 'heating-render-failed',path:'layout'}]};
-    } finally { card._model=previous; }
+    const rendered=renderLayoutCandidate(card,candidate,cacheOwner || card);
+    return rendered.status==='rendered-candidate' ? {...rendered,candidate} : rendered;
   }
   if (candidate.status !== 'candidate') return candidate;
   const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
@@ -6358,6 +7042,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._heatingProbeController?.abort(); this._heatingProbeController=null;
     cancelLayoutTextMeasurement(this);
     this._endLayoutDrag(true);
     // An editor instance may be reattached to a different card without a
@@ -6577,7 +7262,41 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
 
+  // Internal diagnostic only: the live editor still cannot apply or save a
+  // heating candidate. Draft/state changes abort the connected target probe.
+  async _probeHeatingDraft() {
+    const fail=reason=>({status:'unsupported',reason});
+    const ui=this._layoutPanel,draft=this._layoutDraft;let controller;
+    try {
+      if(!ui || !draft || this._layoutDraftNeedsRebind || !this.isConnected || !this._hass?.states || !globalThis.AbortController)
+        return fail('heating-editor-probe-unavailable');
+      const layout=draft.history[draft.index],card=new WarmwasserSchemaCard();card.setConfig(this._config);card._hass=this._hass;
+      const candidate=resolveLayoutCandidate(this._config,card._cfg,layout);
+      if(candidate.status!=='heating-candidate')return fail(candidate.errors?.[0]?.code||'heating-editor-probe-unavailable');
+      card._model=candidate.model;
+      const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
+      if(rendered.reason!=='complete-card-text-shadow-paint-validation-required')return fail(rendered.reason||'heating-editor-probe-unavailable');
+      const match=rendered.html.match(/<svg viewBox="([^"]+)"/),viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});
+      const previous=card._model;let baseline;
+      try{card._model=diagramModel(card._cfg);baseline=card._render();}finally{card._model=previous;}
+      const wrapped=renderLayoutViewport(baseline,viewport);if(!wrapped)return fail('heating-editor-probe-unavailable');
+      const key=layoutGeometryKey(this._config,card._cfg,layout),hass=layoutRelevantHassKey(card,this._hass);
+      if(key===null || hass===null)return fail('heating-editor-probe-unavailable');
+      this._heatingProbeController?.abort();controller=new AbortController();this._heatingProbeController=controller;
+      ui.apply.disabled=true;ui.unchecked=true;ui.previewRoot.innerHTML=`<style>${CSS}</style>${wrapped}`;
+      const reference=ui.previewRoot.querySelector('[data-layout-viewport] svg');
+      if(!reference)return fail('heating-editor-probe-unavailable');
+      const result=await probeInternalHeatingTarget(card,candidate,this._config,layout,reference,controller.signal,true);
+      if(this._heatingProbeController!==controller || controller.signal.aborted || this._layoutPanel!==ui || this._layoutDraft!==draft ||
+          draft.history[draft.index]!==layout || layoutGeometryKey(this._config,card._cfg,layout)!==key || layoutRelevantHassKey(card,this._hass)!==hass)
+        return fail('heating-editor-probe-invalidated');
+      return result;
+    }catch(_){return fail('heating-editor-probe-unavailable');}
+    finally{if(this._heatingProbeController===controller)this._heatingProbeController=null;}
+  }
+
   _refreshLayoutUI({ preserveFocusedInput = false } = {}) {
+    this._heatingProbeController?.abort(); this._heatingProbeController=null;
     const ui = this._layoutPanel;
     if (!ui || !this._layoutDraft) return;
     const previousJob=layoutTextMeasurementJobs.get(this);
@@ -6591,17 +7310,19 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     try {
       const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
       const cfg = card._cfg, base = card._model;
-      const supported = (base.routingScope.fm || supportsInternalHeaterExperiment(cfg) || supportsStandaloneAirWp(cfg)) && ['schicht', 'trennblech', 'getrennt'].includes(cfg.typ) &&
+      const heatingExperiment=!!cfg.wp && cfg.heizkreise.length===1 && !!cfg.heizkreise[0].pumpe &&
+        ['schicht','trennblech'].includes(cfg.typ) && resolveLegacyWpHeatingIncidences(base).status==='resolved';
+      const supported = (base.routingScope.fm || supportsInternalHeaterExperiment(cfg) || supportsStandaloneAirWp(cfg) || heatingExperiment) && ['schicht', 'trennblech', 'getrennt'].includes(cfg.typ) &&
         !cfg.weiche && !cfg.energie.length && !layoutIdentityMap(this._config).errors.length;
       if (supported) {
         separated = cfg.typ === 'getrennt';
-        modelIds = { ...(separated && !supportsInternalHeaterExperiment(cfg) ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), ...(base.components.fm ? {fm:'fm'} : {}), ...(cfg.wp && !(separated && supportsInternalHeaterExperiment(cfg)) ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
+        modelIds = heatingExperiment ? {wp:'wp'} : { ...(separated && !supportsInternalHeaterExperiment(cfg) ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), ...(base.components.fm ? {fm:'fm'} : {}), ...(cfg.wp && !(separated && supportsInternalHeaterExperiment(cfg)) ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
         ids = Object.keys(modelIds);
         card._hass=this._hass;
         const candidate = ['rendered-candidate','ready-candidate'].includes(checked.status) ?
           (supportsInternalHeaterExperiment(cfg)?prepareInternalHeaterRouteCandidate(card,state.layout).candidate:cachedLayoutCandidate(this, this._config, cfg, state.layout)) : null;
         if (candidate && !candidate.status) candidate.status='candidate';
-        const shown = candidate?.status === 'candidate' ? candidate.model : base;
+        const shown = ['candidate','heating-candidate'].includes(candidate?.status) ? candidate.model : base;
         hitBoxes = ids.map(id => {
           const component = shown.components[modelIds[id]], b = component.bounds;
           return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height,

@@ -748,3 +748,15 @@ test('scroll, viewport change, a second touch and changed screen transform cance
     assert.equal(editor._layoutDraft.history.length,1,reason);assert.deepEqual(Object.keys(doc.handlers),[],reason);
   }
 });
+
+test('internal WP heating editor offers only WP and keeps unvalidated draft disabled', () => {
+  const editor=new Editor();editor._visualLayoutEditorEnabled=()=>true;
+  editor.hass={language:'en',states:{'sensor.wp':{state:'on'},'switch.hk':{state:'on'}}};
+  editor.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{pumpe:'switch.hk'}]});
+  const ui=editor._layoutPanel;
+  assert.deepEqual(ui.select.children.map(option=>option.value),['wp']);
+  ui.select.value='wp';ui.inputs.x.value='340';ui.inputs.x.emit('change');ui.inputs.y.value='160';ui.inputs.y.emit('change');
+  assert.equal(editor._layoutDraftState().layout.components.wp.x,340);
+  assert.equal(editor._layoutDraftState().layout.components.wp.y,160);
+  assert.equal(editor._layoutDraftState().status,'unsupported');assert.equal(ui.apply.disabled,true);
+});

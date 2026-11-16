@@ -12,7 +12,7 @@ const raw={speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve
 const hass=()=>({language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:'100',attributes:{}},'switch.hk':{state:'on',attributes:{}}}});
 const make=()=>{const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);c._hass=hass();return c;};
 const layout=(x,y)=>({version:2,components:{wp:{x,y}}});
-test('moved WP and derived tee build a complete internal candidate but editor preflight stays closed',()=>{
+test('moved WP candidate requires connected text and paint measurement',()=>{
   const card=make(),before=JSON.stringify(card._model),legacy=card._render();
   const candidate=resolve(raw,card._cfg,layout(340,160));
   assert.equal(candidate.status,'heating-candidate',JSON.stringify(candidate.errors));
@@ -36,7 +36,7 @@ test('moved WP and derived tee build a complete internal candidate but editor pr
   card._model=saved;card._hass=hass();
   const pending=prepare(card,raw,layout(340,160));
   assert.equal(pending.status,'unsupported');
-  assert.equal(pending.errors[0].code,'heating-paint-not-validated');
+  assert.equal(pending.errors[0].code,'text-measurement-unavailable');
   assert.equal(Object.hasOwn(pending,'html'),false);
   assert.equal(card._model,saved);assert.equal(card._render(),legacy);
   const publicResult=preflight(raw,layout(340,160),hass());

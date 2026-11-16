@@ -252,3 +252,77 @@ test('internal paint bounds contain negative detours, wide rails, A11 bridges an
   }
   assert.ok(internalHeatingPaintBounds(routes, rails, { ...bridge, radius: 0 }, { halfWidth: 0, radius: 0, bridgeRadius: 0 }));
 });
+
+
+test('internal heating text evidence rejects collisions and ambiguous measurements without enabling layout', () => {
+  const api=require('./helpers/routing-harness.cjs');
+  const raw={speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{name:'Office',pumpe:'switch.hk'}]};
+  const c=api.card('schicht',{fm:null,wp:raw.wp,heizkreise:raw.heizkreise});
+  c._hass.states['switch.hk']={state:'on',attributes:{}};
+  const candidate=api.resolveLayoutCandidate(raw,c._cfg,{version:2,components:{wp:{x:340,y:160}}});
+  assert.equal(candidate.status,'heating-candidate'); c._model=candidate.model;
+  const x=candidate.model.components['heating-circuit-0'].baseOrigin.x+22;
+  const record={x:String(x),y:'564',className:'wc wt',text:'Office',box:{x:x-15,y:556,width:30,height:10},matrix:{a:1,b:0,c:0,d:1,e:0,f:0}};
+  const inspect=records=>api.inspectInternalHeatingTexts(c,candidate,records);
+  assert.equal(inspect([record]).reason,'heating-text-bound-only');
+  assert.equal(inspect([record,record]).reason,'heating-text-inventory-unproven');
+  assert.equal(inspect([{...record,box:{...record.box,x:-500,width:1000}}]).reason,'heating-text-viewport-overflow');
+  c._cfg.heizkreise[0].vorlauf='sensor.vl';
+  const row={x:String(x),y:'576',className:'wc ws wx',text:'VL –',box:{x:x-10,y:567.5,width:20,height:8},matrix:record.matrix};
+  assert.equal(inspect([record,row]).reason,'heating-text-bound-only');
+  assert.equal(inspect([record,{...row,box:{...row.box,y:566.5}}]).reason,'heating-text-overlap');
+  delete c._cfg.heizkreise[0].vorlauf;
+  assert.equal(inspect([{...record,box:{x:150,y:495,width:15,height:10}}]).reason,'heating-text-obstacle-contact');
+  assert.equal(inspect([record,{...record,x:'0',box:{...record.box}}]).reason,'heating-text-overlap');
+  assert.equal(inspect([{...record,matrix:{...record.matrix,e:1}}]).reason,'heating-text-inventory-unproven');
+});
+
+
+test('internal heating pipe paint binds operational state, complete layers and order', () => {
+  const api=require('./helpers/routing-harness.cjs');
+  const raw={speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{pumpe:'switch.hk'}]};
+  const c=api.card('schicht',{fm:null,wp:raw.wp,heizkreise:raw.heizkreise});
+  c._hass.states['switch.hk']={state:'on',attributes:{}};
+  const candidate=api.resolveLayoutCandidate(raw,c._cfg,{version:2,components:{wp:{x:340,y:160}}});
+  assert.equal(candidate.status,'heating-candidate');c._model=candidate.model;
+  const rendered=api.renderInternalWpHeatingCandidate(c,candidate.routes,candidate.policy);
+  assert.equal(api.inspectInternalHeatingPipePaint(c,candidate,rendered.html).reason,'heating-pipe-paint-bound-only');
+  assert.equal(api.inspectInternalHeatingShadows(c,candidate,rendered.html).reason,'heating-shadow-policy-bound-only');
+  assert.equal(api.inspectInternalHeatingShadows(c,candidate,rendered.html.replace('stdDeviation="4"','stdDeviation="8"')).reason,'heating-shadow-policy-unproven');
+  assert.equal(api.inspectInternalHeatingPipePaint(c,candidate,rendered.html.replace('class="w0"','class="w1"')).reason,'heating-pipe-paint-unproven');
+  c._hass.states['switch.hk']={state:'off',attributes:{}};
+  assert.equal(api.inspectInternalHeatingPipePaint(c,candidate,rendered.html).reason,'heating-pipe-paint-unproven');
+});
+
+
+test('heating remaining text inventory is complete and rejects unexpected or overflowing text', () => {
+  const api=require('./helpers/routing-harness.cjs');
+  const c=api.card('schicht',{fm:null,wp:{betrieb:'sensor.wp'},heizkreise:[{name:'Office',pumpe:'switch.hk'}]});
+  c._hass.states['switch.hk']={state:'on',attributes:{}};
+  const candidate=api.resolveLayoutCandidate({},c._cfg,{version:2,components:{wp:{x:340,y:160}}});c._model=candidate.model;
+  const m=(e=0,f=0)=>({a:1,b:0,c:0,d:1,e,f});
+  const r=(x,y,className,text,b,e=0,f=0)=>({x:String(x),y:String(y),className,text,box:{x:b[0]+e,y:b[1]+f,width:b[2],height:b[3]},matrix:m(e,f)});
+  const records=[r(122,423,'we ws','VL',[105,416,15,8]),r(122,451,'we ws','RL',[105,444,15,8]),
+    r(170,564,'wc wt','Office',[155,556,30,8]),r(236,278.5,'wc wt','M',[233,273,6,7]),
+    r(342,168,'wt','HOVAL',[342,160,30,7],10,10),r(390,309,'wc','Standby',[375,301,30,7],10,10),
+    r(342,364,null,'WP',[342,348,25,14],10,10)];
+  const inspect=rs=>api.inspectInternalHeatingRemainingTexts(c,candidate,rs);
+  assert.equal(inspect(records).reason,'heating-all-text-inventory-only',JSON.stringify(inspect(records)));
+  const html=api.renderInternalWpHeatingCandidate(c,candidate.routes,candidate.policy).html;
+  assert.equal(api.inspectInternalHeatingBodyClearance(c,candidate).reason,'heating-body-clearance-bound-only');
+  assert.equal(api.inspectInternalHeatingTeeClearance(c,candidate).reason,'heating-tee-clearance-bound-only');
+  assert.equal(api.inspectInternalHeatingAllTextPipes(c,candidate,records).reason,'heating-all-text-pipes-bound-only');
+  for (const typ of ['floor','radiator']) {
+    c._cfg.heizkreise[0].typ=typ;
+    const iconHtml=api.renderInternalWpHeatingCandidate(c,candidate.routes,candidate.policy).html;
+    assert.equal(api.inspectInternalHeatingCircuitIcon(c,candidate,records,iconHtml).reason,'heating-icon-bound-only');
+    assert.equal(api.inspectInternalHeatingCircuitIcon(c,candidate,records,iconHtml.replace(typ==='floor'?'h40a3 3':'width="40" height="20"','invalid')).reason,'heating-icon-unproven');
+  }
+  delete c._cfg.heizkreise[0].typ;
+  assert.equal(api.inspectInternalHeatingEvidence(c,candidate,html,records).reason,'heating-partial-evidence-only');
+  assert.equal(api.inspectInternalHeatingSymbolText(c,candidate,records,html).reason,'heating-symbol-text-bound-only');
+  assert.equal(api.inspectInternalHeatingSymbolText(c,candidate,records,html.replace('r="42"','r="43"')).reason,'heating-symbol-text-unproven');
+  assert.equal(inspect(records.slice(1)).reason,'heating-remaining-text-unproven');
+  assert.equal(inspect([...records,records[0]]).reason,'heating-remaining-text-unproven');
+  assert.equal(inspect(records.map((r,i)=>i===4?{...r,box:{...r.box,width:200}}:r)).reason,'heating-remaining-text-overflow');
+});

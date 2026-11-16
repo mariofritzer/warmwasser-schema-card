@@ -6,7 +6,9 @@ body{font:16px system-ui;margin:2rem} button{padding:.5rem 1rem} svg{width:min(1
 </style></head><body>
 <h1>Internal heating batch preview</h1>
 <p>Internal preview using sample Home Assistant states with the HK pump on. Labels, shadows and paint order against the complete card remain unvalidated; routing is not enabled.</p>
-<button id="draw">Upper WP + HK / WP oben + HK</button> <button id="split">Split valve / Ventil geteilt</button> <button id="full">Full card experiment / Ganze Karte</button> <button id="moved">Moved WP / WP verschoben</button><p id="status" role="status">Ready / Bereit</p>
+<button id="draw">Upper WP + HK / WP oben + HK</button> <button id="split">Split valve / Ventil geteilt</button> <button id="full">Full card experiment / Ganze Karte</button> <button id="moved">Moved WP / WP verschoben</button> <button id="measure">Measure HK / HK messen</button> <button id="stage">Stage parity / Stil prüfen</button> <button id="contours">Contour inventory / Konturen</button> <button id="editor">Editor diagnostic / Editor prüfen</button> <button id="editor-live">Editor apply/reload</button> <button id="editor-races">Editor races / Manipulation</button><label>WP X <input id="wp-x" type="number" value="340"></label> <label>WP Y <input id="wp-y" type="number" value="160"></label>
+<label>HK name <input id="hk-name" value="Heizkreis"></label> <label>Valve % <input id="valve" type="number" value="100" min="0" max="100"></label>
+<label><input id="pump" type="checkbox" checked> HK pump on</label> <label>HK icon <select id="hk-icon"><option value="">None</option><option value="floor">Floor</option><option value="radiator">Radiator</option></select></label><p id="status" role="status">Ready / Bereit</p>
 <svg id="preview" viewBox="0 0 486 616" xmlns="http://www.w3.org/2000/svg"></svg>
 <div id="full-card"></div>
 <script src="../../warmwasser-schema-card.js"></script><script>
@@ -52,20 +54,161 @@ function draw(fraction,full=false){
 document.querySelector('#draw').addEventListener('click',()=>draw(1));
 document.querySelector('#split').addEventListener('click',()=>draw(.25));
 document.querySelector('#full').addEventListener('click',()=>draw(1,true));
+let movedProbe=null;
 document.querySelector('#moved').addEventListener('click',()=>{
+  movedProbe=null;
   const out=document.querySelector('#status'), svg=document.querySelector('#preview'),host=document.querySelector('#full-card');
   try {
     const Card=customElements.get('warmwasser-schema-card'),c=new Card();
-    const raw={speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizkreise:[{vorlauf:'sensor.vl',pumpe:'switch.hk'}]};
-    c.setConfig(raw); c._hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:'100',attributes:{}},'switch.hk':{state:'on',attributes:{}}}};
-    const candidate=resolveLayoutCandidate(raw,c._cfg,{version:2,components:{wp:{x:340,y:160}}});
+    const x=Number(document.querySelector('#wp-x').value),y=Number(document.querySelector('#wp-y').value),valve=Number(document.querySelector('#valve').value);
+    if (![x,y,valve].every(Number.isFinite) || valve<0 || valve>100) throw Error('invalid input');
+    const raw={speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizkreise:[{name:document.querySelector('#hk-name').value,typ:document.querySelector('#hk-icon').value,vorlauf:'sensor.vl',pumpe:'switch.hk'}]};
+    c.setConfig(raw); c._hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'sensor.valve':{state:String(valve),attributes:{}},'switch.hk':{state:document.querySelector('#pump').checked?'on':'off',attributes:{}}}};
+    const candidate=resolveLayoutCandidate(raw,c._cfg,{version:2,components:{wp:{x,y}}});
     if(candidate.status!=='heating-candidate') throw Error(candidate.errors?.[0]?.code || candidate.status);
     c._model=candidate.model;
     const result=renderInternalWpHeatingCandidate(c,candidate.routes,candidate.policy);
     if(result.reason!=='complete-card-text-shadow-paint-validation-required' || !result.html)throw Error(result.reason);
     svg.replaceChildren();if(!c._box)c._init();host.replaceChildren(c);c._box.innerHTML=result.html;
-    if(c._box.querySelectorAll('[data-preview-route]').length!==11 || !c._box.querySelector('.wp')) throw Error('incomplete moved card');
-    out.textContent='MOVED CARD EXPERIMENT — WP (340,160), 11 routes, 2 rails. Production layout remains unsupported.';
+    if(c._box.querySelectorAll('[data-preview-route]').length!==11 || !c._box.querySelector('[data-more="switch.hk"]')) throw Error('incomplete moved card');
+    movedProbe={card:c,candidate,raw,html:result.html};
+    out.textContent=`MOVED CARD EXPERIMENT — WP (${x},${y}), 11 routes, 2 rails. Production layout remains unsupported.`;
   }catch(error){svg.replaceChildren();host.replaceChildren();out.textContent=`FAIL — ${error.message||error}`;}
+});
+document.querySelector('#measure').addEventListener('click',async()=>{
+  const out=document.querySelector('#status');
+  document.querySelector('#moved').click();
+  if (!movedProbe) return;
+  const {card,candidate,html}=movedProbe;
+  try {
+    const measured=await measureLegacyHeatingSvgText(card._box.querySelector('svg'),'heating-harness');
+    if (!measured.entries) throw Error(measured.reason);
+    const records=measured.entries.map(e=>({x:e.node.getAttribute('x'),y:e.node.getAttribute('y'),className:e.node.getAttribute('class'),text:e.text,box:e.box,matrix:JSON.parse(e.fingerprint).at(-1)}));
+    const checked=inspectInternalHeatingTexts(card,candidate,records);
+    const paint=inspectInternalHeatingPipePaint(card,candidate,html);
+    const remaining=inspectInternalHeatingRemainingTexts(card,candidate,records);
+    const symbol=inspectInternalHeatingSymbolText(card,candidate,records,html);
+    const strokes=inspectInternalHeatingComputedStrokes(card._box.querySelector('svg'));
+    const inventory=inspectInternalHeatingSvgInventory(card,candidate,card._box.querySelector('svg'));
+    const liveSvg=card._box.querySelector('svg'),animation=inspectInternalHeatingAnimations(card,candidate,liveSvg);
+    const ring=liveSvg.querySelector('circle.wp'),fan=liveSvg.querySelector('g.wr');let ringTamper='not-running',ringOriginTamper='not-running',fanTamper='not-running',bladeTamper='not-running',bladeAnimation='not-running';
+    if(ring){const before=ring.getAttribute('style');ring.style.animation='none';ringTamper=inspectInternalHeatingAnimations(card,candidate,liveSvg).reason;before===null?ring.removeAttribute('style'):ring.setAttribute('style',before);ring.style.transformOrigin='0px 0px';ringOriginTamper=inspectInternalHeatingAnimations(card,candidate,liveSvg).reason;before===null?ring.removeAttribute('style'):ring.setAttribute('style',before);}
+    if(fan){const before=fan.getAttribute('style');fan.style.animation='none';fanTamper=inspectInternalHeatingAnimations(card,candidate,liveSvg).reason;before===null?fan.removeAttribute('style'):fan.setAttribute('style',before);const blade=fan.querySelector('path');const b=blade.getAttribute('style');blade.style.transform='translate(200px,0px)';bladeTamper=inspectInternalHeatingAnimations(card,candidate,liveSvg).reason;b===null?blade.removeAttribute('style'):blade.setAttribute('style',b);blade.style.animation='wr 1.2s linear infinite';bladeAnimation=inspectInternalHeatingAnimations(card,candidate,liveSvg).reason;b===null?blade.removeAttribute('style'):blade.setAttribute('style',b);}
+    const containment=inspectInternalHeatingContourContainment(card,candidate,card._box.querySelector('svg'));
+    const arrow=liveSvg.querySelector('path.wa'),arrowStyle=arrow?.getAttribute('style');let contourAnimation='unavailable';
+    if(arrow){arrow.style.animation='wr 1.2s linear infinite';contourAnimation=inspectInternalHeatingContourContainment(card,candidate,liveSvg).reason;arrowStyle===null?arrow.removeAttribute('style'):arrow.setAttribute('style',arrowStyle);}
+    const allPipes=inspectInternalHeatingAllTextPipes(card,candidate,records);
+    const icon=inspectInternalHeatingCircuitIcon(card,candidate,records,html);
+    const bodies=inspectInternalHeatingBodyClearance(card,candidate);
+    const tees=inspectInternalHeatingTeeClearance(card,candidate);
+    const evidence=inspectInternalHeatingEvidence(card,candidate,html,records);
+    out.textContent=`HK TEXT PROBE — ${checked.reason}${checked.detail ? ' '+JSON.stringify(checked.detail):''}; PIPE — ${paint.reason}; REMAINING — ${remaining.reason}${remaining.detail ? ' '+JSON.stringify(remaining.detail):''}; SYMBOL — ${symbol.reason}${symbol.detail ? ' '+JSON.stringify(symbol.detail):''}; STROKES — ${strokes.reason}; SVG — ${inventory.reason}; ANIMATION — ${animation.reason}${animation.detail ? ' '+animation.detail:''}; FAN FRAMES — ${animation.detail==='check-10'?JSON.stringify(fan?.getAnimations?.()[0]?.effect?.getKeyframes?.()):''}; RING ORIGIN — ${ring?getComputedStyle(ring).transformOrigin:'off'}; RING TAMPER — ${ringTamper}; ORIGIN TAMPER — ${ringOriginTamper}; FAN TAMPER — ${fanTamper}; BLADE TAMPER — ${bladeTamper}; BLADE ANIMATION — ${bladeAnimation}; CONTOUR ANIMATION — ${contourAnimation}; CONTAINMENT — ${containment.reason}${containment.detail ? ' '+JSON.stringify(containment.detail):''}; TEXT PIPES — ${allPipes.reason}${allPipes.detail ? ' '+JSON.stringify(allPipes.detail):''}; ICON — ${icon.reason}; BODIES — ${bodies.reason}${bodies.detail ? ' '+JSON.stringify(bodies.detail):''}; TEES — ${tees.reason}${tees.detail ? ' '+JSON.stringify(tees.detail):''}; ALL — ${evidence.reason}; production remains unsupported.`;
+  } catch(error) {out.textContent=`FAIL measurement — ${error.message||error}`;}
+});
+document.querySelector('#stage').addEventListener('click',async()=>{
+  const out=document.querySelector('#status');
+  document.querySelector('#moved').click();
+  if(!movedProbe)return;
+  const svg=movedProbe.card._box.querySelector('svg'),token={};
+  const parent=document.createElement('div');parent.setAttribute('data-layout-viewport','');
+  const vb=layoutCandidateViewport(svg);parent.style.cssText=`position:relative;width:100%;aspect-ratio:${vb.width}/${vb.height};max-height:860px;`;
+  svg.replaceWith(parent);parent.append(svg);svg.setAttribute('style','position:absolute;inset:0;width:100%;height:100%;');
+  const clone=svg.cloneNode(true);clone.removeAttribute('style');
+  try {
+    const result=await stageLegacyHeatingTextCandidate(parent,clone.outerHTML,'heating-stage',token,t=>t===token,svg,null,true,'independent',true,true,t=>t===token,()=>{},'heating-probe');
+    const held=result.held?.validate() ? 'held' : `unproven ${result.detail||''}`;
+    const probe=result.held?.probe((target,records)=>inspectInternalHeatingSvgInventory(movedProbe.card,movedProbe.candidate,target,true).reason==='heating-svg-inventory-bound-only' &&
+      inspectInternalHeatingContourContainment(movedProbe.card,movedProbe.candidate,target).reason==='heating-contours-contained-only' &&
+      inspectInternalHeatingComputedStrokes(target).reason==='heating-computed-strokes-bound-only' &&
+      inspectInternalHeatingAnimations(movedProbe.card,movedProbe.candidate,target).reason==='heating-animations-bound-only' &&
+      inspectInternalHeatingEvidence(movedProbe.card,movedProbe.candidate,movedProbe.html,records).reason==='heating-partial-evidence-only');
+    const probeStatus=probe?.status||'unproven';
+    const consumeStatus=result.held?.consume(()=>true)?.reason||'unproven';
+    result.held?.release();
+    const diagnostic=await probeInternalHeatingTarget(movedProbe.card,movedProbe.candidate,movedProbe.raw,{version:2,components:{wp:{x:Number(document.querySelector('#wp-x').value),y:Number(document.querySelector('#wp-y').value)}}},svg);
+    const before=svg.outerHTML,controller=new AbortController();controller.abort();
+    const rejectedAbort=await probeInternalHeatingTarget(movedProbe.card,movedProbe.candidate,movedProbe.raw,{version:2,components:{wp:{x:Number(document.querySelector('#wp-x').value),y:Number(document.querySelector('#wp-y').value)}}},svg,controller.signal);
+    const oldHass=movedProbe.card._hass;
+    const pending=probeInternalHeatingTarget(movedProbe.card,movedProbe.candidate,movedProbe.raw,{version:2,components:{wp:{x:Number(document.querySelector('#wp-x').value),y:Number(document.querySelector('#wp-y').value)}}},svg);
+    movedProbe.card._hass={...oldHass,states:{...oldHass.states,'switch.hk':{state:oldHass.states['switch.hk'].state==='on'?'off':'on',attributes:{}}}};
+    const stale=await pending;movedProbe.card._hass=oldHass;
+    const rollback=svg.isConnected && svg.outerHTML===before && movedProbe.card._model===movedProbe.candidate.model;
+    const injected=document.createElementNS('http://www.w3.org/2000/svg','rect');svg.append(injected);
+    const injectedCheck=inspectInternalHeatingSvgInventory(movedProbe.card,movedProbe.candidate,svg,true);injected.remove();
+    const model=movedProbe.card._model;let baseline;
+    try {movedProbe.card._model=diagramModel(movedProbe.card._cfg);baseline=movedProbe.card._render();}finally{movedProbe.card._model=model;}
+    movedProbe.card._box.innerHTML=renderLayoutViewport(baseline,vb);
+    const canonical=movedProbe.card._box.querySelector('svg');
+    const canonicalProbe=await probeInternalHeatingTarget(movedProbe.card,movedProbe.candidate,movedProbe.raw,
+      {version:2,components:{wp:{x:Number(document.querySelector('#wp-x').value),y:Number(document.querySelector('#wp-y').value)}}},canonical,null,true);
+    const bad=svg.cloneNode(true);bad.querySelector('[data-preview-route]').setAttribute('data-preview-route','unexpected');
+    const rejected=namespaceLegacyHeatingSvgIds(bad,svg.getRootNode());
+    out.textContent=`STAGE — ${result.reason}; TEXT PARITY — ${result.textStyleParity||'unproven'}; AMBIENT — ${result.ambientPaintProof?.reason||'unproven'}; HELD — ${held}; PROBE — ${probeStatus}; CONSUME — ${consumeStatus}; E2E — ${diagnostic.reason}; ABORT — ${rejectedAbort.reason}; STALE — ${stale.reason}; ROLLBACK — ${rollback}; INJECT — ${injectedCheck.reason}; CANONICAL — ${canonicalProbe.reason}; INVALID ROUTE — ${rejected.reason}; production remains unsupported.`;
+  }catch(error){out.textContent=`FAIL stage — ${error.message||error}`;}
+});
+document.querySelector('#contours').addEventListener('click',()=>{
+  document.querySelector('#moved').click();if(!movedProbe)return;
+  const {card,candidate}=movedProbe,svg=card._box.querySelector('svg'),m=candidate.model;
+  const boxes=Object.entries(m.components).filter(([id])=>id!=='manifolds').map(([id,b])=>({id,x:b.origin.x+b.bounds.x-2,y:b.origin.y+b.bounds.y-2,width:b.bounds.width+4,height:b.bounds.height+4}));
+  const root=svg.getScreenCTM(),inv=root.inverse(),uncovered=[];
+  for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')){
+    if(el.closest('defs,[data-preview-route],[data-preview-rail]') || el.getAttribute('class')==='wk')continue;
+    const box=el.getBBox(),mat=inv.multiply(el.getScreenCTM());
+    const points=[[box.x,box.y],[box.x+box.width,box.y],[box.x,box.y+box.height],[box.x+box.width,box.y+box.height]].map(([x,y])=>({x:mat.a*x+mat.c*y+mat.e,y:mat.b*x+mat.d*y+mat.f}));
+    const b={x:Math.min(...points.map(p=>p.x)),y:Math.min(...points.map(p=>p.y)),right:Math.max(...points.map(p=>p.x)),bottom:Math.max(...points.map(p=>p.y))};
+    if(!boxes.some(q=>b.x>=q.x-.01 && b.y>=q.y-.01 && b.right<=q.x+q.width+.01 && b.bottom<=q.y+q.height+.01))uncovered.push({tag:el.localName,cls:el.getAttribute('class'),d:el.getAttribute('d'),cx:el.getAttribute('cx'),cy:el.getAttribute('cy'),box:b});
+  }
+  document.querySelector('#status').textContent=`CONTOUR DIAGNOSTIC ${uncovered.length}: ${JSON.stringify(uncovered)}; production remains unsupported.`;
+});
+document.querySelector('#editor').addEventListener('click',async()=>{
+  const out=document.querySelector('#status'),host=document.querySelector('#full-card');
+  try {
+    const ed=document.createElement('warmwasser-schema-card-editor');ed._visualLayoutEditorEnabled=()=>true;host.replaceChildren(ed);
+    ed.hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'switch.hk':{state:'on',attributes:{}}}};
+    ed.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{name:'Heizkreis',pumpe:'switch.hk'}]});
+    const ui=ed._layoutPanel;ui.select.value='wp';ed._setLayoutUIPosition({x:340,y:160});
+    const probe=await ed._probeHeatingDraft(),disabled=ui.apply.disabled;
+    const pending=ed._probeHeatingDraft();ed.hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'switch.hk':{state:'off',attributes:{}}}};
+    const stale=await pending;
+    const draftPending=ed._probeHeatingDraft();ed._setLayoutUIPosition({x:341,y:160});const draftRace=await draftPending;
+    const disconnectPending=ed._probeHeatingDraft();ed.remove();const detached=await disconnectPending;
+    out.textContent=`EDITOR PROBE — ${probe.reason}; APPLY DISABLED — ${disabled}; STATE RACE — ${stale.reason}; DRAFT RACE — ${draftRace.reason}; DETACH — ${detached.reason}; production remains unsupported.`;
+  }catch(error){out.textContent=`FAIL editor — ${error.message||error}`;}
+});
+document.querySelector('#editor-live').addEventListener('click',async()=>{
+  const out=document.querySelector('#status'),host=document.querySelector('#full-card');
+  try {
+    const ed=document.createElement('warmwasser-schema-card-editor');ed._visualLayoutEditorEnabled=()=>true;host.replaceChildren(ed);
+    const hass={language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'switch.hk':{state:'on',attributes:{}}}};
+    ed.hass=hass;let saved=null;ed.addEventListener('config-changed',e=>{saved=e.detail.config;});
+    ed.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{name:'Heizkreis',pumpe:'switch.hk'}]});
+    const ui=ed._layoutPanel;ui.select.value='wp';ed._setLayoutUIPosition({x:340,y:160});
+    const wait=async test=>{for(let i=0;i<60;i++){if(test())return true;await new Promise(r=>setTimeout(r,100));}return false;};
+    if(!await wait(()=>!ui.apply.disabled))throw Error(`preview unavailable: ${ui.status.textContent}`);
+    if(!ui.previewRoot.querySelector('[data-preview-route="hk-supply"]'))throw Error('candidate pipes absent');
+    const applied=ed._applyLayoutDraft();if(applied.status!=='applied' || !saved?.layout)throw Error(`apply: ${applied.status}`);
+    const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(saved);card.hass=hass;
+    if(!await wait(()=>card._layoutStatus?.status==='rendered-candidate'))throw Error(`reload: ${JSON.stringify(card._layoutStatus)}`);
+    if(!card._box.querySelector('[data-preview-route="hk-supply"]'))throw Error('reloaded candidate pipes absent');
+    out.textContent='EDITOR LIVE — preview, apply and reload passed; internal gates only.';
+  }catch(error){out.textContent=`FAIL editor live — ${error.message||error}`;}
+});
+document.querySelector('#editor-races').addEventListener('click',async()=>{
+  const out=document.querySelector('#status'),host=document.querySelector('#full-card');
+  try {
+    const ed=document.createElement('warmwasser-schema-card-editor');ed._visualLayoutEditorEnabled=()=>true;host.replaceChildren(ed);
+    const hass=state=>({language:'de',states:{'sensor.wp':{state:'on',attributes:{}},'switch.hk':{state,attributes:{}}}});
+    ed.hass=hass('on');let events=0;ed.addEventListener('config-changed',()=>events++);
+    ed.setConfig({speicher:{typ:'schicht'},wp:{betrieb:'sensor.wp'},heizkreise:[{name:'Heizkreis',pumpe:'switch.hk'}]});
+    const ui=ed._layoutPanel;ui.select.value='wp';ed._setLayoutUIPosition({x:340,y:160});ed._setLayoutUIPosition({x:350,y:170});ed.hass=hass('off');
+    const wait=async test=>{for(let i=0;i<60;i++){if(test())return true;await new Promise(r=>setTimeout(r,100));}return false;};
+    if(!await wait(()=>!ui.apply.disabled))throw Error(`race preview unavailable: ${ui.status.textContent}`);
+    if(!ui.previewRoot.querySelector('rect[x="350"][y="170"]'))throw Error('stale position committed');
+    const svg=ui.previewRoot.querySelector('svg'),target=svg.querySelector('rect[x="350"][y="170"]');target.setAttribute('width','1');
+    const invalid=ed._applyLayoutDraft();if(invalid?.status!=='unsupported' || events!==0)throw Error(`mutated target accepted: ${invalid?.status}`);
+    ed._setLayoutUIPosition({x:340,y:160});ed.remove();await new Promise(r=>setTimeout(r,100));
+    if(events!==0)throw Error('detached editor emitted configuration');
+    out.textContent='EDITOR RACES — draft/HA races, target mutation and detach rejected; internal gates only.';
+  }catch(error){out.textContent=`FAIL editor races — ${error.message||error}`;}
 });
 </script></body></html>
