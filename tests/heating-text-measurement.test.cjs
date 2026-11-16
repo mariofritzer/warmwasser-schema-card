@@ -474,3 +474,14 @@ test('sensor theme fill accepts only a directly resolved color before staging',(
     resolved=unsafe;assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
   }
 });
+
+test('staging accepts only the bounded sensor text length attribute pair',()=>{
+  const child={localName:'text',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[{name:'textLength',value:'50'},{name:'lengthAdjust',value:'spacingAndGlyphs'}],
+    getAttribute(name){return this.attributes.find(a=>a.name===name)?.value ?? null;},setAttribute(){}};
+  const svg={localName:'svg',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[],querySelectorAll:()=>[child]};
+  const root={querySelectorAll:()=>[]};
+  assert.equal(namespace(svg,root).status,'prepared');
+  child.attributes[0].value='500';assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  child.attributes[0].value='50';child.attributes[1].value='spacing';assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  child.attributes[1].value='spacingAndGlyphs';child.localName='path';assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+});

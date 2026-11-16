@@ -78,3 +78,35 @@ test('sensor routing handles FM and air WP across tank types and admits heater p
     assert.equal(proof.reason,'heater-route-inventory-only',`${typ} WP=${withWp}: ${proof.reason}`);
   }
 });
+
+test('separated FM routing rejects legend-blocked port escape and accepts a clear nearby position',()=>{
+  vm.runInNewContext('globalThis.resolve = resolveLayoutCandidate;', context);
+  const raw={speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},fuehler:[
+    {name:'Warmwasser',entity:'sensor.ww',hoehe:20},
+    {name:'Puffer oben',entity:'sensor.top',hoehe:68},
+    {name:'Puffer unten',entity:'sensor.bottom',hoehe:90},
+  ]};
+  const card=new Card();card.setConfig(raw);
+  const ports={'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}};
+  const resolve=y=>context.resolve(raw,card._cfg,{version:2,components:{fm:{x:254,y}},ports});
+  const blocked=resolve(76);
+  assert.equal(blocked.status,'unsupported');
+  assert.equal(blocked.errors[0].code,'blocked-port');
+  assert.equal(resolve(120).status,'candidate');
+  const withoutSensors={...raw,fuehler:[]}, other=new Card();other.setConfig(withoutSensors);
+  assert.equal(context.resolve(withoutSensors,other._cfg,{version:2,components:{fm:{x:254,y:76}},ports}).status,'candidate');
+});
+
+test('experimental sensor labels constrain long names while keeping legacy and short labels unchanged',()=>{
+  vm.runInNewContext('globalThis.renderSensors = renderTankSensors;',context);
+  const render=(name,layout)=>context.renderSensors({fl:[{name,entity:'sensor.test',index:0,wert:42,y:100}],
+    col:()=>'red',more:()=>'',openComponent:()=>'',closeComponent:()=>'',layout});
+  for(const name of ['Warmwasser','Puffer oben','Puffer unten']) {
+    assert.match(render(name,true),/textLength="50" lengthAdjust="spacingAndGlyphs"/);
+    assert.doesNotMatch(render(name,false),/textLength=/);
+  }
+  assert.doesNotMatch(render('Top',true),/textLength=/);
+  assert.doesNotMatch(render('iiiiiiii',true),/textLength=/);
+  for(const name of ['WWWWWWW','mmmmmmm','漢字漢字漢字漢']) assert.match(render(name,true),/textLength="50"/);
+  assert.match(render('Puffer <unten>',true),/Puffer &lt;unten&gt;/);
+});

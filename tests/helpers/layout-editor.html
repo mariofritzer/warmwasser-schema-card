@@ -41,6 +41,7 @@
     <button id="simple-commit">FM-only apply + card commit</button>
     <button id="simple-stale">FM-only stale + rollback</button>
     <button id="sensors-commit">Sensors + WP Apply/reload</button>
+    <button id="sensors-real-config">Real German sensor labels and FM/tank moves</button>
     <button id="sensors-fm">Sensors + FM Apply/reload</button>
     <button id="sensors-heater">Sensors + heater + WP</button>
     <button id="sensors-split-heater">Separated sensors + heater + WP</button>
@@ -714,6 +715,31 @@
           result.textContent=`PASS ${type} sensors ${withWp?'+ WP':'+ FM'}${withHeater?' + heater':''} editor Apply, live state, overflow rejection and card reload`;
         } catch(error){result.textContent=`FAIL sensors: ${error.message}`;}finally{host?.remove();}
       }
+      document.getElementById('sensors-real-config').addEventListener('click',async()=>{
+        const base={type:'custom:warmwasser-schema-card',titel:'Editor-Test – vereinfachtes Schema',sprache:'de',speicher:{typ:'getrennt',hersteller:'M-TEC'},fm:{temp:'sensor.fm_temp',pumpe:'binary_sensor.fm'},fuehler:[{name:'Warmwasser',entity:'sensor.ww',hoehe:20},{name:'Puffer oben',entity:'sensor.top',hoehe:68},{name:'Puffer unten',entity:'sensor.bottom',hoehe:90}]};
+        const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve)),failures=[];
+        for(const [name,x,label,adjusted] of [['fm',341,'Warmwasser',true],['tank',71,'Warmwasser',true],['buffer',71,'Warmwasser',true],['fm',341,'iiiiiiii',false],['fm',341,'WWWWWWW',true],['fm',341,'mmmmmmm',true],['fm',341,'漢字漢字漢字漢',true]]) {
+          hass={language:'de',states:{'sensor.fm_temp':{state:'26.1'},'binary_sensor.fm':{state:'off'},'sensor.ww':{state:'44.8'},'sensor.top':{state:'41.1'},'sensor.bottom':{state:'37.1'}}};
+          lastInventory=lastSymbol=lastComplete=lastStage=null;const fixture=copy(base);fixture.fuehler[0].name=label;install(fixture);
+          const ui=editor._layoutPanel;ui.select.value=name;ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.x.value=String(x);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          for(let i=0;i<120 && ui.apply.disabled;i++)await frame();
+          if(ui.apply.disabled) {failures.push({name,status:ui.status.textContent,inventory:lastInventory,symbol:lastSymbol,complete:lastComplete,stage:lastStage});continue;}
+          ui.apply.click();
+          if(config.layout?.components?.[name]?.x!==x) {failures.push({name,status:'Apply did not emit position'});continue;}
+          const host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          try {
+            for(let attempt=0;attempt<2;attempt++) {
+              const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;
+              for(let i=0;i<120 && card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
+              if(card._layoutStatus?.status!=='rendered-candidate') {failures.push({name,status:'Card commit/reload failed',detail:card._layoutStatus});break;}
+              const text=[...card.shadowRoot.querySelectorAll('svg text')].find(el=>el.textContent===label && el.getAttribute('x')==='31' && el.getAttribute('font-size')==='8');
+              if(!text || text.hasAttribute('textLength')!==adjusted) {failures.push({name,label,status:'Unexpected sensor label fitting',present:!!text,attrs:text?.outerHTML,box:text?.getBBox?.()?.toJSON?.(),svgText:[...card.shadowRoot.querySelectorAll('svg text')].map(n=>n.textContent)});break;}
+            }
+          } finally {host.remove();}
+        }
+        result.textContent=failures.length?'FAIL real German sensors: '+JSON.stringify(failures):'PASS real German sensors: FM, hot tank and buffer Apply/commit/reload; narrow, wide and Unicode label fitting verified';
+      });
       document.getElementById('sensors-commit').addEventListener('click',()=>verifySensors());
       document.getElementById('sensors-fm').addEventListener('click',()=>verifySensors('schicht',false));
       document.getElementById('sensors-heater').addEventListener('click',()=>verifySensors('schicht',true,null,true));

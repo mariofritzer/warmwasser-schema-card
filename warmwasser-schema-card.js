@@ -1811,7 +1811,7 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
   const all=[svg,...svg.querySelectorAll('*')], existing=new Set(Array.from(root.querySelectorAll('[id]'),el=>el.id));
   const elements=new Set(['svg','g','defs','linearGradient','radialGradient','stop','pattern','filter','feDropShadow','rect','path','circle','ellipse','line','text','title']);
   const attributes=new Set(['id','class','cx','cy','d','dx','dy','fill','fill-opacity','filter','flood-color','flood-opacity',
-    'font-size','font-weight','gradientUnits','height','letter-spacing','offset','opacity','patternUnits','r','rx','ry',
+    'font-size','font-weight','textLength','lengthAdjust','gradientUnits','height','letter-spacing','offset','opacity','patternUnits','r','rx','ry',
     'stdDeviation','stop-color','stop-opacity','stroke','stroke-linecap','stroke-linejoin','stroke-opacity','stroke-width','style','transform',
     'viewBox','width','x','x1','x2','y','y1','y2','data-act','data-more','data-preview-route','data-preview-rail','href','xlink:href','xmlns','aria-label']);
   const ids=new Map();
@@ -1830,6 +1830,9 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
     // CSS escapes and comments can disguise URL tokens in any paint-bearing
     // attribute, not just style. Reject them before inspecting references.
     if (!attributes.has(name) || (name==='xmlns' && value!=='http://www.w3.org/2000/svg') || /@import/i.test(value) || /\\|\/\*/.test(value))
+      return fail('text-stage-invalid-candidate');
+    if ((name==='textLength' || name==='lengthAdjust') && (el.localName!=='text' ||
+        el.getAttribute('textLength')!=='50' || el.getAttribute('lengthAdjust')!=='spacingAndGlyphs'))
       return fail('text-stage-invalid-candidate');
     if (name==='id') continue;
     // Atomic heating preview adds inert identifiers to pipe groups only.
@@ -3516,12 +3519,18 @@ function tankState(c, S, y_t) {
   return { fl, stops, avg, col };
 }
 
+// Approximate width only selects when to compress; measured SVG bounds remain
+// authoritative and still reject any overflow under the actual font/theme.
+function sensorLabelNeedsFit(name) {
+  const chars=Array.from(String(name));
+  return chars.reduce((width,ch)=>width+(/[ilI1.,'|! :;]/.test(ch)?2.8:/[MWmw@%&]/.test(ch) || ch.codePointAt(0)>127?7.2:5.2)+.8,0)>50;
+}
 function renderTankSensors({ fl, col, more, openComponent, closeComponent, layout }) {
   const pille = (f) => {
     const y = r1(f.y), cl = col(f.wert);
     return `<g${more(f.entity)}><line x1="60" y1="${y}" x2="72" y2="${y}" stroke="${cl}" stroke-width="1.5"/>` +
       `<rect x="2" y="${r1(y - 15)}" width="58" height="30" rx="10" style="fill:var(--secondary-background-color,#2a2d33)" stroke="${cl}" stroke-width="1.5"/>` +
-      `<text x="31" y="${r1(y - (layout ? 6 : 3))}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${esc(f.name)}</text>` +
+      `<text x="31" y="${r1(y - (layout ? 6 : 3))}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8"${layout && sensorLabelNeedsFit(f.name) ? ' textLength="50" lengthAdjust="spacingAndGlyphs"' : ''}>${esc(f.name)}</text>` +
       `<text x="31" y="${r1(y + (layout ? 11 : 10))}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
       `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
   };
