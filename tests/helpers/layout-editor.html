@@ -24,6 +24,11 @@
     <button id="circulation-wp">Circulation + moved WP</button>
     <button id="circulation-wp-sensors">Circulation + WP + sensors</button>
     <button id="circulation-de">Zirkulation Deutsch</button>
+    <button id="solo-wp">Standalone WP Apply + reload</button>
+    <button id="solo-wp-baffle">Standalone WP baffle</button>
+    <button id="solo-wp-sensors">Standalone WP + sensors</button>
+    <button id="solo-wp-extra">Standalone WP + live extras</button>
+    <button id="solo-wp-baffle-sensors">Standalone WP baffle + sensors</button>
     <button id="reset">Reset fixture</button>
     <button id="separated">Load separated tank fixture</button>
     <button id="temperature">Toggle FM label overflow</button>
@@ -752,6 +757,34 @@
       document.getElementById('circulation-wp').addEventListener('click',()=>verifyCirculation('schicht',false,true));
       document.getElementById('circulation-wp-sensors').addEventListener('click',()=>verifyCirculation('schicht',true,true));
       document.getElementById('circulation-de').addEventListener('click',()=>verifyCirculation('schicht',true,true,'de'));
+      async function verifySoloWp(type='schicht',withSensors=false,extras=false) {
+        let host;
+        try {
+          hass={language:'en',states:{'sensor.wp':{state:'on'},'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.valve':{state:'on'},'sensor.top':{state:'55'},'sensor.bottom':{state:'35'},'sensor.sg':{state:'2'},'sensor.source_in':{state:'12'},'sensor.source_out':{state:'8'}}};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type,volumen:500},wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',ventil:'sensor.valve',...(extras?{sg_ready:'sensor.sg',quelle_ein:'sensor.source_in',quelle_aus:'sensor.source_out'}:{})},...(withSensors?{fuehler:[{name:'Top',entity:'sensor.top',hoehe:10},{name:'Bottom',entity:'sensor.bottom',hoehe:90}]}:{})});
+          const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));ui.select.value='wp';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          const x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value);if(x!==330||y!==150)throw Error(`unexpected WP position ${x},${y}`);
+          const input=withSensors?ui.inputs.y:ui.inputs.x,start=withSensors?y:x;
+          input.value=String(start+15);input.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.undo.click();if(Number(input.value)!==start)throw Error('undo failed');ui.redo.click();if(Number(input.value)!==start+15)throw Error('redo failed');
+          if(!withSensors){ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));}
+          const ready=async()=>{for(let i=0;i<150&&ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`editor: ${ui.status.textContent}; state ${JSON.stringify(editor._layoutDraftState())}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
+          await ready();hass={...hass,states:{...hass.states,'sensor.vl':{state:'41'},'sensor.valve':{state:'off'}}};editor.hass=hass;
+          if(!ui.apply.disabled)throw Error('live update did not invalidate');await ready();
+          ui.apply.click();if(config.layout?.components?.wp?.x!==(withSensors?x:x+30)||config.layout?.components?.wp?.y!==y+15)throw Error('layout not emitted');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
+          let card=mount();const committed=async()=>{for(let i=0;i<150&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
+          await committed();card=mount();await committed();if(card._model.components.wp.origin.x!==(withSensors?x:x+30)||!card.shadowRoot.querySelector('svg')?.textContent.includes('41.0°'))throw Error('reload mismatch');
+          card.hass={...hass,states:{...hass.states,'sensor.vl':{state:'100000000000'}}};if(card._layoutCandidate||card._layoutStatus?.status==='rendered-candidate')throw Error('overflow remained committed');
+          result.textContent=`PASS ${type} solo WP undo/redo, Apply, live update, card reload and overflow rollback`;
+        }catch(error){result.textContent=`FAIL solo WP: ${error.message}`;}finally{host?.remove();}
+      }
+      document.getElementById('solo-wp').addEventListener('click',()=>verifySoloWp());
+      document.getElementById('solo-wp-baffle').addEventListener('click',()=>verifySoloWp('trennblech'));
+      document.getElementById('solo-wp-sensors').addEventListener('click',()=>verifySoloWp('schicht',true));
+      document.getElementById('solo-wp-extra').addEventListener('click',()=>verifySoloWp('schicht',true,true));
+      document.getElementById('solo-wp-baffle-sensors').addEventListener('click',()=>verifySoloWp('trennblech',true));
       document.getElementById('wp-source-commit').addEventListener('click',()=>verifyWpCommit('schicht',false,true));
       document.getElementById('wp-sg-commit').addEventListener('click',()=>verifyWpCommit('schicht',true));
       document.getElementById('wp-commit').addEventListener('click',()=>verifyWpCommit());
