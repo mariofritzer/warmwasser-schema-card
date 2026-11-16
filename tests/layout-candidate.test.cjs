@@ -385,3 +385,29 @@ test('separated buffer placement moves its feet and keeps the seven routed paths
   const html=context.renderGeometry(card,result,{language:'en',states:{}});
   for (const route of Object.values(result.routes)) for (const layer of ['w0','w1','w2']) assert.ok(html.includes(`<path d="${route.path}" class="${layer}"`));
 });
+
+test('general geometry resolver rejects sole source loops and tank-mounted heaters', () => {
+  for (const typ of ['schicht','trennblech','getrennt']) for (const extra of [
+    {wp:{typ:'sole',betrieb:'sensor.wp',quelle_pumpe:'sensor.source'}},
+    {wp:{typ:'wasser',betrieb:'sensor.wp',quelle_pumpe:'sensor.source'}},
+    {heizstab_oben:{stufe:'sensor.heater'}},
+    {heizstab_unten:{leistung:'sensor.heater'}},
+    {wp:{betrieb:'sensor.wp'},heizstab_oben:{stufe:'sensor.heater'}},
+    {heizstab_oben:{stufe:'sensor.upper'},heizstab_unten:{leistung:'sensor.lower'}},
+  ]) {
+    const {raw,card,resolve}=fixture({...extra,speicher:{typ}}),before=JSON.stringify({raw,model:card._model});
+    const candidate=resolve({version:2,components:{fm:{x:370,y:29}}});
+    assert.equal(candidate.status,'unsupported',`${typ}: ${JSON.stringify(extra)}`);
+    assert.equal(candidate.errors[0].code,'unsupported-configuration');
+    assert.equal(JSON.stringify({raw,model:card._model}),before);
+  }
+});
+test('heater preflight rejects invalid versions and keeps live-state proof mandatory',()=>{
+  const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm'},heizstab_oben:{stufe:'sensor.heater'}};
+  const hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'}}};
+  const bad=context.preflight(raw,{version:1},hass);assert.equal(bad.status,'invalid');assert.equal(bad.errors[0].code,'unsupported-version');
+  const safe=context.preflight(raw,{version:2,components:{fm:{x:370,y:29}}},hass);
+  assert.equal(safe.status,'unsupported');assert.equal(safe.errors[0].code,'text-measurement-unavailable');
+  const collision=context.preflight(raw,{version:2,components:{fm:{x:100,y:100}}},hass);
+  assert.equal(collision.status,'unsupported');assert.equal(collision.errors[0].code,'heater-body-collision');
+});

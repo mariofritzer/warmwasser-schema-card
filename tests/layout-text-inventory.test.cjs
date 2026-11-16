@@ -147,6 +147,8 @@ test('simple FM-only complete inventory classifies every visible shape',()=>{
   }
   const svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
   assert.equal(complete(c,candidate,svg).status,'complete');
+  shapes.push({localName:'ellipse',getAttribute:()=>null,closest:()=>null});
+  assert.equal(complete(c,candidate,svg).status,'unsupported');shapes.pop();
   shapes.push({localName:'circle',getAttribute:()=>null,closest:()=>null});
   assert.equal(complete(c,candidate,svg).status,'unsupported');
 });

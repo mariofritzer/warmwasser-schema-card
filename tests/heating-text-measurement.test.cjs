@@ -455,3 +455,10 @@ test('independent parity permits only the valve motor counter-rotation and still
     else assert.equal(result.reason,'text-stage-style-mismatch',mode);
   }
 });
+test('staging permits plain ellipses but rejects active attributes and external references',()=>{
+  const ellipse={localName:'ellipse',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[{name:'cx',value:'156'},{name:'rx',value:'50'}],setAttribute(){}};
+  const svg={localName:'svg',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[],querySelectorAll:()=>[ellipse]};
+  const root={querySelectorAll:()=>[]};assert.equal(namespace(svg,root).status,'prepared');
+  ellipse.attributes.push({name:'onload',value:'alert(1)'});assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');ellipse.attributes.pop();
+  ellipse.attributes.push({name:'fill',value:'url(https://example.test/x)'});assert.equal(namespace(svg,root).reason,'text-stage-unresolved-reference');
+});

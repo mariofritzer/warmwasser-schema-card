@@ -17,3 +17,5 @@ The **Load separated tank fixture** button loads a guarded FM/WP example with th
 The **FM + WP SG Ready Apply/reload** check exercises an air heat pump with a live SG Ready entity. It changes the state, checks overflow rejection and recovery, applies the editor draft, reloads the card, and checks canonical fallback for an oversized value. The normal public gates remain closed.
 
 The **FM + WP source temperatures Apply/reload** check exercises live air-source temperatures, including updated values, overflow rejection and recovery, editor Apply, card reload and canonical fallback. This test does not open the public gates.
+
+The **Heater geometry and SVG probe** is an internal diagnostic for a stratified tank with an upper heater. It checks the routed FM batch and connected heater SVG in active and inactive states. It does not validate text collision, complete paint, Apply, or release the editor gate.

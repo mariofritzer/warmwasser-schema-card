@@ -78,3 +78,10 @@ test('ambient paint rejects inherited stroke and oversized implicit widths',()=>
   attrs['stroke-width']='2';shape.computed.strokeWidth='2px';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-bound-only');
   shape.computed.strokeWidth='10%';assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
 });
+test('ambient paint examines heater ellipses and rejects inherited stroke',()=>{
+  const effects={markerStart:'none',markerMid:'none',markerEnd:'none',clipPath:'none',mask:'none',mixBlendMode:'normal',filter:'none',opacity:'1',isolation:'auto',backdropFilter:'none'};
+  const ellipse={localName:'ellipse',getAttribute:()=>null,closest:()=>null,style:{getPropertyValue:()=>''},computed:{...effects,stroke:'none',strokeWidth:'1px',vectorEffect:'none'}};
+  const svg={isConnected:true,computed:{...effects},ownerDocument:{defaultView:{getComputedStyle:el=>el.computed}},querySelectorAll:selector=>selector.split(',').includes('ellipse')?[ellipse]:[]};ellipse.parentElement=svg;
+  assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-bound-only');ellipse.computed.stroke='red';
+  assert.equal(context.inspectAmbient(svg).reason,'layout-ambient-paint-unproven');
+});

@@ -1766,7 +1766,7 @@ function inspectStagedLayoutAmbientPaint(svg,allowTargetId=false) {
     const cssWidths={w0:10,w1:7,w2:2,w3:2.6,wa:1.6,wk:.8,wn:.8,wm:1.2};
     const length=value=>typeof value==='string' && /^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(value.trim())
       ? Number.parseFloat(value) : NaN;
-    for(const el of svg.querySelectorAll('path,rect,circle,line')) {
+    for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
       if (el.closest('defs')) continue;
       const seen=new Set();let ancestor=el,reached=false;
       while(ancestor) {
@@ -1809,10 +1809,10 @@ function namespaceLegacyHeatingSvgIds(svg,root) {
   const fail=reason=>({status:'unsupported',reason});
   if (!svg || svg.isConnected || !root || typeof root.querySelectorAll!=='function') return fail('text-stage-invalid-candidate');
   const all=[svg,...svg.querySelectorAll('*')], existing=new Set(Array.from(root.querySelectorAll('[id]'),el=>el.id));
-  const elements=new Set(['svg','g','defs','linearGradient','radialGradient','stop','pattern','filter','feDropShadow','rect','path','circle','line','text']);
+  const elements=new Set(['svg','g','defs','linearGradient','radialGradient','stop','pattern','filter','feDropShadow','rect','path','circle','ellipse','line','text']);
   const attributes=new Set(['id','class','cx','cy','d','dx','dy','fill','fill-opacity','filter','flood-color','flood-opacity',
     'font-size','font-weight','gradientUnits','height','letter-spacing','offset','opacity','patternUnits','r','rx','ry',
-    'stdDeviation','stop-color','stop-opacity','stroke','stroke-linejoin','stroke-opacity','stroke-width','style','transform',
+    'stdDeviation','stop-color','stop-opacity','stroke','stroke-linecap','stroke-linejoin','stroke-opacity','stroke-width','style','transform',
     'viewBox','width','x','x1','x2','y','y1','y2','data-more','href','xlink:href','xmlns','aria-label']);
   const ids=new Map();
   for (const el of all) {
@@ -2898,6 +2898,280 @@ function heaterState(c, L, S, NUM) {
   const hs_p = (hso ? hso.p : 0) + (hsu ? hsu.p : 0), hs_hatP = (hso && hso.leistung) || (hsu && hsu.leistung);
 
   return { hso, hsu, HS, hs_on, hs_p, hs_hatP };
+}
+
+// Internal heater inventory only. It does not validate SVG, text, routes or
+// paint and must never by itself authorize an editor candidate.
+function inspectTankHeaterGeometry(card,model) {
+  const fail=()=>({status:'unsupported',reason:'heater-geometry-unproven'});
+  try {
+    const c=card?._cfg,g=model?.geometry,parts=model?.components;
+    if (!c || !g || !parts || !Number.isInteger(c.hs_stufen) || c.hs_stufen<1 || c.hs_stufen>12) return fail();
+    const {S,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],state=heaterState(c,L,S,NUM),canonical=diagramModel(c);
+    if (['heaterY','ru','bu'].some(key=>g[key]!==canonical.geometry[key])) return fail();
+    const split=c.typ==='getrennt',specs=[['upper-heater',state.hso,split?'hot-tank':'tank',g.heaterY],
+      ['lower-heater',state.hsu,split?'buffer-tank':'tank',(g.ru+g.bu)/2]];
+    const heaters=[];
+    for (const [id,heater,parentId,y] of specs) {
+      const child=parts[id];if (!heater) {if (child) return fail();continue;}
+      const parent=parts[parentId],reference=canonical.components[parentId],base=child?.baseOrigin,origin=child?.origin,b=child?.bounds,local=child?.localOrigin;
+      if (!parent || !reference || !['x','y'].every(key=>parent.baseOrigin?.[key]===reference.baseOrigin[key]) ||
+          !['x','y','width','height'].every(key=>parent.bounds?.[key]===reference.bounds[key]) || !base || !origin || !b || !local || child.parent!==parentId ||
+          ![y,base.x,base.y,origin.x,origin.y,parent.origin.x,parent.origin.y,parent.baseOrigin.x,parent.baseOrigin.y,local.x,local.y].every(Number.isFinite) ||
+          base.x!==106 || base.y!==y-13 || b.x!==0 || b.y!==0 || b.width!==108 || b.height!==41 ||
+          local.x!==base.x-parent.baseOrigin.x || local.y!==base.y-parent.baseOrigin.y ||
+          origin.x!==parent.origin.x+local.x || origin.y!==parent.origin.y+local.y) return fail();
+      const dx=origin.x-base.x,dy=origin.y-base.y,pitch=70/c.hs_stufen;
+      const body={x:198+dx,y:y-11+dy,width:16,height:22};
+      // The SVG path remains in canonical coordinates; the enclosing component
+      // translates it. Its collision envelope is already in world coordinates.
+      const coil={d:`M202 ${y}h-10l-3-4${'l-6 8l-6-8'.repeat(6)}l-3 4`,dx,dy,x:112.7+dx,y:y-5.3+dy,width:90.6,height:10.6};
+      const stages=heater.stufe?Array.from({length:c.hs_stufen},(_,i)=>({x:r2(124+i*pitch)+dx,y:y+11+dy,width:r2(pitch-2),height:4,active:i<heater.step})):[];
+      const glow=heater.on?{x:106+dx,y:y-13+dy,width:100,height:26}:null;
+      const info=[heater.leistung?watt(heater.p):'',heater.temp?fmt(S(heater.temp)):''].filter(Boolean).join(' · ');
+      const texts=[{x:192,y:y-13,className:'we wo wt',text:heater.name,dx,dy},
+        ...(info?[{x:192,y:y+(heater.stufe?28:22),className:'we wo',text:info,dx,dy}]:[])];
+      heaters.push({id,parent:parentId,y:y+dy,body,coil,stages,glow,texts,on:heater.on});
+    }
+    return {status:'unsupported',reason:'heater-geometry-inventory-only',heaters,
+      unresolved:['heater-text','heater-svg-and-strokes','heater-animation','heater-route-and-body-collisions','target-commit']};
+  } catch (_) {return fail();}
+}
+
+// These are independent partial checks, not candidate authorization. A full
+// proof must also account for every other rendered shape, paint and collision.
+function inspectTankHeaterSvgShapes(card,model,svg) {
+  const fail=()=>({status:'unsupported',reason:'heater-svg-unproven'});
+  try {
+    const inventory=inspectTankHeaterGeometry(card,model),view=svg?.ownerDocument?.defaultView;
+    if (inventory.reason!=='heater-geometry-inventory-only' || !svg?.isConnected || !view?.getComputedStyle) return fail();
+    const root=svg.getScreenCTM(),det=root && root.a*root.d-root.b*root.c;
+    if (!root || root.is2D===false || !Number.isFinite(det) || !det) return fail();
+    const all=Array.from(svg.querySelectorAll('path,rect,ellipse')).filter(el=>!el.closest('defs'));
+    const unique=(tag,attrs)=>{const found=all.filter(el=>el.localName===tag && Object.entries(attrs).every(([k,v])=>el.getAttribute(k)===String(v)));return found.length===1?found[0]:null;};
+    const matrixMatches=(el,dx,dy)=>{
+      const a=el?.getScreenCTM();if (!a || a.is2D===false) return false;
+      const rel={a:(root.d*a.a-root.c*a.b)/det,b:(-root.b*a.a+root.a*a.b)/det,
+        c:(root.d*a.c-root.c*a.d)/det,d:(-root.b*a.c+root.a*a.d)/det,
+        e:(root.d*(a.e-root.e)-root.c*(a.f-root.f))/det,f:(-root.b*(a.e-root.e)+root.a*(a.f-root.f))/det};
+      return [rel.a-1,rel.b,rel.c,rel.d-1,rel.e-dx,rel.f-dy].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8);
+    };
+    const computedPaint=(el,maxStroke,animation=false)=>{
+      const s=view.getComputedStyle(el),raw=s?.strokeWidth;
+      if (!s || s.filter!=='none' || s.clipPath!=='none' || s.mask!=='none' ||
+          s.markerStart!=='none' || s.markerMid!=='none' || s.markerEnd!=='none' ||
+          s.mixBlendMode!=='normal' || (s.vectorEffect && s.vectorEffect!=='none')) return false;
+      if (maxStroke===0) {if(s.stroke!=='none')return false;}
+      else if (s.stroke==='none' || typeof raw!=='string' || !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(raw.trim()) ||
+          Number.parseFloat(raw)>maxStroke) return false;
+      if (animation && (s.animationName!=='wb' || s.animationDuration!=='2.4s' || s.animationIterationCount!=='infinite')) return false;
+      return true;
+    };
+    for (const heater of inventory.heaters) {
+      const {dx,dy}=heater.texts[0],y=heater.y-dy,color=heater.on?card._cfg.farben.aktiv:'#b0b6bd';
+      const coil=unique('path',{d:heater.coil.d,fill:'none',stroke:color,'stroke-width':'2.6','stroke-linecap':'round','stroke-linejoin':'round'});
+      const body=unique('rect',{x:198,y:y-11,width:16,height:22,rx:3,fill:'#2b2f35',stroke:color,'stroke-width':'1.5'});
+      if (!coil || !body || !matrixMatches(coil,dx,dy) || !matrixMatches(body,dx,dy) || !computedPaint(coil,2.6) || !computedPaint(body,1.5)) return fail();
+      const coilStyle=view.getComputedStyle(coil);
+      if(coilStyle.strokeLinecap!=='round' || coilStyle.strokeLinejoin!=='round')return fail();
+      for (const [i,stage] of heater.stages.entries()) {
+        const el=unique('rect',{x:r2(124+i*70/card._cfg.hs_stufen),y:y+11,width:stage.width,height:4,rx:1.5,fill:stage.active?card._cfg.farben.aktiv:'rgba(255,255,255,.3)'});
+        if (!el || !matrixMatches(el,dx,dy) || !computedPaint(el,0)) return fail();
+      }
+      const glows=all.filter(el=>el.localName==='ellipse' && el.getAttribute('cx')==='156' && el.getAttribute('cy')===String(y) && el.getAttribute('rx')==='50' && el.getAttribute('ry')==='13');
+      if (glows.length!==(heater.on?1:0)) return fail();
+      if (heater.on) {
+        const glow=glows[0],fill=glow.getAttribute('fill');
+        const ref=(fill||'').match(/^url\(#(wwHeat|ww-text-stage-\d+)\)$/),gradient=ref && svg.querySelector?.(`#${ref[1]}`),stops=gradient && Array.from(gradient.querySelectorAll('stop'));
+        if (!ref || !gradient || gradient.localName!=='radialGradient' || !stops || stops.length!==2 ||
+            stops[0].getAttribute('offset')!=='0' || stops[1].getAttribute('offset')!=='1' ||
+            stops.some(stop=>stop.getAttribute('stop-color')!==card._cfg.farben.aktiv) ||
+            stops[0].getAttribute('stop-opacity')!=='.75' || stops[1].getAttribute('stop-opacity')!=='0' ||
+            glow.getAttribute('class')!=='wb' || glow.style?.getPropertyValue('animation-duration')!=='2.4s' ||
+            !matrixMatches(glow,dx,dy) || !computedPaint(glow,0,true)) return fail();
+      }
+    }
+    return {status:'unsupported',reason:'heater-svg-shapes-bound-only',count:inventory.heaters.length,
+      unresolved:['ancestor-paint-and-gradient','heater-text','heater-route-and-body-collisions','other-svg-shapes','target-commit']};
+  } catch (_) {return fail();}
+}
+function inspectTankHeaterMeasuredTexts(card,model,records) {
+  const fail=()=>({status:'unsupported',reason:'heater-text-unproven'});
+  try {
+    const inventory=inspectTankHeaterGeometry(card,model);
+    if (inventory.reason!=='heater-geometry-inventory-only' || !Array.isArray(records)) return fail();
+    const boxes=[];
+    for (const heater of inventory.heaters) for(const expected of heater.texts) {
+      const matches=records.filter(r=>r?.x===String(expected.x) && r.y===String(expected.y) && r.className===expected.className && r.text===expected.text);
+      if (matches.length!==1) return fail();
+      const {matrix:m,box:b}=matches[0];
+      if (!m || !b || ![m.a,m.b,m.c,m.d,m.e,m.f,b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite) ||
+          b.width<=0 || b.height<=0 || ![m.a-1,m.b,m.c,m.d-1,m.e-expected.dx,m.f-expected.dy].every(n=>Math.abs(n)<=1e-8)) return fail();
+      boxes.push({owner:heater.id,...b});
+    }
+    return {status:'unsupported',reason:'heater-text-inventory-only',boxes,
+      unresolved:['heater-text-bounds-and-collisions','other-text','computed-paint','target-commit']};
+  } catch (_) {return fail();}
+}
+
+// Separate bounded clearance check; this cannot validate or commit a candidate.
+function inspectTankHeaterTextClearance(card,candidate,records) {
+  const fail=(reason='heater-text-clearance-unproven')=>({status:'unsupported',reason});
+  try {
+    const model=candidate?.model, inventory=inspectTankHeaterGeometry(card,model),text=inspectTankHeaterMeasuredTexts(card,model,records);
+    if (inventory.reason!=='heater-geometry-inventory-only' || text.reason!=='heater-text-inventory-only' || !candidate.routes) return fail();
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    const expanded=b=>({x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2});
+    const expected=inventory.heaters.flatMap(h=>h.texts.map(t=>({...t,owner:h.id,parent:h.parent})));
+    const used=new Set(),boxes=[];
+    for (const t of expected) {
+      const matches=records.filter(r=>r?.x===String(t.x) && r.y===String(t.y) && r.className===t.className && r.text===t.text);
+      if(matches.length!==1 || used.has(matches[0]))return fail();used.add(matches[0]);
+      const q=expanded(matches[0].box),heater=inventory.heaters.find(h=>h.id===t.owner),isName=t.className==='we wo wt';
+      const slot=isName?{x:73+t.dx,y:heater.y-27,width:122,height:20}
+        :{x:73+t.dx,y:heater.y+(heater.stages.length?16:10),width:122,height:19};
+      if (![q.x,q.y,q.width,q.height,q.x+q.width,q.y+q.height].every(Number.isFinite) || q.width<=0 || q.height<=0) return fail();
+      if(q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
+        return fail('heater-text-slot-overflow');
+      boxes.push({owner:t.owner,parent:t.parent,...q});
+    }
+    const others=records.filter(r=>!used.has(r));
+    if(others.some(r=>!r?.box || ![r.box.x,r.box.y,r.box.width,r.box.height,r.box.x+r.box.width,r.box.y+r.box.height].every(Number.isFinite) || r.box.width<0 || r.box.height<0))return fail();
+    const shapeClearance=inspectTankHeaterShapeClearance(card,candidate);
+    if(shapeClearance.reason!=='heater-shape-clearance-bound-only')return fail();
+    if(others.some(r=>shapeClearance.paints.some(p=>hit(expanded(r.box),p))))return fail('heater-text-obstacle-contact');
+    for(let i=0;i<boxes.length;i++) {
+      const box=boxes[i];
+      if(boxes.slice(i+1).some(b=>hit(box,b)) || others.some(r=>hit(box,expanded(r.box))))return fail('heater-text-obstacle-contact');
+      for(const [id,b] of Object.entries(model.components)) {
+        if(id===box.owner || id===box.parent || id==='domestic-boundary')continue;
+        if(!b?.origin || !b.bounds || ![b.origin.x,b.origin.y,b.bounds.x,b.bounds.y,b.bounds.width,b.bounds.height].every(Number.isFinite))return fail();
+        if(hit(box,{x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2}))return fail('heater-text-obstacle-contact');
+      }
+      const own=inventory.heaters.find(h=>h.id===box.owner);
+      if([own.coil,expanded(own.body),...own.stages.map(expanded)].some(b=>hit(box,b)))return fail('heater-text-obstacle-contact');
+      // The parent tank contour remains an obstacle despite its permitted body overlap.
+      const tank=model.components[box.parent],p=tank.origin,h=tank.bounds.height;
+      for(const y of [p.y+26,p.y+h-26]) if(hit(box,{x:p.x-1,y:y-1,width:132,height:22}))return fail('heater-text-obstacle-contact');
+    }
+    const obstacles=[],segment=(a,b,w)=>obstacles.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
+    for(const route of Object.values(candidate.routes)) {
+      if(!route || !Array.isArray(route.points) || !Array.isArray(route.crossings))return fail();
+      for(let i=1;i<route.points.length;i++)segment(route.points[i-1],route.points[i],5);
+      for(const p of route.points.slice(1,-1))obstacles.push({x:p.x-13,y:p.y-13,width:26,height:26});
+      for(const c of route.crossings)if(c.bridge)obstacles.push({x:c.point.x-11,y:c.point.y-11,width:22,height:22});
+    }
+    for(const [id,component] of Object.entries(model.components)) for(const [name,port] of Object.entries(component.ports||{})) if(port.stub) {
+      const [x,y,width,height]=diagramStub(model,`${id}.${name}`);obstacles.push({x:x-.4,y:y-.4,width:width+.8,height:height+.8});
+    }
+    for(const id of ['domestic-cold','domestic-hot']) {
+      const edge=model.connections[id];if(!edge)return fail();const a=diagramPort(model,edge.from),b=diagramPort(model,edge.to);let p=a;
+      for(const ref of edge.via) {const j=model.junctions[ref],q={x:p.x,y:j.y};segment(p,q,5);segment(q,j,5);p=j;}
+      const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
+    }
+    if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite)) || boxes.some(b=>obstacles.some(o=>hit(b,o))))return fail('heater-text-obstacle-contact');
+    return {status:'unsupported',reason:'heater-text-clearance-bound-only',boxes,
+      unresolved:['other-text-inventory','heater-shapes','computed-paint','target-commit']};
+  } catch (_) {return fail();}
+}
+
+// Heater paint may overlap its owning tank, but not foreign devices or pipes.
+// The glow is included at its full extent for every animation phase.
+function inspectTankHeaterShapeClearance(card,candidate) {
+  const fail=(reason='heater-shape-clearance-unproven')=>({status:'unsupported',reason});
+  try {
+    const model=candidate?.model,inventory=inspectTankHeaterGeometry(card,model);
+    if(inventory.reason!=='heater-geometry-inventory-only' || !candidate.routes)return fail();
+    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
+    const expand=(b,w)=>({x:b.x-w,y:b.y-w,width:b.width+2*w,height:b.height+2*w});
+    const paints=inventory.heaters.flatMap(h=>[h.coil,expand(h.body,.75),...h.stages,...(h.glow?[h.glow]:[])].map(b=>({owner:h.id,parent:h.parent,...b})));
+    if(paints.some(p=>![p.x,p.y,p.width,p.height,p.x+p.width,p.y+p.height].every(Number.isFinite) || p.width<=0 || p.height<=0))return fail();
+    for(const paint of paints) for(const [id,b] of Object.entries(model.components)) {
+      if(id===paint.owner || id===paint.parent || id==='domestic-boundary')continue;
+      if(!b?.origin || !b.bounds || ![b.origin.x,b.origin.y,b.bounds.x,b.bounds.y,b.bounds.width,b.bounds.height].every(Number.isFinite))return fail();
+      if(hit(paint,{x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2}))return fail('heater-shape-obstacle-contact');
+    }
+    for(const paint of paints) {
+      const tank=model.components[paint.parent],p=tank.origin,h=tank.bounds.height;
+      for(const y of [p.y+26,p.y+h-26])if(hit(paint,{x:p.x-1,y:y-1,width:132,height:22}))return fail('heater-shape-obstacle-contact');
+      if(card._cfg.typ==='trennblech' && hit(paint,{x:p.x-.35,y:model.geometry.yt-2.35,width:130.7,height:4.7}))return fail('heater-shape-obstacle-contact');
+    }
+    const obstacles=[],segment=(a,b,w)=>obstacles.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
+    for(const route of Object.values(candidate.routes)) {
+      if(!route || !Array.isArray(route.points) || !Array.isArray(route.crossings))return fail();
+      for(let i=1;i<route.points.length;i++)segment(route.points[i-1],route.points[i],5);
+      for(const p of route.points.slice(1,-1))obstacles.push({x:p.x-13,y:p.y-13,width:26,height:26});
+      for(const crossing of route.crossings)if(crossing.bridge)obstacles.push({x:crossing.point.x-11,y:crossing.point.y-11,width:22,height:22});
+    }
+    for(const [id,component] of Object.entries(model.components)) for(const [name,port] of Object.entries(component.ports||{})) if(port.stub) {
+      const [x,y,width,height]=diagramStub(model,`${id}.${name}`);obstacles.push({x:x-.4,y:y-.4,width:width+.8,height:height+.8});
+    }
+    for(const id of ['domestic-cold','domestic-hot']) {
+      const edge=model.connections[id];if(!edge)return fail();const a=diagramPort(model,edge.from),b=diagramPort(model,edge.to);let p=a;
+      for(const ref of edge.via) {const j=model.junctions[ref],q={x:p.x,y:j.y};segment(p,q,5);segment(q,j,5);p=j;}
+      const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
+    }
+    if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite)) || paints.some(p=>obstacles.some(o=>hit(p,o))))return fail('heater-shape-obstacle-contact');
+    return {status:'unsupported',reason:'heater-shape-clearance-bound-only',paints,
+      unresolved:['heater-text','other-tank-attachments','svg-inventory','computed-paint','target-commit']};
+  } catch (_) {return fail();}
+}
+
+function supportsInternalHeaterExperiment(c) {
+  if (!c || !['schicht','trennblech'].includes(c.typ) || !c.fm || c.wp ||
+      (!c.heizstab_oben && !c.heizstab_unten) || c.fuehler.length || c.weiche || c.energie.length) return false;
+  return !!diagramModel({...c,heizstab_oben:null,heizstab_unten:null}).routingScope.fm;
+}
+
+// FM-only heater routing supplies a candidate to the gated editor/card path.
+// This check alone cannot authorize a commit: text, paint and freshness follow.
+function prepareInternalHeaterRouteCandidate(card,layout) {
+  const fail=(reason='heater-route-unproven')=>({status:'unsupported',reason});
+  try {
+    const c=card?._cfg;
+    if(!supportsInternalHeaterExperiment(c))return fail();
+    const caps={components:{fm:'fm'},ports:{},inactive:{components:{},ports:{}}},checked=validateLayoutV2(layout,caps);
+    if(checked.errors.length || !layout.components?.fm) return fail();
+    const model=diagramModel(c),position=layout.components.fm,fm=model.components.fm;
+    if(position.x===fm.origin.x && position.y===fm.origin.y)return fail();
+    fm.origin.x=position.x;fm.origin.y=position.y;model.routingScope.fm=true;
+    const body=id=>{const b=model.components[id];return {id,x:b.origin.x+b.bounds.x,y:b.origin.y+b.bounds.y,width:b.bounds.width,height:b.bounds.height};};
+    const bodies=['tank','tank-feet','fm'].map(body),hit=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
+    for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++)
+      if(!(bodies[i].id==='tank' && bodies[j].id==='tank-feet') && hit(bodies[i],bodies[j]))return fail('heater-body-collision');
+    for(const id of ['domestic-cold','domestic-hot']) {
+      const edge=model.connections[id],a=diagramPort(model,edge.from),b=diagramPort(model,edge.to),w=5;
+      const segments=[{x:a.x-w,y:Math.min(a.y,b.y)-w,width:2*w,height:Math.abs(a.y-b.y)+2*w}];
+      if(a.x!==b.x)segments.push({x:Math.min(a.x,b.x)-w,y:b.y-w,width:Math.abs(a.x-b.x)+2*w,height:2*w});
+      if(segments.some(segment=>bodies.some(item=>item.id!=='fm' && hit(segment,item))))return fail('heater-domestic-collision');
+    }
+    const routes=routeDiagramConnections(model,['fm-supply','fm-return']);
+    if(Object.keys(routes).length!==2 || Object.values(routes).some(r=>r.status!=='routed'))return fail();
+    const candidate={model,routes},clearance=inspectTankHeaterShapeClearance(card,candidate);
+    if(clearance.reason!=='heater-shape-clearance-bound-only')return fail(clearance.reason);
+    return {status:'unsupported',reason:'heater-route-inventory-only',candidate,
+      unresolved:['heater-text','complete-svg-and-ambient-paint','target-commit']};
+  } catch (_) {return fail();}
+}
+
+// Combine heater and regular text checks for the gated FM-only path.
+// A commit additionally requires complete paint, target parity and freshness.
+function inspectInternalHeaterCandidateText(card,candidate,records,html) {
+  const fail=()=>({status:'unsupported',reason:'heater-combined-text-unproven'});
+  try {
+    const inv=inspectTankHeaterGeometry(card,candidate?.model),heater=inspectTankHeaterTextClearance(card,candidate,records);
+    if(inv.reason!=='heater-geometry-inventory-only' || heater.reason!=='heater-text-clearance-bound-only')return fail();
+    const expected=inv.heaters.flatMap(h=>h.texts),heaterRecords=new Set();
+    for(const t of expected) {
+      const found=records.filter(r=>r?.x===String(t.x) && r.y===String(t.y) && r.className===t.className && r.text===t.text);
+      if(found.length!==1 || heaterRecords.has(found[0]))return fail();heaterRecords.add(found[0]);
+    }
+    const regular=inspectMeasuredLayoutTexts(card,candidate,records.filter(r=>!heaterRecords.has(r)));
+    const symbols=inspectLayoutSymbolPaint(card,candidate,records,html);
+    if(regular.reason!=='text-inventory-staged-only' || symbols.reason!=='layout-symbol-paint-bound-only')return fail();
+    return {status:'unsupported',reason:'heater-combined-text-bound-only',count:records.length,
+      unresolved:['target-parity-and-freshness','complete-paint','commit']};
+  } catch (_) {return fail();}
 }
 
 function renderHeatPump({ WP, W, model, portStub, openComponent, closeComponent, c, wpCopText, wp_abtau, F, wp_on, kuehl, QT, more, wpStatus, wpPowerText, wpTemperatures, S, L, wp_sperre }) {
@@ -4403,7 +4677,15 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     const c=card?._cfg,m=candidate?.model;
     if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || !c.fm || !svg?.isConnected) return fail();
     const split=c.typ==='getrennt',tankIds=split?['hot-tank','buffer-tank']:['tank'];
-    const wp=!!c.wp,allowed=['domestic-boundary','fm',...tankIds,'tank-feet',...(wp?['wp','valve']:[])];
+    const wp=!!c.wp,hasHeater=!!(c.heizstab_oben || c.heizstab_unten);
+    // Only the isolated FM-only stationary-tank experiment is inventoried here.
+    const heaters=hasHeater?inspectTankHeaterGeometry(card,m):null,tank=m.components[tankIds[0]];
+    if(hasHeater && (split || wp || !tank || tank.origin.x!==tank.baseOrigin.x || tank.origin.y!==tank.baseOrigin.y ||
+        heaters.reason!=='heater-geometry-inventory-only' || inspectTankHeaterSvgShapes(card,m,svg).reason!=='heater-svg-shapes-bound-only' ||
+        inspectTankHeaterShapeClearance(card,candidate).reason!=='heater-shape-clearance-bound-only')) return fail();
+    const ellipses=Array.from(svg.querySelectorAll('ellipse')).filter(el=>el.localName==='ellipse' && !el.closest('defs'));
+    if(ellipses.length!==(heaters?heaters.heaters.filter(h=>h.on).length:0))return fail();
+    const allowed=['domestic-boundary','fm',...tankIds,'tank-feet',...(wp?['wp','valve']:[]),...(heaters?heaters.heaters.map(h=>h.id):[])];
     const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=wp?heatPumpState(c,L,c.farben,S,ON,NUM):null;
     const valveFraction=wp && c.wp.ventil ? heat.vb : null;
     const valveRotation=m.layoutValveRotation || 0;
@@ -4414,9 +4696,9 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
       circles=shapes.filter(el=>el.localName==='circle'),lines=shapes.filter(el=>el.localName==='line');
     const hasDisplay=!!(c.fm.temp || c.fm.durchfluss), baffle=c.typ==='trennblech';
     if (shapes.length!==paths.length+rects.length+circles.length+lines.length ||
-        rects.length!==(hasDisplay?15:14)+(wp?11:0)+(baffle?1:0)+(split?4:0) || circles.length!==(wp?7:0) || lines.length!==(wp?1:0)) return fail();
+        rects.length!==(hasDisplay?15:14)+(wp?11:0)+(baffle?1:0)+(split?4:0)+(heaters?heaters.heaters.reduce((n,h)=>n+1+h.stages.length,0):0) || circles.length!==(wp?7:0) || lines.length!==(wp?1:0)) return fail();
     const cls=el=>el.getAttribute('class')||'',plain=paths.filter(el=>!['w0','w1','w2','w3','wa'].includes(cls(el)));
-    const tank=m.components[tankIds[0]],fm=m.components.fm,o=tank.origin,b=tank.bounds;
+    const fm=m.components.fm,o=tank.origin,b=tank.bounds;
     const expectedPaths=[`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
       `M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`,
       hasDisplay?'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
@@ -4425,7 +4707,7 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     if (split) {const q=m.components['buffer-tank'],p=q.origin,h=q.bounds.height;
       expectedPaths.push(`M${p.x} ${p.y+26}Q${p.x+65} ${p.y+46} ${p.x+130} ${p.y+26}`,
         `M${p.x} ${p.y+h-26}Q${p.x+65} ${p.y+h-6} ${p.x+130} ${p.y+h-26}`);}
-    if (plain.length!==(wp?(valveFraction===null?9:11):3)+(baffle?1:0)+(split?2:0) || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
+    if (plain.length!==(wp?(valveFraction===null?9:11):3)+(baffle?1:0)+(split?2:0)+(heaters?heaters.heaters.length:0) || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
     const match=(el,x,y,w,h)=>el.getAttribute('x')===String(x) && el.getAttribute('y')===String(y) &&
       el.getAttribute('width')===String(w) && el.getAttribute('height')===String(h);
     const fmRects=rects.filter(el=>match(el,fm.origin.x,fm.origin.y,110,90)),
@@ -4671,7 +4953,10 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       try {
       if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
       const independent=result?.textStyleParity==='independent-text-measurements-only' && held?.validate?.()===true;
-      const textInventory=independent ? inspectMeasuredLayoutTexts(card,candidate,result.textRecords) : {reason:'text-inventory-unproven'};
+      const heaterExperiment=!!(card._cfg.heizstab_oben || card._cfg.heizstab_unten);
+      const checkTexts=records=>heaterExperiment?inspectInternalHeaterCandidateText(card,candidate,records,html):inspectMeasuredLayoutTexts(card,candidate,records);
+      const textReady=value=>value.reason===(heaterExperiment?'heater-combined-text-bound-only':'text-inventory-staged-only');
+      const textInventory=independent ? checkTexts(result.textRecords) : {reason:'text-inventory-unproven'};
       const shadowPolicy=independent ? inspectLayoutShadowPolicy(card,candidate,html) : {reason:'layout-shadow-policy-unproven'};
       const targetReferences=independent ? inspectLayoutTargetReferences(parent,html) : {reason:'layout-target-references-unproven'};
       const symbolPaint=independent && result.symbolStrokeProof?.reason==='layout-symbol-strokes-bound-only'
@@ -4687,7 +4972,7 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       const negative=['volume-label-overflow','volume-label-pipe-contact','text-slot-overflow','text-overlap','text-obstacle-contact'];
       let code=negative.includes(volume.reason)?volume.reason:reference.reason==='volume-label-overflow'?reference.reason
         : negative.includes(textInventory.reason)?textInventory.reason:negative.includes(symbolPaint.reason)?symbolPaint.reason
-        : textInventory.reason==='text-inventory-staged-only' && shadowPolicy.reason==='layout-shadow-policy-bound-only' &&
+        : textReady(textInventory) && shadowPolicy.reason==='layout-shadow-policy-bound-only' &&
           targetReferences.reason==='layout-target-references-bound-only' && symbolPaint.reason==='layout-symbol-paint-bound-only' &&
           pipePaint.reason==='layout-pipe-paint-bound-only' ? 'text-inventory-staged-only'
         : 'text-slots-and-paint-unproven';
@@ -4695,13 +4980,13 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
       if (code==='text-inventory-staged-only') {
         let complete=false;
         const verifyTarget=(_svg,actualRecords)=>{
-          const actualText=inspectMeasuredLayoutTexts(card,candidate,actualRecords);
+          const actualText=checkTexts(actualRecords);
           const actualSymbols=inspectLayoutSymbolPaint(card,candidate,actualRecords,html);
           const actualRefs=inspectLayoutTargetReferences(parent,html);
           const actualVolume=card._cfg.volumen!==null && card._cfg.volumen!==undefined && card._cfg.volumen!==''
             ? inspectMeasuredVolumeSlots(card,candidate,actualRecords).reason==='volume-slots-staged-only' : true;
           complete=inspectCompleteSimpleFmPaint(card,candidate,_svg).status==='complete';
-          return actualText.reason==='text-inventory-staged-only' && actualSymbols.reason==='layout-symbol-paint-bound-only' &&
+          return textReady(actualText) && actualSymbols.reason==='layout-symbol-paint-bound-only' &&
             actualRefs.reason==='layout-target-references-bound-only' && actualVolume;
         };
         const probe=held.probe?.(verifyTarget);
@@ -4862,7 +5147,17 @@ function cachedLayoutCandidate(owner, rawConfig, config, layout) {
 
 function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
   if (!card._hass || !layoutObject(card._hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
-  const candidate = cachedLayoutCandidate(cacheOwner, rawConfig, card._cfg, layout);
+  // Heater layouts are recomputed against the current live state; never cache
+  // an inactive glow clearance across a subsequent active state.
+  const heaterExperiment=supportsInternalHeaterExperiment(card._cfg);
+  if (heaterExperiment) {
+    const identity=layoutIdentityMap(rawConfig);if(identity.errors.length)return {status:'invalid',errors:identity.errors};
+    const checked=validateLayoutV2(layout,{components:{fm:'fm'},ports:{},inactive:{components:{},ports:{}}});
+    if(checked.errors.length)return {status:'invalid',errors:checked.errors};
+  }
+  const trial=heaterExperiment?prepareInternalHeaterRouteCandidate(card,layout):null;
+  const candidate=heaterExperiment?(trial.reason==='heater-route-inventory-only'?{...trial.candidate,status:'candidate'}:
+    {status:'unsupported',errors:[{code:trial.reason || 'unsupported-configuration',path:'layout'}]}):cachedLayoutCandidate(cacheOwner, rawConfig, card._cfg, layout);
   if (candidate.status==='heating-candidate') {
     const previous=card._model;
     try {
@@ -6032,13 +6327,16 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     try {
       const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
       const cfg = card._cfg, base = card._model;
-      const supported = base.routingScope.fm && ['schicht', 'trennblech', 'getrennt'].includes(cfg.typ) &&
+      const supported = (base.routingScope.fm || supportsInternalHeaterExperiment(cfg)) && ['schicht', 'trennblech', 'getrennt'].includes(cfg.typ) &&
         cfg.fuehler.length === 0 && !cfg.weiche && !cfg.energie.length && !layoutIdentityMap(this._config).errors.length;
       if (supported) {
         separated = cfg.typ === 'getrennt';
         modelIds = { ...(separated ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
         ids = Object.keys(modelIds);
-        const candidate = ['rendered-candidate','ready-candidate'].includes(checked.status) ? cachedLayoutCandidate(this, this._config, cfg, state.layout) : null;
+        card._hass=this._hass;
+        const candidate = ['rendered-candidate','ready-candidate'].includes(checked.status) ?
+          (supportsInternalHeaterExperiment(cfg)?prepareInternalHeaterRouteCandidate(card,state.layout).candidate:cachedLayoutCandidate(this, this._config, cfg, state.layout)) : null;
+        if (candidate && !candidate.status) candidate.status='candidate';
         const shown = candidate?.status === 'candidate' ? candidate.model : base;
         hitBoxes = ids.map(id => {
           const component = shown.components[modelIds[id]], b = component.bounds;
