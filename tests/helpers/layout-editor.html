@@ -38,6 +38,8 @@
     <button id="wp-diagnose">Diagnose current WP draft</button>
     <button id="wp-drag-commit">Apply dragged WP and reload card</button>
     <button id="separated-rotated">Separated rotated valve Apply/reload</button>
+    <button id="separated-rotated-180">Separated 180° valve Apply/reload</button>
+    <button id="separated-rotated-270">Separated 270° valve Apply/reload</button>
     <button id="separated-commit">Separated tanks + auto ports Apply/reload</button>
     <button id="separated-fm-cycle">Separated FM-only + WP disable/restore</button>
     <button id="separated-buffer-commit">Separated moved buffer Apply/reload</button>
@@ -422,23 +424,28 @@
         } catch(error) {result.textContent=`FAIL separated commit: ${error.message}`;}
         finally {host?.remove();}
       }
-      document.getElementById('separated-rotated').addEventListener('click',async()=>{
+      async function separatedRotated(angle) {
         let host;
         try {
           hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
-          const layout={version:2,components:{fm:{x:400,y:29},valve:{x:228,y:268.5,rotation:90}},ports:{'tank.wp-supply':{mode:'manual',side:'right'}}};
+          const positions={90:{x:228,y:268.5,side:'right'},180:{x:228,y:368.5,side:'left'},270:{x:78,y:468.5,side:'left'}};
+          const {x,y,side}=positions[angle];
+          const layout={version:2,components:{fm:{x:400,y:29},valve:{x,y,rotation:angle}},ports:{'tank.wp-supply':{mode:'manual',side}}};
           install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'getrennt',volumen:500,volumen_ww:200},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},layout});
           const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
           for(let i=0;i<120&&ui.apply.disabled;i++)await frame();
           if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);
-          ui.apply.click();if(config.layout?.components?.valve?.rotation!==90)throw Error('rotation not emitted');
+          ui.apply.click();if(config.layout?.components?.valve?.rotation!==angle || config.layout?.components?.valve?.x!==x || config.layout?.components?.valve?.y!==y)throw Error('rotation or position not emitted');
           host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
           const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
           for(let pass=0;pass<2;pass++) {const card=mount();for(let i=0;i<120&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
-            if(card._layoutStatus?.status!=='rendered-candidate' || card._model.layoutValveRotation!==90)throw Error(`card failed: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; complete ${JSON.stringify(lastComplete)}`);}
-          result.textContent='PASS separated 90° valve editor Apply, card commit and reload';
-        }catch(error){result.textContent=`FAIL rotated valve: ${error.message}`;}finally{host?.remove();}
-      });
+            if(card._layoutStatus?.status!=='rendered-candidate' || card._model.layoutValveRotation!==angle || card._model.components.valve.origin.x!==x || card._model.components.valve.origin.y!==y)throw Error(`card failed: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; complete ${JSON.stringify(lastComplete)}`);}
+          result.textContent=`PASS separated ${angle}° valve editor Apply, card commit and reload`;
+        }catch(error){result.textContent=`FAIL rotated ${angle}° valve: ${error.message}`;}finally{host?.remove();}
+      }
+      document.getElementById('separated-rotated').addEventListener('click',()=>separatedRotated(90));
+      document.getElementById('separated-rotated-180').addEventListener('click',()=>separatedRotated(180));
+      document.getElementById('separated-rotated-270').addEventListener('click',()=>separatedRotated(270));
       document.getElementById('separated-commit').addEventListener('click',()=>separatedCommit(false));
       document.getElementById('separated-buffer-commit').addEventListener('click',()=>separatedCommit(true));
       async function verifyWpCommit(type='schicht') {
