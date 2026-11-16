@@ -286,3 +286,51 @@ test('separated buffer feet follow the exact model translation and reject forged
   const foot=shapes.find(s=>s.foot);foot.getScreenCTM=()=>matrix;
   assert.equal(complete(c,candidate,svg).status,'unsupported');
 });
+
+test('separated rotated valve paint requires the exact model transform for every symbol shape',()=>{
+  for(const [angle,dx,dy,side] of [[90,0,0,'right'],[180,0,100,'left'],[270,-150,200,'left']]) {
+    const raw={speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
+    const v=c._model.components.valve;
+    const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:400,y:29},valve:{x:v.origin.x+dx,y:v.origin.y+dy,rotation:angle}},ports:{'tank.wp-supply':{mode:'manual',side}}});
+    assert.equal(candidate.status,'candidate',JSON.stringify(candidate.errors));
+    const html=renderGeometry(c,candidate),matrix={a:1,b:0,c:0,d:1,e:0,f:0},shapes=[],svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
+    const fan={localName:'g',parentElement:svg,getAttribute:name=>name==='class'?'wr':null};
+    const q=candidate.model.components.valve,vx=q.origin.x+34,vy=q.origin.y+14;
+    const [a,b,cc,d]=({90:[0,1,-1,0],180:[-1,0,0,-1],270:[0,-1,1,0]})[angle];
+    const rotated={a,b,c:cc,d,e:vx-a*vx-cc*vy,f:vy-b*vx-d*vy};
+    for(const match of html.slice(html.indexOf('</defs>')+7,html.indexOf('</svg>')).matchAll(/<(path|rect|circle|line)\b([^>]*)\/?\s*>/g)) {
+      const attrs=Object.fromEntries([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+      const valve=attrs.class==='wm' || match[1]==='line' || (match[1]==='circle' && attrs.cx===String(vx) && attrs.cy===String(vy) && attrs.r==='2.5') || (match[1]==='path' && attrs.d?.startsWith(`M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}Z`)) || (match[1]==='path' && attrs.d===`M${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`);
+      const moved=attrs.d?.startsWith('M430 30C424');
+      shapes.push({localName:match[1],attrs,valve,parentElement:attrs.d==='M390 226Q405 213 397 192Q383 203 390 226Z'?fan:svg,getAttribute:name=>attrs[name]??null,closest:()=>null,getScreenCTM:()=>valve?rotated:moved?{...matrix,e:60,f:15}:matrix});
+    }
+    assert.equal(complete(c,candidate,svg).status,'complete',String(angle));
+    for(const shape of shapes.filter(s=>s.valve)) {const previous=shape.getScreenCTM;shape.getScreenCTM=()=>matrix;assert.equal(complete(c,candidate,svg).status,'unsupported',`${angle}: ${shape.localName}`);shape.getScreenCTM=previous;}
+  }
+});
+
+test('rotated valve text stays upright inside the rotated motor and rejects tampering',()=>{
+  for(const [angle,dx,dy,side] of [[90,0,0,'right'],[180,0,100,'left'],[270,-150,200,'left']]) {
+    const raw={speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
+    const v=c._model.components.valve,candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:400,y:29},valve:{x:v.origin.x+dx,y:v.origin.y+dy,rotation:angle}},ports:{'tank.wp-supply':{mode:'manual',side}}});
+    assert.equal(candidate.status,'candidate',JSON.stringify(candidate.errors));
+    const html=renderGeometry(c,candidate),q=candidate.model.components.valve,vx=q.origin.x+34,vy=q.origin.y+14,mx=vx-26;
+    const [a,b,cc,d]=({90:[0,1,-1,0],180:[-1,0,0,-1],270:[0,-1,1,0]})[angle],tx=vx+a*(mx-vx)-mx,ty=vy+b*(mx-vx)-vy;
+    const records=[];
+    for(const match of html.matchAll(/<text\s+([^>]*)>([^<]*)<\/text>/g)) {
+      const attrs=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(m=>[m[1],m[2]]));
+      const x=Number(attrs.x),y=Number(attrs.y),motor=match[2]==='M',fm=x===352||x===418;
+      const ex=motor?tx:fm?60:0,ey=motor?ty:fm?15:0;
+      records.push({text:match[2],x:attrs.x,y:attrs.y,className:attrs.class??null,matrix:{a:1,b:0,c:0,d:1,e:ex,f:ey},box:{x:x+ex-1,y:y+ey-5,width:2,height:4}});
+    }
+    assert.equal(inspect(c,candidate,records).reason,'text-inventory-staged-only',`${angle}: ${JSON.stringify(inspect(c,candidate,records))}`);
+    const changed=records.map(r=>({...r,matrix:{...r.matrix},box:{...r.box}})),motor=changed.find(r=>r.text==='M');
+    motor.matrix.b=1;assert.equal(inspect(c,candidate,changed).reason,'text-inventory-unproven');motor.matrix.b=0;
+    motor.matrix.e+=1;assert.equal(inspect(c,candidate,changed).reason,'text-inventory-unproven');motor.matrix.e-=1;
+    motor.box.width=100;assert.equal(inspect(c,candidate,changed).reason,'text-slot-overflow');
+  }
+});

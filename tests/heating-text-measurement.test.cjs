@@ -439,3 +439,19 @@ test('staging rejects parsed inline layout and external image properties',()=>{
   child=element('fill','image-set("https://example.test/x" 1x)');
   assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
 });
+test('independent parity permits only the valve motor counter-rotation and still rejects changed text styles or matrices',async()=>{
+  for (const mode of ['valid','other-text','invalid-rotation','linear-matrix','font-change','translated-mode']) {
+    const f=stagingFixture();f.ready();f.style.height='150px';f.svg.style={};
+    f.node.textContent=mode==='other-text'?'Other':'M';
+    f.node.getAttribute=name=>({x:'100',y:'103',transform:mode==='invalid-rotation'?'rotate(-91 100 100)':'rotate(-90 100 100)'})[name]??null;
+    if(mode==='linear-matrix')f.node.getScreenCTM=()=>({...identity,a:1.1});
+    const reference={...f.svg,parentNode:f.parent,parentElement:f.parent},text={...f.node};
+    text.getAttribute=name=>({x:'100',y:'103'})[name]??null;text.getScreenCTM=()=>identity;text.parentElement=reference;
+    reference.querySelectorAll=()=>[text];reference.contains=n=>n===text;
+    const styled=(transform,fontWeight='400')=>({...f.style,0:'transform',length:1,fontWeight,getPropertyValue:name=>name==='transform'?transform:''});
+    f.svg.ownerDocument.defaultView.getComputedStyle=el=>el===f.node?styled('matrix(0, -1, 1, 0, 0, 0)',mode==='font-change'?'700':'400'):styled('none');
+    const result=await stage(f.parent,'<svg></svg>','theme-1',1,()=>true,reference,undefined,false,mode==='translated-mode'?'translated':'independent',mode!=='translated-mode');
+    if(mode==='valid')assert.equal(result.textStyleParity,'independent-text-measurements-only');
+    else assert.equal(result.reason,'text-stage-style-mismatch',mode);
+  }
+});

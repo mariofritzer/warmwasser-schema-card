@@ -2032,21 +2032,29 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       if (!active) return unsupported('text-stage-invalidated');
       if (!active.entries || checkMeasuredTextReserve(active,active,contextKey).textReserve!=='fits' ||
           checkMeasuredTextReserve(current,current,contextKey).textReserve!=='fits') return unsupported('text-stage-parity-unavailable');
-      const parityFingerprint=value=>{
+      const parityFingerprint=(value,independent=false)=>{
         const parts=JSON.parse(value);
         // The staging container deliberately disables pointer interaction and
         // is inert; these inherited properties do not change text painting.
         // Perspective has already been rejected on every ancestor. Its
         // computed origin then has no effect and may track moved text boxes.
-        parts[0]=parts[0].filter(([name])=>name!=='pointer-events' && name!=='interactivity' && name!=='perspective-origin');
+        parts[0]=parts[0].filter(([name])=>name!=='pointer-events' && name!=='interactivity' && name!=='perspective-origin' && !(independent && name==='transform'));
         parts.pop(); // Compare the numeric matrix separately with bounded tolerance.
         return JSON.stringify(parts);
       };
       const tolerance=1e-9, close=(x,y)=>Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
+      // Only the valve's renderer-authored counter-rotation may differ from
+      // the reference. The model-bound inventory validates its combined CTM.
+      const counterRotated=entry=>{
+        const node=entry?.node,x=node?.getAttribute?.('x'),y=node?.getAttribute?.('y');
+        if (entry?.text!=='M' || x===null || y===null || !Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return false;
+        return [90,180,270].some(angle=>node.getAttribute('transform')===`rotate(${-angle} ${x} ${Number(y)-3})`);
+      };
       const same=(a,b,translated=false,independent=false)=>a.length===b.length && a.every((entry,i)=>{
         const other=b[i],x=entry.box,y=other && other.box;
         const ma=JSON.parse(entry.fingerprint).at(-1),mb=other && JSON.parse(other.fingerprint).at(-1);
-        return other && entry.text===other.text && parityFingerprint(entry.fingerprint)===parityFingerprint(other.fingerprint) && y &&
+        const allowCounterRotation=independent && (counterRotated(entry) || counterRotated(other));
+        return other && entry.text===other.text && parityFingerprint(entry.fingerprint,allowCounterRotation)===parityFingerprint(other.fingerprint,allowCounterRotation) && y &&
           ['a','b','c','d'].every(k=>close(ma[k],mb[k])) &&
           (translated || (close(ma.e,mb.e) && close(ma.f,mb.f))) &&
           (independent || (close(x.x+(translated?mb.e-ma.e:0),y.x) && close(x.y+(translated?mb.f-ma.f:0),y.y) &&
@@ -2056,8 +2064,9 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
       if (!same(active.entries,current.entries,translated,independent)) {
         const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]],translated,independent));
         const a=active.entries[index], b=current.entries[index];
-        const aStyles=a && new Map(JSON.parse(parityFingerprint(a.fingerprint))[0]);
-        const bStyles=b && new Map(JSON.parse(parityFingerprint(b.fingerprint))[0]);
+        const allowCounterRotation=independent && (counterRotated(a) || counterRotated(b));
+        const aStyles=a && new Map(JSON.parse(parityFingerprint(a.fingerprint,allowCounterRotation))[0]);
+        const bStyles=b && new Map(JSON.parse(parityFingerprint(b.fingerprint,allowCounterRotation))[0]);
         const properties=aStyles && bStyles ? [...new Set([...aStyles.keys(),...bStyles.keys()])].filter(k=>aStyles.get(k)!==bStyles.get(k)) : [];
         const viewport=node=>{const r=node.getBoundingClientRect(),m=node.getScreenCTM();return {width:r.width,height:r.height,
           matrix:m && {a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}};};
@@ -4122,10 +4131,17 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
       if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
       add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
       const valve=m.components.valve;
-      if (!valve || valve.origin.x!==valve.baseOrigin.x || valve.origin.y!==valve.baseOrigin.y || m.layoutValveRotation)
-        return fail('text-inventory-unproven');
-      add('valve',valve.origin.x+8,valve.origin.y+17,'wc wt','M',
-        {x:valve.origin.x+1,y:valve.origin.y+5,width:14,height:18});
+      const rotation=m.layoutValveRotation || 0;
+      if (!valve || ![0,90,180,270].includes(rotation) || (rotation && c.typ!=='getrennt')) return fail('text-inventory-unproven');
+      const vx=valve.origin.x+34,vy=valve.origin.y+14,mx=vx-26,my=vy;
+      const [a,b,cc,d]=({0:[1,0,0,1],90:[0,1,-1,0],180:[-1,0,0,-1],270:[0,-1,1,0]})[rotation];
+      const cx=vx+a*(mx-vx)+cc*(my-vy),cy=vy+b*(mx-vx)+d*(my-vy);
+      const width=rotation%180?18:16,height=rotation%180?16:18;
+      add('valve',mx,my+3,'wc wt','M',{x:cx-width/2+1,y:cy-height/2+1,width:width-2,height:height-2});
+      // The coordinates are already model-relative. Counter-rotation keeps the
+      // glyph upright at the rotated motor centre.
+      items[items.length-1].absolute=true;
+      items[items.length-1].translation={x:cx-mx,y:cy-my};
     }
     const cold=diagramPort(m,m.connections['domestic-cold'].from),hot=diagramPort(m,m.connections['domestic-hot'].to);
     const boundary=m.components['domestic-boundary'],offset=boundary.origin.y-boundary.baseOrigin.y;
@@ -4146,16 +4162,17 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
     if (records.length!==items.length) return fail('text-inventory-unproven');
     const boxes=[],hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
     for (const item of items) {
-      const component=item.owner && m.components[item.owner],dx=component?component.origin.x-component.baseOrigin.x:0,dy=component?component.origin.y-component.baseOrigin.y:0;
+      const component=item.owner && m.components[item.owner],dx=component && !item.absolute?component.origin.x-component.baseOrigin.x:0,dy=component && !item.absolute?component.origin.y-component.baseOrigin.y:0;
       if (item.owner && (!component || ![dx,dy].every(Number.isFinite))) return fail('text-inventory-unproven');
       const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.css && r.text===item.text);
       if (matches.length!==1) return fail('text-inventory-unproven');
       const {box:measured,matrix:t}=matches[0],s=item.slot,slot={x:s.x+dx,y:s.y+dy,width:s.width,height:s.height};
       // Keep one SVG unit of visible separation from text, strokes and stubs.
       const q=measured && {x:measured.x-1,y:measured.y-1,width:measured.width+2,height:measured.height+2};
+      const tx=item.translation?.x ?? dx,ty=item.translation?.y ?? dy;
       if (!q || !t || ![q.x,q.y,q.width,q.height,t.a,t.b,t.c,t.d,t.e,t.f].every(Number.isFinite) || q.width<0 || q.height<0 ||
           Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 || Math.abs(t.d-1)>1e-8 ||
-          Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven',{owner:item.owner,x:item.x,y:item.y,matrix:t,expected:{x:dx,y:dy},box:q});
+          Math.abs(t.e-tx)>1e-8 || Math.abs(t.f-ty)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven',{owner:item.owner,x:item.x,y:item.y,matrix:t,expected:{x:tx,y:ty},box:q});
       if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
         return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
       if(item.tankEllipse) {
@@ -4385,7 +4402,8 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     const wp=!!c.wp,allowed=['domestic-boundary','fm',...tankIds,'tank-feet',...(wp?['wp','valve']:[])];
     const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=wp?heatPumpState(c,L,c.farben,S,ON,NUM):null;
     const valveFraction=wp && c.wp.ventil ? heat.vb : null;
-    if (wp && m.layoutValveRotation) return fail();
+    const valveRotation=m.layoutValveRotation || 0;
+    if (![0,90,180,270].includes(valveRotation) || (valveRotation && !split)) return fail();
     if (Object.keys(m.components).sort().join(',')!==allowed.sort().join(',')) return fail();
     const shapes=Array.from(svg.querySelectorAll('path,rect,circle,line')).filter(el=>!el.closest('defs')),
       paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect'),
@@ -4433,7 +4451,7 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
         tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1) return fail();}
     if (fmRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
         fmRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1) return fail();
-    let wpDisplays=[],petals=[],fanGroup,valvePath;
+    let wpDisplays=[],petals=[],fanGroup,valvePath,valveShapes=[];
     if (wp) {
       const w=m.components.wp,v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
       const wpRects=rects.filter(el=>match(el,w.origin.x,w.origin.y,120,222));
@@ -4450,6 +4468,10 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
           [`M${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`,r2(0.9-0.8*valveFraction)]];
         if (triangles.some(([d,opacity])=>plain.filter(el=>el.getAttribute('d')===d && el.getAttribute('fill-opacity')===String(opacity)).length!==1)) return fail();
       }
+      valveShapes=[...rects.filter(el=>cls(el)==='wm' && match(el,v.origin.x,v.origin.y+5,16,18)),
+        ...plain.filter(el=>el.getAttribute('d')===valveD || (valveFraction!==null && [
+          `M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}Z`, `M${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`].includes(el.getAttribute('d')))),
+        ...circles.filter(el=>el.getAttribute('cx')===String(vx) && el.getAttribute('cy')===String(vy) && el.getAttribute('r')==='2.5'),...lines];
       const bladeD='M390 226Q405 213 397 192Q383 203 390 226Z';petals=plain.filter(el=>el.getAttribute('d')===bladeD);
       if (!valvePath || petals.length!==5 || [0,72,144,216,288].some(angle=>petals.filter(el=>el.getAttribute('transform')===`rotate(${angle} 390 226)`).length!==1)) return fail();
       fanGroup=petals[0].parentElement;
@@ -4477,7 +4499,13 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
       const moved=el===droplet || displays.includes(el),wpMoved=wp && (wpDisplays.includes(el) || (circles.includes(el) && el.getAttribute('r')!=='2.5') || el===fanGroup.parentElement),
         x=moved?delta.x:wpMoved?wpDelta.x:feetRects.includes(el)?feetDelta.x:0,
         y=moved?delta.y:wpMoved?wpDelta.y:feetRects.includes(el)?feetDelta.y:0;
-      if (![rel.a-1,rel.b,rel.c,rel.d-1,rel.e-x,rel.f-y].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8)) return fail();
+      let expected={a:1,b:0,c:0,d:1,e:x,f:y};
+      if (valveRotation && valveShapes.includes(el)) {
+        const [a,b,c,d]=({90:[0,1,-1,0],180:[-1,0,0,-1],270:[0,-1,1,0]})[valveRotation];
+        const v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
+        expected={a,b,c,d,e:vx-a*vx-c*vy,f:vy-b*vx-d*vy};
+      }
+      if (!['a','b','c','d','e','f'].every(key=>Number.isFinite(rel[key]) && Math.abs(rel[key]-expected[key])<=1e-8)) return fail();
     }
     const bodies=[...tankIds,'tank-feet','fm',...(wp?['wp','valve']:[])].map(id=>{const q=m.components[id];return {id,x:q.origin.x+q.bounds.x-2,y:q.origin.y+q.bounds.y-2,width:q.bounds.width+4,height:q.bounds.height+4};});
     for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++) {
