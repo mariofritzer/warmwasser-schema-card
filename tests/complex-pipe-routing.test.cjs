@@ -152,13 +152,9 @@ test('heat output and English default status render without a power sensor', () 
   english._model.components.fm.origin.x+=30; english._model.components.fm.origin.y+=15;
   assert.ok(english._render().includes('Compressor on'));
 });
-test('partial WP/FM batches and unbounded WP labels fail closed', () => {
+test('partial WP/FM batches and unbounded WP names fail closed', () => {
   const c=fixture('schicht'); c._model.components.fm.origin.x += 30;
   assert.ok(Object.values(route(c._model,['fm-supply','fm-return'])).every(r=>r.status==='unsupported' && r.reason==='incomplete-batch'));
-  for (const wp of [{quelle_ein:'sensor.wp'},{quelle_aus:'sensor.wp'}]) {
-    const other=fixture('schicht',wp); other._model.components.fm.origin.x += 30;
-    assert.throws(()=>other._render(),e=>e.code==='unsupported-configuration');
-  }
   const named=card('schicht',{name_wp:'abcdef',wp:{typ:'luft',betrieb:'sensor.wp'}}); named._model.components.fm.origin.x += 30;
   assert.throws(()=>named._render(),e=>e.code==='unsupported-configuration');
 });

@@ -638,7 +638,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
-    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
+    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
 
 }
 
@@ -4131,6 +4131,8 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
       if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
       add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
       if (wp.sg_ready) add('wp',424,356,'we wt wx',`SG ${S(wp.sg_ready)}`,{x:336,y:343,width:91,height:20});
+      if (wp.quelle_ein || wp.quelle_aus) add('wp',390,382,'wc wv wx',`${L.luft} ${[wp.quelle_ein ? fmt(S(wp.quelle_ein)) : '', wp.quelle_aus ? fmt(S(wp.quelle_aus)) : ''].filter(Boolean).join(' → ')}`,
+        {x:300,y:372,width:180,height:18});
       const valve=m.components.valve;
       const rotation=m.layoutValveRotation || 0;
       if (!valve || ![0,90,180,270].includes(rotation) || (rotation && c.typ!=='getrennt')) return fail('text-inventory-unproven');
@@ -4212,7 +4214,8 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
       const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
     }
     if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite))) return fail('text-inventory-unproven');
-    if(boxes.some(box=>obstacles.some(o=>(!o.owner || o.owner!==box.owner) && hit(box,o)))) return fail('text-obstacle-contact');
+    for (const box of boxes) for (const obstacle of obstacles)
+      if ((!obstacle.owner || obstacle.owner!==box.owner) && hit(box,obstacle)) return fail('text-obstacle-contact',{box,obstacle});
     return {status:'unsupported',reason:'text-inventory-staged-only',count:boxes.length};
   } catch (_) { return fail('text-inventory-unproven'); }
 }

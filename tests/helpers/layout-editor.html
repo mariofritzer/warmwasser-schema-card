@@ -28,6 +28,7 @@
     <button id="viewport-real">Card + editor viewport check</button>
     <button id="simple-commit">FM-only apply + card commit</button>
     <button id="simple-stale">FM-only stale + rollback</button>
+    <button id="wp-source-commit">FM + WP source temperatures Apply/reload</button>
     <button id="wp-sg-commit">FM + WP SG Ready Apply/reload</button>
     <button id="wp-commit">FM + air WP apply + card reload</button>
     <button id="baffle-wp-commit">Baffle FM + WP apply/reload</button>
@@ -449,14 +450,14 @@
       document.getElementById('separated-rotated-270').addEventListener('click',()=>separatedRotated(270));
       document.getElementById('separated-commit').addEventListener('click',()=>separatedCommit(false));
       document.getElementById('separated-buffer-commit').addEventListener('click',()=>separatedCommit(true));
-      async function verifyWpCommit(type='schicht',withSg=false) {
+      async function verifyWpCommit(type='schicht',withSg=false,withSource=false) {
         let host;
         try {
           hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'},
-            'sensor.wp':{state:'on'},'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.valve':{state:'on'},'sensor.sg':{state:'2'}}};
+            'sensor.wp':{state:'on'},'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.valve':{state:'on'},'sensor.sg':{state:'2'},'sensor.source_in':{state:'12'},'sensor.source_out':{state:'8'}}};
           install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type,volumen:500},
             fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'},
-            wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',ventil:'sensor.valve',...(withSg?{sg_ready:'sensor.sg'}:{})}});
+            wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',ventil:'sensor.valve',...(withSg?{sg_ready:'sensor.sg'}:{}),...(withSource?{quelle_ein:'sensor.source_in',quelle_aus:'sensor.source_out'}:{})}});
           const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value),frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
           ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
           ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
@@ -472,30 +473,34 @@
           ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
           const collision=editor._layoutDraftState();
           if(!ui.apply.disabled || !['invalid','unsupported'].includes(collision.status))throw Error('FM/WP collision accepted');
-          ui.inputs.x.value=String(wx+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
-          ui.inputs.y.value=String(wy+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          const targetX=withSource?wx:wx+30,targetY=withSource?wy-10:wy+15;
+          ui.inputs.x.value=String(targetX);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.y.value=String(targetY);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
           const ready=async()=>{for(let i=0;i<90 && ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
           await ready();
-          hass={...hass,states:{...hass.states,'sensor.vl':{state:'41'},'sensor.valve':{state:'off'},'sensor.sg':{state:'3'}}};editor.hass=hass;
+          hass={...hass,states:{...hass.states,'sensor.vl':{state:'41'},'sensor.valve':{state:'off'},'sensor.sg':{state:'3'},'sensor.source_in':{state:'13'}}};editor.hass=hass;
           if(!ui.apply.disabled)throw Error('WP update did not invalidate receipt');await ready();
           const preview=ui.previewRoot.querySelector('[data-layout-viewport] svg');
-          if(!preview?.textContent.includes('41.0°') || !preview.textContent.includes('3.2') || (withSg && !preview.textContent.includes('SG 3')))throw Error('missing live WP values');
+          if(!preview?.textContent.includes('41.0°') || !preview.textContent.includes('3.2') || (withSg && !preview.textContent.includes('SG 3')) || (withSource && !preview.textContent.includes('13.0° → 8.0°')))throw Error('missing live WP values');
           if(withSg) {editor.hass={...hass,states:{...hass.states,'sensor.sg':{state:'THIS VALUE IS FAR TOO LONG TO FIT THE DEVICE'}}};
             for(let i=0;i<90;i++)await frame();if(!ui.apply.disabled)throw Error('oversized SG accepted');editor.hass=hass;await ready();}
-          ui.apply.click();if(config.layout?.components?.fm?.x!==x+30 || config.layout?.components?.wp?.x!==wx+30 || config.layout?.components?.wp?.y!==wy+15)throw Error('configuration not emitted');
+          if(withSource) {editor.hass={...hass,states:{...hass.states,'sensor.source_in':{state:'10000000000000000000'},'sensor.source_out':{state:'10000000000000000000'}}};
+            for(let i=0;i<90;i++)await frame();if(!ui.apply.disabled)throw Error('oversized source accepted');editor.hass=hass;await ready();}
+          ui.apply.click();if(config.layout?.components?.fm?.x!==x+30 || config.layout?.components?.wp?.x!==targetX || config.layout?.components?.wp?.y!==targetY)throw Error('configuration not emitted');
           host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
           const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;
             host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
           let card=mount();const committed=async()=>{for(let i=0;i<90 && card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
             if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}`);};
           await committed();if(!card.shadowRoot.querySelector('[data-layout-viewport] svg')?.textContent.includes('41.0°'))throw Error('card WP value differs');
-          card=mount();await committed();if(card._model.components.fm.origin.x!==x+30 || card._model.components.wp.origin.x!==wx+30 || card._model.components.wp.origin.y!==wy+15)throw Error('saved layout not restored');
-          card.hass={...hass,states:{...hass.states,...(withSg?{'sensor.sg':{state:'THIS VALUE IS FAR TOO LONG TO FIT THE DEVICE'}}:{'sensor.vl':{state:'1000000000'}})}};
+          card=mount();await committed();if(card._model.components.fm.origin.x!==x+30 || card._model.components.wp.origin.x!==targetX || card._model.components.wp.origin.y!==targetY)throw Error('saved layout not restored');
+          card.hass={...hass,states:{...hass.states,...(withSg?{'sensor.sg':{state:'THIS VALUE IS FAR TOO LONG TO FIT THE DEVICE'}}:withSource?{'sensor.source_in':{state:'10000000000000000000'},'sensor.source_out':{state:'10000000000000000000'}}:{'sensor.vl':{state:'1000000000'}})}};
           if(card._layoutCandidate || card._layoutStatus?.status==='rendered-candidate')throw Error('oversized WP value remained committed');
-          result.textContent=`PASS FM + moved WP${withSg?' SG Ready':''} keyboard editor Apply, HA update, independent card commit, reload and overflow fallback`;
+          result.textContent=`PASS FM + moved WP${withSg?' SG Ready':withSource?' source temperatures':''} keyboard editor Apply, HA update, independent card commit, reload and overflow fallback`;
         } catch(error) {result.textContent=`FAIL FM + air WP: ${error.message}`;}
         finally {host?.remove();}
       }
+      document.getElementById('wp-source-commit').addEventListener('click',()=>verifyWpCommit('schicht',false,true));
       document.getElementById('wp-sg-commit').addEventListener('click',()=>verifyWpCommit('schicht',true));
       document.getElementById('wp-commit').addEventListener('click',()=>verifyWpCommit());
       document.getElementById('baffle-wp-commit').addEventListener('click',()=>verifyWpCommit('trennblech'));

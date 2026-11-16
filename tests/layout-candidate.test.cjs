@@ -99,7 +99,6 @@ test('supported configurations reject falsy and version 1 layouts', () => {
 });
 
 for (const [name, extra] of [
-  ['source inlet', { wp: { betrieb: 'sensor.wp', quelle_ein: 'sensor.source' } }],
   ['heat meter', { wp: { betrieb: 'sensor.wp', wmz: 'sensor.meter' } }],
   ['long WP name', { wp: { betrieb: 'sensor.wp' }, name_wp: 'Long name' }],
 ]) test(`scope excludes WP with ${name}`, () => {

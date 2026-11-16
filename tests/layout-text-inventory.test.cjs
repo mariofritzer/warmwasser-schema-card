@@ -357,3 +357,27 @@ test('air WP SG Ready state is model-bound, measured and kept clear of text and 
     c._hass.states['sensor.sg'].state='3';assert.equal(inspect(c,candidate,records).reason,'text-inventory-unproven');
   }
 });
+
+test('air WP source temperatures are measured for each configured sensor and reject unsafe text',()=>{
+  for(const type of ['schicht','trennblech','getrennt']) for(const [incoming,outgoing] of [[true,false],[false,true],[true,true]]) {
+    const raw={speicher:{typ:type},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve',...(incoming?{quelle_ein:'sensor.in'}:{}),...(outgoing?{quelle_aus:'sensor.out'}:{})}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'on'},'sensor.in':{state:'12'},'sensor.out':{state:'8'}}};
+    const layout=type==='getrennt'?{version:2,components:{fm:{x:-110,y:14}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}}:{version:2,components:{fm:{x:370,y:29}}};
+    const candidate=resolve(raw,c._cfg,layout);assert.equal(candidate.status,'candidate',JSON.stringify(candidate.errors));
+    const html=renderGeometry(c,candidate),records=[];
+    for(const match of html.matchAll(/<text\s+([^>]*)>([^<]*)<\/text>/g)) {
+      const attrs=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(m=>[m[1],m[2]]));
+      const x=Number(attrs.x),y=Number(attrs.y),fm=x===352||x===418,dx=fm?(type==='getrennt'?-450:30):0,dy=fm?(type==='getrennt'?0:15):0;
+      records.push({text:match[2],x:attrs.x,y:attrs.y,className:attrs.class??null,matrix:{a:1,b:0,c:0,d:1,e:dx,f:dy},box:{x:x+dx-1,y:y+dy-5,width:2,height:4}});
+    }
+    const check=inspect(c,candidate,records);assert.equal(check.reason,'text-inventory-staged-only',`${type}: ${JSON.stringify(check)}`);
+    const changed=records.map(r=>({...r,box:{...r.box},matrix:{...r.matrix}})),source=changed.find(r=>r.x==='390'&&r.y==='382');
+    source.text+=' forged';assert.equal(inspect(c,candidate,changed).reason,'text-inventory-unproven');source.text=records.find(r=>r.y==='382').text;
+    source.box.width=200;assert.equal(inspect(c,candidate,changed).reason,'text-slot-overflow');source.box={...records.find(r=>r.y==='382').box};
+    source.matrix.e=1;assert.equal(inspect(c,candidate,changed).reason,'text-inventory-unproven');
+    const blocked={...candidate,routes:{...candidate.routes,'test-obstacle':{points:[{x:390,y:376},{x:390,y:384}],crossings:[]}}};
+    assert.equal(inspect(c,blocked,records).reason,'text-obstacle-contact');
+    c._hass.states[incoming?'sensor.in':'sensor.out'].state='20';assert.equal(inspect(c,candidate,records).reason,'text-inventory-unproven');
+  }
+});
