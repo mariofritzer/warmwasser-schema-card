@@ -176,3 +176,49 @@ test('heater layout retains inactive WP placement and ports across disable and r
     assert.equal(JSON.stringify(layout),before);
   }
 });
+test('separated tanks with heaters route the actual heater-adjusted geometry',()=>{
+  for(const heaters of [{heizstab_oben:{stufe:'sensor.heater'}},{heizstab_unten:{stufe:'sensor.heater'}},{heizstab_oben:{stufe:'sensor.heater'},heizstab_unten:{stufe:'sensor.heater'}}]) {
+    const c=new Card();c.setConfig({speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},...heaters});
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'}}};
+    const layout={version:2,components:{fm:{x:-110,y:14}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}};
+    const result=context.routeProbe(c,layout);assert.equal(result.reason,'heater-route-inventory-only',JSON.stringify(result));
+    assert.equal(Object.keys(result.candidate.routes).length,2);
+    assert.equal(result.candidate.model.geometry.ro,c._model.geometry.ro);
+    const moved=context.routeProbe(c,{...layout,components:{...layout.components,tank:{x:80,y:14}}});assert.equal(moved.reason,'heater-tank-movement-unproven');
+  }
+});
+test('separated heaters and WP route full actual seven-line model',()=>{
+  const c=new Card();c.setConfig({speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizstab_oben:{stufe:'sensor.heater'}});
+  c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
+  const layout={version:2,components:{fm:{x:-110,y:14}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}};
+  const result=context.routeProbe(c,layout);assert.equal(result.reason,'heater-route-inventory-only',JSON.stringify(result));
+  assert.equal(Object.keys(result.candidate.routes).length,7);
+  for(const extra of [{wp:{x:330,y:140}},{valve:{rotation:90}}]) {
+    const changed=context.routeProbe(c,{...layout,components:{...layout.components,...extra}});
+    assert.notEqual(changed.reason,'heater-route-inventory-only');assert.equal(changed.status,'unsupported');
+  }
+  for(const heaters of [{heizstab_unten:{stufe:'sensor.heater'}},{heizstab_oben:{stufe:'sensor.heater'},heizstab_unten:{stufe:'sensor.heater'}}]) {
+    const other=new Card();other.setConfig({speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},...heaters});other._hass=c._hass;
+    assert.equal(context.routeProbe(other,layout).reason,'heater-route-inventory-only');
+  }
+});
+test('separated heater keeps dormant WP overrides during disable and restore',()=>{
+  const layout={version:2,components:{fm:{x:-110,y:14},wp:{x:330,y:150}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'},'wp.upper-supply':{mode:'auto'}}},before=JSON.stringify(layout);
+  for(const active of [true,false,true]) {
+    const c=new Card();c.setConfig({speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},heizstab_oben:{stufe:'sensor.heater'},...(active?{wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}}:{})});
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
+    const result=context.routeProbe(c,layout);assert.equal(result.reason,'heater-route-inventory-only',JSON.stringify(result));
+    if(!active)assert.ok(result.candidate.inactive.some(item=>item.path==='layout.components.wp'));
+    else assert.equal(result.candidate.model.components.wp.origin.x,330);
+    assert.equal(JSON.stringify(layout),before);
+  }
+});
+test('small separated tank heater adjusts WP inlet geometry before routing',()=>{
+  const config={speicher:{typ:'getrennt',trennung:35},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp'},heizstab_oben:{stufe:'sensor.heater'}};
+  const card=new Card();card.setConfig(config);card._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.heater':{state:'2'}}};
+  const noHeater=new Card();noHeater.setConfig({...config,heizstab_oben:null});
+  assert.notEqual(card._model.geometry.ro,noHeater._model.geometry.ro);
+  const result=context.routeProbe(card,{version:2,components:{fm:{x:-110,y:14}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}});
+  assert.equal(result.status,'unsupported');
+  if(result.reason==='heater-route-inventory-only')assert.equal(result.candidate.model.geometry.ro,card._model.geometry.ro);
+});

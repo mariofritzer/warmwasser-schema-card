@@ -3118,7 +3118,7 @@ function inspectTankHeaterShapeClearance(card,candidate) {
 }
 
 function supportsInternalHeaterExperiment(c) {
-  if (!c || !['schicht','trennblech'].includes(c.typ) || !c.fm ||
+  if (!c || !['schicht','trennblech','getrennt'].includes(c.typ) || !c.fm ||
       (!c.heizstab_oben && !c.heizstab_unten) || c.fuehler.length || c.weiche || c.energie.length) return false;
   return !!diagramModel({...c,heizstab_oben:null,heizstab_unten:null}).routingScope.fm;
 }
@@ -3130,6 +3130,21 @@ function prepareInternalHeaterRouteCandidate(card,layout) {
   try {
     const c=card?._cfg;
     if(!supportsInternalHeaterExperiment(c))return fail();
+    if(c.typ==='getrennt') {
+      const resolved=resolveSeparatedLayout(c,layout,card);
+      if(resolved.status!=='candidate')return fail(resolved.errors?.[0]?.code || 'heater-route-unproven');
+      const tanks=['hot-tank','buffer-tank'].map(id=>resolved.model.components[id]);
+      if(tanks.some(t=>t.origin.x!==t.baseOrigin.x || t.origin.y!==t.baseOrigin.y))return fail('heater-tank-movement-unproven');
+      if(c.wp) {
+        const wp=resolved.model.components.wp,valve=resolved.model.components.valve;
+        if([wp,valve].some(t=>t.origin.x!==t.baseOrigin.x || t.origin.y!==t.baseOrigin.y) || resolved.model.layoutValveRotation ||
+            [['wp','upper-supply'],['wp','lower-supply'],['wp','return'],['hot-tank','wp-supply'],['hot-tank','wp-return'],['buffer-tank','lower-supply'],['buffer-tank','lower-return']].some(([id,name])=>{
+              const p=resolved.model.components[id].ports[name];return !p || p.direction!==p.canonicalSide;
+            }))return fail('heater-wp-movement-unproven');
+      }
+      return {status:'unsupported',reason:'heater-route-inventory-only',candidate:resolved,
+        unresolved:['heater-text','complete-svg-and-ambient-paint','target-commit']};
+    }
     const without={...c,heizstab_oben:null,heizstab_unten:null},baseline=resolveLayoutCandidate({},without,layout);
     if(baseline.status!=='candidate')return fail(baseline.errors?.[0]?.code==='body-collision'?'heater-body-collision':baseline.errors?.[0]?.code || 'heater-route-unproven');
     const model=diagramModel(c),fm=model.components.fm;
@@ -4074,7 +4089,9 @@ function snapshotLayout(value, ancestors = new Set()) {
 // Playground-derived separated tank experiment. Connector pairs are mirrored
 // together: anchors, painted stubs, escape direction and routing obstacles all
 // change as one unit. Every alternative starts from a fresh model.
-function resolveSeparatedLayout(config, layout) {
+function resolveSeparatedLayout(config, layout, heaterCard=null) {
+  if(heaterCard && (heaterCard._cfg!==config || !supportsInternalHeaterExperiment(config)))
+    return {status:'unsupported',errors:[{code:'heater-scope-unproven',path:'layout'}]};
   const componentMap = { tank: 'hot-tank', buffer: 'buffer-tank', fm: 'fm', ...(config.wp ? { wp: 'wp', valve: 'valve' } : {}) };
   const fixed = { 'wp.upper-supply': ['top'], 'wp.lower-supply': ['left', 'right'], 'wp.return': ['left', 'right'],
     'tank.wp-supply': ['left', 'right'], 'tank.wp-return': ['left', 'right'],
@@ -4117,6 +4134,7 @@ function resolveSeparatedLayout(config, layout) {
     for (const lowerSide of (config.wp ? lowerChoices : ['right']))
     for (const wpSide of (config.wp ? wpChoices : ['left'])) {
     const model = diagramModel(config);
+    if(heaterCard) model.routingScope.fm=true;
     for (const [id, position] of Object.entries(layout.components || {})) if (Object.hasOwn(componentMap, id)) {
       const component = model.components[componentMap[id]];
       if (position.x !== undefined) { component.origin.x = position.x; component.origin.y = position.y; }
@@ -4184,6 +4202,9 @@ function resolveSeparatedLayout(config, layout) {
     const bad = Object.entries(routes).find(([, route]) => route.status !== 'routed');
     if (bad || Object.keys(routes).length !== ids.length) {
       failure = { code: bad?.[1].code || bad?.[1].reason || 'incomplete-batch', path: `layout.connections.${bad?.[0] || ''}` }; continue;
+    }
+    if(heaterCard && inspectTankHeaterShapeClearance(heaterCard,{model,routes}).reason!=='heater-shape-clearance-bound-only') {
+      failure={code:'heater-shape-obstacle-contact',path:'layout'};continue;
     }
     const length = Object.values(routes).reduce((sum, r) => sum + r.points.slice(1).reduce((n, p, i) => n + Math.abs(p.x - r.points[i].x) + Math.abs(p.y - r.points[i].y), 0), 0);
     if (!best || length < best.length) best = { status: 'candidate', capabilities, inactive: validation.inactive, model, routes, length };
@@ -4682,7 +4703,7 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     const wp=!!c.wp,hasHeater=!!(c.heizstab_oben || c.heizstab_unten);
     // Only stationary-tank heater experiments are inventoried here.
     const heaters=hasHeater?inspectTankHeaterGeometry(card,m):null,tank=m.components[tankIds[0]];
-    if(hasHeater && (split || !tank || tank.origin.x!==tank.baseOrigin.x || tank.origin.y!==tank.baseOrigin.y ||
+    if(hasHeater && (!tank || tankIds.some(id=>{const t=m.components[id];return !t || t.origin.x!==t.baseOrigin.x || t.origin.y!==t.baseOrigin.y;}) ||
         heaters.reason!=='heater-geometry-inventory-only' || inspectTankHeaterSvgShapes(card,m,svg).reason!=='heater-svg-shapes-bound-only' ||
         inspectTankHeaterShapeClearance(card,candidate).reason!=='heater-shape-clearance-bound-only')) return fail();
     const ellipses=Array.from(svg.querySelectorAll('ellipse')).filter(el=>el.localName==='ellipse' && !el.closest('defs'));
@@ -6334,7 +6355,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         cfg.fuehler.length === 0 && !cfg.weiche && !cfg.energie.length && !layoutIdentityMap(this._config).errors.length;
       if (supported) {
         separated = cfg.typ === 'getrennt';
-        modelIds = { ...(separated ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), fm: 'fm', ...(cfg.wp ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
+        modelIds = { ...(separated && !supportsInternalHeaterExperiment(cfg) ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), fm: 'fm', ...(cfg.wp && !(separated && supportsInternalHeaterExperiment(cfg)) ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
         ids = Object.keys(modelIds);
         card._hass=this._hass;
         const candidate = ['rendered-candidate','ready-candidate'].includes(checked.status) ?
