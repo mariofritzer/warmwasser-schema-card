@@ -3118,25 +3118,26 @@ function inspectTankHeaterShapeClearance(card,candidate) {
 }
 
 function supportsInternalHeaterExperiment(c) {
-  if (!c || !['schicht','trennblech'].includes(c.typ) || !c.fm || c.wp ||
+  if (!c || !['schicht','trennblech'].includes(c.typ) || !c.fm ||
       (!c.heizstab_oben && !c.heizstab_unten) || c.fuehler.length || c.weiche || c.energie.length) return false;
   return !!diagramModel({...c,heizstab_oben:null,heizstab_unten:null}).routingScope.fm;
 }
 
-// FM-only heater routing supplies a candidate to the gated editor/card path.
+// Heater routing supplies a candidate to the gated editor/card path.
 // This check alone cannot authorize a commit: text, paint and freshness follow.
 function prepareInternalHeaterRouteCandidate(card,layout) {
   const fail=(reason='heater-route-unproven')=>({status:'unsupported',reason});
   try {
     const c=card?._cfg;
     if(!supportsInternalHeaterExperiment(c))return fail();
-    const caps={components:{fm:'fm'},ports:{},inactive:{components:{},ports:{}}},checked=validateLayoutV2(layout,caps);
-    if(checked.errors.length || !layout.components?.fm) return fail();
-    const model=diagramModel(c),position=layout.components.fm,fm=model.components.fm;
-    if(position.x===fm.origin.x && position.y===fm.origin.y)return fail();
-    fm.origin.x=position.x;fm.origin.y=position.y;model.routingScope.fm=true;
+    const without={...c,heizstab_oben:null,heizstab_unten:null},baseline=resolveLayoutCandidate({},without,layout);
+    if(baseline.status!=='candidate')return fail(baseline.errors?.[0]?.code==='body-collision'?'heater-body-collision':baseline.errors?.[0]?.code || 'heater-route-unproven');
+    const model=diagramModel(c),fm=model.components.fm;
+    for(const id of ['fm',...(c.wp?['wp']:[])]) {model.components[id].origin.x=baseline.model.components[id].origin.x;model.components[id].origin.y=baseline.model.components[id].origin.y;}
+    if(fm.origin.x===fm.baseOrigin.x && fm.origin.y===fm.baseOrigin.y && (!c.wp || (model.components.wp.origin.x===model.components.wp.baseOrigin.x && model.components.wp.origin.y===model.components.wp.baseOrigin.y)))return fail();
+    model.routingScope.fm=true;
     const body=id=>{const b=model.components[id];return {id,x:b.origin.x+b.bounds.x,y:b.origin.y+b.bounds.y,width:b.bounds.width,height:b.bounds.height};};
-    const bodies=['tank','tank-feet','fm'].map(body),hit=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
+    const bodies=['tank','tank-feet','fm',...(c.wp?['wp','valve']:[])].map(body),hit=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
     for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++)
       if(!(bodies[i].id==='tank' && bodies[j].id==='tank-feet') && hit(bodies[i],bodies[j]))return fail('heater-body-collision');
     for(const id of ['domestic-cold','domestic-hot']) {
@@ -3145,16 +3146,17 @@ function prepareInternalHeaterRouteCandidate(card,layout) {
       if(a.x!==b.x)segments.push({x:Math.min(a.x,b.x)-w,y:b.y-w,width:Math.abs(a.x-b.x)+2*w,height:2*w});
       if(segments.some(segment=>bodies.some(item=>item.id!=='fm' && hit(segment,item))))return fail('heater-domestic-collision');
     }
-    const routes=routeDiagramConnections(model,['fm-supply','fm-return']);
-    if(Object.keys(routes).length!==2 || Object.values(routes).some(r=>r.status!=='routed'))return fail();
-    const candidate={model,routes},clearance=inspectTankHeaterShapeClearance(card,candidate);
+    const ids=['fm-supply','fm-return',...(c.wp?['wp-upper-supply','wp-lower-supply','wp-upper-return','wp-lower-return','wp-valve-return']:[])];
+    const routes=routeDiagramConnections(model,ids);
+    if(Object.keys(routes).length!==ids.length || Object.values(routes).some(r=>r.status!=='routed'))return fail();
+    const candidate={model,routes,capabilities:baseline.capabilities,inactive:baseline.inactive},clearance=inspectTankHeaterShapeClearance(card,candidate);
     if(clearance.reason!=='heater-shape-clearance-bound-only')return fail(clearance.reason);
     return {status:'unsupported',reason:'heater-route-inventory-only',candidate,
       unresolved:['heater-text','complete-svg-and-ambient-paint','target-commit']};
   } catch (_) {return fail();}
 }
 
-// Combine heater and regular text checks for the gated FM-only path.
+// Combine heater and regular text checks for the gated FM and air-WP path.
 // A commit additionally requires complete paint, target parity and freshness.
 function inspectInternalHeaterCandidateText(card,candidate,records,html) {
   const fail=()=>({status:'unsupported',reason:'heater-combined-text-unproven'});
@@ -4678,9 +4680,9 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || !c.fm || !svg?.isConnected) return fail();
     const split=c.typ==='getrennt',tankIds=split?['hot-tank','buffer-tank']:['tank'];
     const wp=!!c.wp,hasHeater=!!(c.heizstab_oben || c.heizstab_unten);
-    // Only the isolated FM-only stationary-tank experiment is inventoried here.
+    // Only stationary-tank heater experiments are inventoried here.
     const heaters=hasHeater?inspectTankHeaterGeometry(card,m):null,tank=m.components[tankIds[0]];
-    if(hasHeater && (split || wp || !tank || tank.origin.x!==tank.baseOrigin.x || tank.origin.y!==tank.baseOrigin.y ||
+    if(hasHeater && (split || !tank || tank.origin.x!==tank.baseOrigin.x || tank.origin.y!==tank.baseOrigin.y ||
         heaters.reason!=='heater-geometry-inventory-only' || inspectTankHeaterSvgShapes(card,m,svg).reason!=='heater-svg-shapes-bound-only' ||
         inspectTankHeaterShapeClearance(card,candidate).reason!=='heater-shape-clearance-bound-only')) return fail();
     const ellipses=Array.from(svg.querySelectorAll('ellipse')).filter(el=>el.localName==='ellipse' && !el.closest('defs'));
@@ -5152,8 +5154,9 @@ function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
   const heaterExperiment=supportsInternalHeaterExperiment(card._cfg);
   if (heaterExperiment) {
     const identity=layoutIdentityMap(rawConfig);if(identity.errors.length)return {status:'invalid',errors:identity.errors};
-    const checked=validateLayoutV2(layout,{components:{fm:'fm'},ports:{},inactive:{components:{},ports:{}}});
-    if(checked.errors.length)return {status:'invalid',errors:checked.errors};
+    const reference={...card._cfg,heizstab_oben:null,heizstab_unten:null};
+    const checked=resolveLayoutCandidate(rawConfig,reference,layout);
+    if(checked.status==='invalid')return {status:'invalid',errors:checked.errors};
   }
   const trial=heaterExperiment?prepareInternalHeaterRouteCandidate(card,layout):null;
   const candidate=heaterExperiment?(trial.reason==='heater-route-inventory-only'?{...trial.candidate,status:'candidate'}:

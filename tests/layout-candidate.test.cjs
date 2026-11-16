@@ -411,3 +411,12 @@ test('heater preflight rejects invalid versions and keeps live-state proof manda
   const collision=context.preflight(raw,{version:2,components:{fm:{x:100,y:100}}},hass);
   assert.equal(collision.status,'unsupported');assert.equal(collision.errors[0].code,'heater-body-collision');
 });
+test('heater and air WP preflight preserves seven-line constraints and waits for text proof',()=>{
+  const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'},heizstab_oben:{stufe:'sensor.heater'}};
+  const hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'},'sensor.heater':{state:'2'}}};
+  const result=context.preflight(raw,{version:2,components:{fm:{x:370,y:29},wp:{x:330,y:140}}},hass);
+  assert.equal(result.status,'unsupported');assert.equal(result.errors[0].code,'text-measurement-unavailable');
+  const collision=context.preflight(raw,{version:2,components:{fm:{x:370,y:29},wp:{x:360,y:165}}},hass);
+  assert.equal(collision.status,'unsupported');assert.equal(collision.errors[0].code,'heater-shape-obstacle-contact');
+  const invalid=context.preflight(raw,{version:1},hass);assert.equal(invalid.status,'invalid');
+});

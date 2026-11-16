@@ -29,6 +29,11 @@
     <button id="simple-commit">FM-only apply + card commit</button>
     <button id="simple-stale">FM-only stale + rollback</button>
     <button id="wp-source-commit">FM + WP source temperatures Apply/reload</button>
+    <button id="heater-wp-cycle">Heater + WP disable/restore</button>
+    <button id="heater-wp-lower">Lower heater + WP Apply/reload</button>
+    <button id="heater-wp-both">Both heaters + WP Apply/reload</button>
+    <button id="heater-wp-commit">Heater + WP editor Apply/reload</button>
+    <button id="heater-wp-baffle">Baffle heater + WP Apply/reload</button>
     <button id="heater-lower-commit">Lower heater editor Apply/reload</button>
     <button id="heater-both-commit">Both heaters editor Apply/reload</button>
     <button id="heater-baffle-commit">Baffle heater editor Apply/reload</button>
@@ -454,15 +459,37 @@
       document.getElementById('separated-rotated').addEventListener('click',()=>separatedRotated(90));
       document.getElementById('separated-rotated-180').addEventListener('click',()=>separatedRotated(180));
       document.getElementById('separated-rotated-270').addEventListener('click',()=>separatedRotated(270));
-      async function heaterEditorCommit(type='schicht',placement='upper') {
+      document.getElementById('heater-wp-cycle').addEventListener('click',async()=>{
         let host;
         try {
-          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'},'sensor.temp':{state:'43'}}};
-          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type},fm:{pumpe:'sensor.fm'},hs_stufen:4,...(placement!=='lower'?{heizstab_oben:{stufe:'sensor.heater',temp:'sensor.temp'}}:{}),...(placement!=='upper'?{heizstab_unten:{stufe:'sensor.heater',temp:'sensor.temp'}}:{})});
+          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
+          const wp={betrieb:'sensor.wp',ventil:'sensor.valve'},position={x:330,y:140},port={mode:'auto'};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'},heizstab_oben:{stufe:'sensor.heater'},wp:{},layout:{version:2,components:{wp:position},ports:{'wp.upper-supply':port}}});
+          const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+          ui.select.value='fm';ui.select.dispatchEvent(new Event('change',{bubbles:true}));ui.inputs.x.value='370';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));ui.inputs.y.value='29';ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          for(let i=0;i<180&&ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`disabled editor: ${ui.status.textContent}; stage ${JSON.stringify(lastStage)}`);
+          ui.apply.click();if(JSON.stringify(config.layout?.components?.wp)!==JSON.stringify(position) || JSON.stringify(config.layout?.ports?.['wp.upper-supply'])!==JSON.stringify(port))throw Error('inactive WP placement lost on Apply');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=next=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(next));card.hass=hass;return card;};
+          const wait=async card=>{for(let i=0;i<180&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card: ${JSON.stringify(card._layoutStatus)}; stage ${JSON.stringify(lastStage)}; complete ${JSON.stringify(lastComplete)}`);};
+          const disabled=copy(config),enabled={...copy(config),wp};
+          for(const [active,next] of [[false,disabled],[true,enabled],[false,disabled],[true,enabled]]) {editor.setConfig(copy(next));
+            if(JSON.stringify(editor._config.layout.components.wp)!==JSON.stringify(position))throw Error('editor lost saved WP position');
+            const card=mount(next);await wait(card);if(!!card._model.components.wp!==active || (active&&card._model.components.wp.origin.y!==140))throw Error('wrong WP state or placement');}
+          result.textContent='PASS heater FM editor Apply and repeated WP disable/restore preserving saved layout';
+        }catch(error){result.textContent=`FAIL heater WP cycle: ${error.message}`;}finally{host?.remove();}
+      });
+      async function heaterEditorCommit(type='schicht',placement='upper',withWp=false) {
+        let host;
+        try {
+          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.heater':{state:'2'},'sensor.temp':{state:'43'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'}}};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type},fm:{pumpe:'sensor.fm'},...(withWp?{wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}}:{}),hs_stufen:4,...(placement!=='lower'?{heizstab_oben:{stufe:'sensor.heater',temp:'sensor.temp'}}:{}),...(placement!=='upper'?{heizstab_unten:{stufe:'sensor.heater',temp:'sensor.temp'}}:{})});
           const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
           ui.select.value='fm';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
           ui.inputs.x.value='370';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
           ui.inputs.y.value='29';ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          if(withWp) {ui.select.value='wp';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+            ui.inputs.y.value='140';ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));}
           const ready=async()=>{for(let i=0;i<180&&ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`editor: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; stage ${JSON.stringify(lastStage)}; complete ${JSON.stringify(lastComplete)}`);};
           await ready();
           hass={...hass,states:{...hass.states,'sensor.heater':{state:'0'}}};editor.hass=hass;
@@ -470,17 +497,21 @@
           hass={...hass,states:{...hass.states,'sensor.heater':{state:'2'}}};editor.hass=hass;await ready();
           editor.hass={...hass,states:{...hass.states,'sensor.temp':{state:'10000000000000000000'}}};
           for(let i=0;i<90;i++)await frame();if(!ui.apply.disabled)throw Error('oversized heater temperature accepted');editor.hass=hass;await ready();
-          ui.apply.click();if(config.layout?.components?.fm?.x!==370)throw Error('layout not emitted');
+          ui.apply.click();if(config.layout?.components?.fm?.x!==370 || (withWp && config.layout?.components?.wp?.y!==140))throw Error('layout not emitted');
           host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
           const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
           let card;for(let pass=0;pass<2;pass++) {card=mount();for(let i=0;i<180&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
-            if(card._layoutStatus?.status!=='rendered-candidate' || card._model.components.fm.origin.x!==370)throw Error(`card: ${JSON.stringify(card._layoutStatus)}; stage ${JSON.stringify(lastStage)}; complete ${JSON.stringify(lastComplete)}`);}
+            if(card._layoutStatus?.status!=='rendered-candidate' || card._model.components.fm.origin.x!==370 || (withWp && card._model.components.wp.origin.y!==140))throw Error(`card: ${JSON.stringify(card._layoutStatus)}; stage ${JSON.stringify(lastStage)}; complete ${JSON.stringify(lastComplete)}`);}
           card.hass={...hass,states:{...hass.states,'sensor.temp':{state:'10000000000000000000'}}};
           if(card._layoutCandidate || card._layoutStatus?.status==='rendered-candidate')throw Error('oversized heater temperature remained committed');
           result.textContent='PASS heater editor Apply, live state change, overflow recovery, card commit and reload';
         }catch(error){result.textContent=`FAIL heater editor: ${error.message}`;}finally{host?.remove();}
       }
       document.getElementById('heater-editor-commit').addEventListener('click',()=>heaterEditorCommit());
+      document.getElementById('heater-wp-commit').addEventListener('click',()=>heaterEditorCommit('schicht','upper',true));
+      document.getElementById('heater-wp-lower').addEventListener('click',()=>heaterEditorCommit('schicht','lower',true));
+      document.getElementById('heater-wp-both').addEventListener('click',()=>heaterEditorCommit('schicht','both',true));
+      document.getElementById('heater-wp-baffle').addEventListener('click',()=>heaterEditorCommit('trennblech','upper',true));
       document.getElementById('heater-lower-commit').addEventListener('click',()=>heaterEditorCommit('schicht','lower'));
       document.getElementById('heater-both-commit').addEventListener('click',()=>heaterEditorCommit('schicht','both'));
       document.getElementById('heater-baffle-commit').addEventListener('click',()=>heaterEditorCommit('trennblech'));

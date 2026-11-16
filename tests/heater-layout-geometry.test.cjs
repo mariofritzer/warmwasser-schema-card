@@ -148,3 +148,31 @@ test('FM heater complete shape experiment rejects extra ellipses and changed geo
     const coil=nodes.find(n=>n.attrs['stroke-width']==='2.6');coil.attrs['stroke-width']='5';assert.equal(context.complete(c,candidate,svg).status,'unsupported');
   }
 });
+test('heater and air-WP route experiment preserves seven routed connections',()=>{
+  for(const type of ['schicht','trennblech']) {
+    const c=new Card();c.setConfig({speicher:{typ:type},fm:{pumpe:'sensor.fm'},wp:{typ:'luft',betrieb:'sensor.wp',ventil:'sensor.valve'},heizstab_oben:{stufe:'sensor.heater'}});
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'on'},'sensor.heater':{state:'2'}}};
+    const result=context.routeProbe(c,{version:2,components:{fm:{x:370,y:29}}});
+    assert.equal(result.reason,'heater-route-inventory-only',JSON.stringify(result));assert.equal(Object.keys(result.candidate.routes).length,7);
+    assert.ok(Object.values(result.candidate.routes).every(r=>r.status==='routed'));
+    const moved=context.routeProbe(c,{version:2,components:{fm:{x:370,y:29},wp:{x:330,y:140}}});
+    assert.equal(moved.reason,'heater-route-inventory-only',JSON.stringify(moved));
+    assert.equal(context.routeProbe(c,{version:2,components:{fm:{x:100,y:100}}}).status,'unsupported');
+    for(const heaters of [{heizstab_unten:{stufe:'sensor.heater'}},{heizstab_oben:{stufe:'sensor.heater'},heizstab_unten:{stufe:'sensor.heater'}}]) {
+      const other=new Card();other.setConfig({speicher:{typ:type},fm:{pumpe:'sensor.fm'},wp:{typ:'luft',betrieb:'sensor.wp',ventil:'sensor.valve'},...heaters});other._hass=c._hass;
+      assert.equal(context.routeProbe(other,{version:2,components:{fm:{x:370,y:29},wp:{x:330,y:140}}}).reason,'heater-route-inventory-only');
+    }
+  }
+});
+test('heater layout retains inactive WP placement and ports across disable and restore',()=>{
+  const layout={version:2,components:{fm:{x:370,y:29},wp:{x:330,y:140}},ports:{'wp.upper-supply':{mode:'auto'}}},before=JSON.stringify(layout);
+  for(const wp of [true,false,true]) {
+    const c=new Card();c.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'},heizstab_oben:{stufe:'sensor.heater'},...(wp?{wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}}:{})});
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'50'},'sensor.heater':{state:'2'}}};
+    const result=context.routeProbe(c,layout);assert.equal(result.reason,'heater-route-inventory-only',JSON.stringify(result));
+    assert.equal(result.candidate.model.components.fm.origin.x,370);
+    if(wp)assert.equal(result.candidate.model.components.wp.origin.y,140);
+    else {assert.ok(result.candidate.inactive.some(x=>x.path==='layout.components.wp'));assert.ok(result.candidate.inactive.some(x=>x.path==='layout.ports.wp.upper-supply'));}
+    assert.equal(JSON.stringify(layout),before);
+  }
+});
