@@ -3841,6 +3841,14 @@ function inspectCirculationRingAnimation(svg,ring,pump) {
        effect?.target!==ring || !timing || timing.duration!==1600 || timing.iterations!==Infinity || timing.delay!==0 || timing.direction!=='normal' || timing.easing!=='linear' ||
        !frames || frames.length!==2 || frames[0].computedOffset!==0 || frames[1].computedOffset!==1 || frames[0].easing!=='ease' ||
        ![undefined,'none'].includes(frames[0].transform) || frames[0].opacity!=='0.8' || frames[1].opacity!=='0' || frames[1].transform!=='scale(1.8)' || !a)return false;
+    // At scale 1 the CTM cannot reveal a bad transform origin. Bind the
+    // computed origin to the actual fill-box midpoint independently of phase.
+    const box=ring.getBBox?.(),origin=typeof style.transformOrigin==='string' && style.transformOrigin.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))px\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))px(?:\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))px)?$/);
+    if(!box || !origin || ![box.x,box.y,box.width,box.height,x,y].every(Number.isFinite) ||
+       Math.abs(box.x-(x-10))>1e-6 || Math.abs(box.y-(y-10))>1e-6 ||
+       Math.abs(box.width-20)>1e-6 || Math.abs(box.height-20)>1e-6 ||
+       Math.abs(Number(origin[1])-box.width/2)>1e-6 || Math.abs(Number(origin[2])-box.height/2)>1e-6 ||
+       (origin[3]!==undefined && Number(origin[3])!==0))return false;
     const allowedFrameProperties=new Set(['offset','computedOffset','easing','composite','opacity','transform']);
     if(frames.some(frame=>Object.keys(frame).some(key=>!allowedFrameProperties.has(key)) || ![undefined,'auto'].includes(frame.composite)))return false;
     const rel={a:(matrix.d*a.a-matrix.c*a.b)/det,b:(-matrix.b*a.a+matrix.a*a.b)/det,

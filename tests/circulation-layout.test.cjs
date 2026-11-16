@@ -44,11 +44,19 @@ test('circulation supports a moved air heat pump',()=>{
 });
 test('animated pump envelope rejects changed keyframes, extra effects and off-center transforms',()=>{
   vm.runInNewContext('globalThis.animation=inspectCirculationRingAnimation;',ctx);
-  const frames=[{opacity:'0.8',computedOffset:0,easing:'ease'},{opacity:'0',transform:'scale(1.8)',computedOffset:1}],timing={duration:1600,iterations:Infinity,delay:0,direction:'normal',easing:'linear'},style={animationName:'wp',animationDuration:'1.6s',animationIterationCount:'infinite',transformBox:'fill-box'};
+  const frames=[{opacity:'0.8',computedOffset:0,easing:'ease'},{opacity:'0',transform:'scale(1.8)',computedOffset:1}],timing={duration:1600,iterations:Infinity,delay:0,direction:'normal',easing:'linear'},style={animationName:'wp',animationDuration:'1.6s',animationIterationCount:'infinite',transformBox:'fill-box',transformOrigin:'10px 10px'};
   const animation={animationName:'wp',playbackRate:1,effect:{getTiming:()=>timing,getKeyframes:()=>frames}},animations=[animation];
   const svg={ownerDocument:{defaultView:{getComputedStyle:()=>style}},getScreenCTM:()=>({a:1,b:0,c:0,d:1,e:0,f:0})},pump={origin:{x:385,y:-16}};
-  let matrix={a:1.5,b:0,c:0,d:1.5,e:-197.5,f:3};const ring={getAnimations:()=>animations,getScreenCTM:()=>matrix};animation.effect.target=ring;
+  let matrix={a:1.5,b:0,c:0,d:1.5,e:-197.5,f:3};const ring={getAnimations:()=>animations,getScreenCTM:()=>matrix,getBBox:()=>({x:385,y:-16,width:20,height:20})};animation.effect.target=ring;
   assert.equal(ctx.animation(svg,ring,pump),true);
+  // Identity CTMs hide a displaced origin until the next animation frame.
+  matrix={a:1,b:0,c:0,d:1,e:0,f:0};style.transformOrigin='0px 0px';
+  assert.equal(ctx.animation(svg,ring,pump),false);style.transformOrigin='10px 10px';
+  assert.equal(ctx.animation(svg,ring,pump),true);
+  for(const invalid of ['10px 10px 1px','NaNpx 10px','50% 50%','10px 11px']) {style.transformOrigin=invalid;assert.equal(ctx.animation(svg,ring,pump),false,invalid);}
+  style.transformOrigin='10px 10px';
+  ring.getBBox=()=>({x:385,y:-16,width:21,height:20});assert.equal(ctx.animation(svg,ring,pump),false);
+  ring.getBBox=()=>({x:385,y:-16,width:20,height:20});matrix={a:1.5,b:0,c:0,d:1.5,e:-197.5,f:3};
   frames[1].translate='100px';assert.equal(ctx.animation(svg,ring,pump),false);delete frames[1].translate;
   frames[0].composite='add';assert.equal(ctx.animation(svg,ring,pump),false);delete frames[0].composite;
   frames[0].transform='scale(3)';assert.equal(ctx.animation(svg,ring,pump),false);delete frames[0].transform;
