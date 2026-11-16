@@ -6,6 +6,8 @@ Click FM or WP in the diagram to select it, drag that device with a mouse or tou
 
 Click **Run smoke checks** to exercise the pointer overlay, candidate preview, undo/redo, synchronous configuration echo, live fallback/recovery, and reload. The overlay check verifies that only device hit areas disable native touch handling; it does not synthesize trusted mouse or touch gestures. Appending `?smoke=1` runs the same checks on load. The harness is an isolated browser test, not a substitute for testing inside Home Assistant.
 
+Click **Resize revalidation check** in a browser with at least 420 px of available editor width to check that changing the editor width creates a fresh text-validation job and restores Apply at 320, 390, and 420 px. This does not simulate touch input.
+
 For a physical touchscreen check, use **Touch diagnostics 320 px** and **Touch diagnostics 390 px**. At each width: drag a device and verify its coordinates move; scroll and pinch on empty diagram space; then start another drag, add a second finger, and verify the draft returns to its starting coordinates. Also change the viewport or scroll the page while holding a device and confirm the gesture is canceled. The diagnostics report browser pointer and scroll events, but do not themselves automate touch input or establish real-device coverage.
 
 If the configuration changes while a draft is pending, Apply is blocked until you explicitly continue with that draft on the current card or discard it. An invalid position is shown as a dashed “Unchecked” marker over the canonical diagram; it is not a validated route.

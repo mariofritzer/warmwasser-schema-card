@@ -34,6 +34,7 @@
     <button id="wp-drag-setup">Prepare visible WP drag</button>
     <button id="touch-320">Touch diagnostics 320 px</button>
     <button id="touch-390">Touch diagnostics 390 px</button>
+    <button id="resize-revalidate">Resize revalidation check</button>
     <button id="wp-diagnose">Diagnose current WP draft</button>
     <button id="wp-drag-commit">Apply dragged WP and reload card</button>
     <button id="separated-rotated">Separated rotated valve Apply/reload</button>
@@ -185,7 +186,12 @@
         const container = document.createElement('div'); container.innerHTML = card._render();
         return container.querySelector('svg')?.outerHTML;
       }
-      function smoke() {
+      const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+      async function waitFor(predicate, label) {
+        for(let i=0;i<180;i++) { if(predicate()) return; await nextFrame(); }
+        throw new Error(`${label} (timed out)`);
+      }
+      async function smoke() {
         const checks = [];
         const check = (condition, label) => { checks.push({ ok: !!condition, label }); if (!condition) throw new Error(label); };
         try {
@@ -197,17 +203,20 @@
           const x = Number(ui.inputs.x.value), y = Number(ui.inputs.y.value);
           ui.inputs.x.value = String(x + 30); ui.inputs.x.dispatchEvent(new Event('change', { bubbles: true }));
           ui.inputs.y.value = String(y + 15); ui.inputs.y.dispatchEvent(new Event('change', { bubbles: true }));
+          await waitFor(()=>!ui.apply.disabled, 'candidate validation');
           const candidateSvg = ui.previewRoot.querySelector('svg')?.outerHTML;
           check(!ui.apply.disabled && !!candidateSvg && candidateSvg !== canonicalSvg(), 'candidate preview and valid apply');
           ui.undo.click(); check(Number(ui.inputs.y.value) === y, 'undo');
           ui.redo.click(); check(Number(ui.inputs.y.value) === y + 15, 'redo');
+          await waitFor(()=>!ui.apply.disabled, 'redo validation');
           ui.apply.click(); check(config.layout.components.fm.x === x + 30, 'apply and synchronous HA echo');
           check(!!editor._layoutPanel.previewRoot.querySelector('svg'), 'preview after echo');
           temperature();
           const fallbackSvg = editor._layoutPanel.previewRoot.querySelector('svg')?.outerHTML;
           check(editor._layoutPanel.apply.disabled && !!fallbackSvg && fallbackSvg === canonicalSvg(), 'unsafe label uses canonical preview');
-          temperature(); check(!editor._layoutPanel.apply.disabled, 'live recovery');
+          temperature(); await waitFor(()=>!editor._layoutPanel.apply.disabled, 'live recovery'); check(!editor._layoutPanel.apply.disabled, 'live recovery');
           install(config); ui = editor._layoutPanel;
+          await waitFor(()=>!ui.apply.disabled, 'reload validation');
           check(Number(ui.inputs.x.value) === x + 30 && !ui.apply.disabled, 'reload stored layout');
           result.textContent = `PASS (${checks.length}): ${checks.map(c => c.label).join('; ')}`; result.className = 'pass';
         } catch (error) { result.textContent = `FAIL: ${error.message}`; result.className = 'fail'; }
@@ -569,6 +578,25 @@
       }
       document.getElementById('touch-320').addEventListener('click',()=>touchDiagnostics(320));
       document.getElementById('touch-390').addEventListener('click',()=>touchDiagnostics(390));
+      document.getElementById('resize-revalidate').addEventListener('click',async()=>{
+        const host=document.getElementById('editor'), original=host.style.cssText;
+        try {
+          reset(); host.style.boxSizing='border-box';host.style.maxWidth='100%';host.style.width='320px';
+          const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value);
+          ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.y.value=String(y+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          await waitFor(()=>!ui.apply.disabled && layoutTextMeasurementJobs.get(editor)?.ready,'initial validation');
+          const checked=[];
+          for(const width of [390,320,420]) {
+            const previous=layoutTextMeasurementJobs.get(editor);
+            host.style.width=`${width}px`;
+            await waitFor(()=>{const job=layoutTextMeasurementJobs.get(editor);return job && job!==previous && job.ready && !ui.apply.disabled;},`resize ${width}px`);
+            checked.push(Math.round(host.getBoundingClientRect().width));
+          }
+          result.textContent=`PASS resize revalidation: ${checked.join(', ')} px; fresh ready job each time`;result.className='pass';
+        } catch(error) {result.textContent=`FAIL resize revalidation: ${error.message}; status ${editor._layoutPanel?.status.textContent}; job ${JSON.stringify(layoutTextMeasurementJobs.get(editor) && {pending:layoutTextMeasurementJobs.get(editor).pending,ready:layoutTextMeasurementJobs.get(editor).ready})}; stage ${JSON.stringify(lastStage)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}`;result.className='fail';}
+        finally {host.style.cssText=original;}
+      });
       document.getElementById('smoke').addEventListener('click', smoke);
       window.layoutHarness = { reset, separated, temperature, wp, smoke, viewportEvents, get editor() { return editor; }, get config() { return copy(config); } };
       reset();

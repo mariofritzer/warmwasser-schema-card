@@ -4623,11 +4623,22 @@ function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
     const svgHtml=svgs[0].outerHTML,controller=new view.AbortController(),generation={};
     const job={parent,key,hassKey,card,controller,generation,viewport,pending:true,cleanup:()=>{}};
     const invalidate=()=>{if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);};
+    const invalidateAndRefresh=()=>{
+      if (layoutTextMeasurementJobs.get(owner)!==job) return;
+      invalidate();
+      // A newer job or a detached/replaced view owns its own refresh instead.
+      Promise.resolve().then(()=>{
+        if (!owner.isConnected || !parent.isConnected || layoutTextMeasurementJobs.has(owner) ||
+            (owner._layoutPanel?.previewRoot || owner._box)!==parent) return;
+        if (owner._layoutPanel) owner._refreshLayoutUI({preserveFocusedInput:true});
+        else { owner._key=undefined; owner._update(); }
+      });
+    };
     const fonts=doc.fonts;
-    const mutation=new view.MutationObserver(invalidate),resize=new view.ResizeObserver(()=>{
+    const mutation=new view.MutationObserver(invalidateAndRefresh),resize=new view.ResizeObserver(()=>{
       const box=host.getBoundingClientRect();
       if (!box || !Number.isFinite(box.width) || !Number.isFinite(box.height) ||
-          box.width!==job.width || box.height!==job.height) invalidate();
+          box.width!==job.width || box.height!==job.height) invalidateAndRefresh();
     });
     const media=typeof view.matchMedia==='function' ? ['(prefers-color-scheme: dark)','(forced-colors: active)','(prefers-contrast: more)'].map(q=>view.matchMedia(q)) : [];
     job.cleanup=()=>{mutation.disconnect();resize.disconnect();for (const name of ['loading','loadingdone','loadingerror']) fonts.removeEventListener(name,invalidate);

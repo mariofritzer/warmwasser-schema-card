@@ -79,7 +79,7 @@ test('cancellation before the pending microtask does not alter either viewport',
 });
 test('first mount establishes a nonzero resize baseline after the fixed host exists',async()=>{
   for(const kind of ['card','editor']) {
-    const f=fixture(kind);f.host.height=0;
+    const f=fixture(kind);if(kind==='editor')f.owner._refreshLayoutUI=()=>{};f.host.height=0;
     assert.equal(request(f.owner,f.card,'candidate').status,'pending');
     f.host.height=100;await Promise.resolve();
     assert.equal(f.calls.length,1);f.resizes[0].fn([]);assert.equal(f.calls[0].signal.aborted,false);
@@ -88,7 +88,7 @@ test('first mount establishes a nonzero resize baseline after the fixed host exi
 });
 test('font or repeated resize aborts without changing the visible viewport',async()=>{
   for(const kind of ['card','editor']) for(const reason of ['font','resize']) {
-    const f=fixture(kind);request(f.owner,f.card,'candidate');await Promise.resolve();
+    const f=fixture(kind);if(kind==='editor')f.owner._refreshLayoutUI=()=>{};request(f.owner,f.card,'candidate');await Promise.resolve();
     if(reason==='font')f.handlers.get('loading')();
     else { f.host.width++;f.resizes[0].fn([]);f.host.width++;f.resizes[0].fn([]); }
     assert.equal(f.calls[0].signal.aborted,true);assert.equal(f.reference.getAttribute('viewBox'),'0 -30 486 430');
@@ -315,8 +315,8 @@ test('Editor draft, disconnect, font, theme and viewport changes abort pending w
     if(reason==='draft')f.owner._editLayoutDraft({version:2,components:{}},false);
     if(reason==='disconnect')f.owner.disconnectedCallback();
     if(reason==='font')f.handlers.get('loading')();
-    if(reason==='theme')f.mutations[0].fn([]);
-    if(reason==='viewport'){f.resizes[0].fn([]);assert.equal(signal.aborted,false);f.host.width++;f.resizes[0].fn([]);}
+    if(reason==='theme'){f.owner._refreshLayoutUI=()=>{};f.mutations[0].fn([]);}
+    if(reason==='viewport'){f.owner._refreshLayoutUI=()=>{};f.resizes[0].fn([]);assert.equal(signal.aborted,false);f.host.width++;f.resizes[0].fn([]);}
     assert.equal(signal.aborted,true,reason);
     assert.ok(f.mutations[0].disconnected && f.resizes[0].disconnected,reason);
     assert.equal(f.owner._layoutPanel.apply.disabled,true,reason);
@@ -351,4 +351,34 @@ test('a stale observer callback cannot cancel a newer generation',async()=>{
   stale([]);
   assert.equal(f.calls[1].signal.aborted,false);
   cancel(f.owner);
+});
+test('resize invalidation schedules one fresh measurement for card and editor',async()=>{
+  for(const kind of ['card','editor']) {
+    const f=fixture(kind);let refreshes=0;
+    const refresh=()=>{refreshes++;request(f.owner,f.card,'candidate');};
+    if(kind==='editor')f.owner._refreshLayoutUI=refresh;
+    else {f.owner._key='unchanged';f.owner._update=()=>{assert.equal(f.owner._key,undefined);refresh();};}
+    request(f.owner,f.card,'candidate');await Promise.resolve();
+    f.host.width++;f.resizes[0].fn([]);f.resizes[0].fn([]);
+    assert.equal(f.calls[0].signal.aborted,true);assert.equal(refreshes,0);
+    await Promise.resolve();await Promise.resolve();
+    assert.equal(refreshes,1,kind);assert.equal(f.calls.length,2,kind);
+    cancel(f.owner);
+  }
+});
+test('queued resize refresh cannot replace a newer job or revive a detached owner',async()=>{
+  for(const reason of ['replacement','detached']) {
+    const f=fixture('editor');let refreshes=0;f.owner._refreshLayoutUI=()=>{refreshes++;};
+    request(f.owner,f.card,'candidate');await Promise.resolve();f.host.width++;f.resizes[0].fn([]);
+    if(reason==='replacement')request(f.owner,f.card,'candidate');else f.owner.isConnected=false;
+    await Promise.resolve();await Promise.resolve();assert.equal(refreshes,0,reason);cancel(f.owner);
+  }
+});
+test('ancestor style mutation followed by resize triggers one revalidation',async()=>{
+  const f=fixture('editor');let refreshes=0;
+  f.owner._refreshLayoutUI=()=>{refreshes++;request(f.owner,f.card,'candidate');};
+  request(f.owner,f.card,'candidate');await Promise.resolve();
+  f.host.width++;f.mutations[0].fn([]);f.resizes[0].fn([]);
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(refreshes,1);assert.equal(f.calls.length,2);cancel(f.owner);
 });
