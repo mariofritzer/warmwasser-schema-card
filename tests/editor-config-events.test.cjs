@@ -657,3 +657,47 @@ test('separated editor restores saved port groups and valve rotation from config
   ui.select.value = 'valve'; ui.select.emit('change'); assert.equal(Number(ui.inputs.x.value), 272); assert.equal(Number(ui.inputs.y.value), 376);
   assert.equal(ui.apply.disabled, true); assert.equal(JSON.stringify(config), before);
 });
+
+test('device-only hit areas leave the empty overlay available for native touch gestures',()=>{
+  const editor=new Editor();editor._visualLayoutEditorEnabled=()=>true;
+  editor.hass={language:'en',states:{'sensor.fm':{state:'on'}}};
+  editor.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+  const ui=editor._layoutPanel,matrix={a:1,b:0,c:0,d:1,e:0,f:0};
+  const svg={getScreenCTM:()=>matrix,getBoundingClientRect:()=>({left:0,top:0,width:800,height:600})};
+  ui.previewRoot.querySelector=s=>s==='svg'?svg:null;ui.viewport.scrollLeft=ui.viewport.scrollTop=0;
+  editor._positionLayoutOverlay();
+  assert.equal(ui.handles.length,ui.hitBoxes.length);
+  const fm=ui.hitBoxes.find(item=>item.id==='fm'),handle=ui.handles[ui.hitBoxes.indexOf(fm)];
+  assert.equal(handle.style.left,`${fm.x}px`);assert.equal(handle.style.width,`${fm.width}px`);
+  const source=fs.readFileSync(path.join(__dirname,'../warmwasser-schema-card.js'),'utf8');
+  assert.match(source,/\.layout-drag-overlay\{[^}]*pointer-events:none/);
+  assert.match(source,/\.layout-device-hit\{[^}]*pointer-events:auto;touch-action:none/);
+  assert.doesNotMatch(source,/\.layout-drag-overlay\{[^}]*touch-action:none/);
+});
+
+test('scroll, viewport change, a second touch and changed screen transform cancel and restore drag',()=>{
+  for (const reason of ['scroll','visual-scroll','visual-resize','second-touch','matrix','finish-matrix']) {
+    const editor=new Editor();editor._visualLayoutEditorEnabled=()=>true;
+    editor.hass={language:'en',states:{'sensor.fm':{state:'on'}}};
+    editor.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+    const ui=editor._layoutPanel,events=()=>({handlers:{},addEventListener(n,f){this.handlers[n]=f;},removeEventListener(n,f){if(this.handlers[n]===f)delete this.handlers[n];}});
+    const doc=events(),view=events();view.visualViewport=events();doc.defaultView=view;ui.viewport.ownerDocument=doc;
+    let offset=0;
+    const svg={getScreenCTM:()=>({inverse:()=>({a:1,b:0,c:0,d:1,e:offset,f:0})}),getAttribute:()=> '0 0 800 600',setAttribute(){},
+      getBoundingClientRect:()=>({left:0,top:0,width:800,height:600})};
+    ui.previewRoot.querySelector=s=>s==='svg'?svg:null;ui.viewport.scrollLeft=ui.viewport.scrollTop=0;
+    ui.overlay.setPointerCapture=()=>{};ui.overlay.releasePointerCapture=()=>{};
+    const box=ui.hitBoxes.find(b=>b.id==='fm'),start={pointerId:1,isPrimary:true,pointerType:'touch',clientX:box.x+10,clientY:box.y+10};
+    ui.overlay.emit('pointerdown',start);assert.ok(editor._layoutDrag,reason);
+    ui.overlay.emit('pointermove',{...start,clientX:start.clientX+30});
+    const pending=[...frames.values()][0];frames.clear();pending();
+    assert.equal(Number(ui.inputs.x.value),box.originX+30,reason);
+    if(reason==='scroll')doc.handlers.scroll();
+    if(reason==='visual-scroll')view.visualViewport.handlers.scroll();
+    if(reason==='visual-resize')view.visualViewport.handlers.resize();
+    if(reason==='second-touch')doc.handlers.pointerdown({pointerId:2,pointerType:'touch'});
+    if(reason==='matrix'||reason==='finish-matrix') {offset=2;ui.overlay.emit(reason==='matrix'?'pointermove':'pointerup',{...start,clientX:start.clientX+50});}
+    assert.equal(editor._layoutDrag,null,reason);assert.equal(Number(ui.inputs.x.value),box.originX,reason);
+    assert.equal(editor._layoutDraft.history.length,1,reason);assert.deepEqual(Object.keys(doc.handlers),[],reason);
+  }
+});

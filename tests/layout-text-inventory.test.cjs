@@ -151,8 +151,8 @@ test('simple FM-only complete inventory classifies every visible shape',()=>{
   assert.equal(complete(c,candidate,svg).status,'unsupported');
 });
 test('FM display and volume variants keep a complete, model-bound shape inventory',()=>{
-  for(const [temp,flow,volume] of [[true,false,500],[false,true,500],[true,true,500],[true,true,null]]) {
-    const raw={speicher:{typ:'schicht',...(volume===null?{}:{volumen:volume})},
+  for(const type of ['schicht','trennblech']) for(const [temp,flow,volume] of [[true,false,500],[false,true,500],[true,true,500],[true,true,null]]) {
+    const raw={speicher:{typ:type,...(volume===null?{}:{volumen:volume})},
       fm:{pumpe:'sensor.fm',...(temp?{temp:'sensor.temp'}:{}),...(flow?{durchfluss:'sensor.flow'}:{})}};
     const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
     c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'}}};
@@ -164,7 +164,12 @@ test('FM display and volume variants keep a complete, model-bound shape inventor
       shapes.push({localName:match[1],getAttribute:name=>attrs[name]??null,closest:()=>null,getScreenCTM:()=>moved?{...matrix,e:30,f:15}:matrix});
     }
     const svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
-    assert.equal(complete(c,candidate,svg).status,'complete',`${temp}/${flow}/${volume}`);
+    assert.equal(complete(c,candidate,svg).status,'complete',`${type}/${temp}/${flow}/${volume}`);
+    if (type==='trennblech') {
+      const plate=shapes.find(el=>el.localName==='rect' && el.getAttribute('fill')==='url(#wwGrid)');
+      const original=plate.getAttribute; plate.getAttribute=name=>name==='fill'?'none':original(name);
+      assert.equal(complete(c,candidate,svg).status,'unsupported'); plate.getAttribute=original;
+    }
     const display=shapes.find(el=>el.localName==='rect' && el.getAttribute('x')==='392' && el.getAttribute('y')==='62');
     const get=display.getAttribute;display.getAttribute=name=>name==='rx'?'50':get(name);
     assert.equal(complete(c,candidate,svg).status,'unsupported');
@@ -191,8 +196,8 @@ test('FM volume and live values require exact inventory, slots and current HA st
   assert.equal(complete({...c,_cfg:{...c._cfg,typ:'trennblech'}},candidate,{isConnected:true}).status,'unsupported');
 });
 test('air WP fan and valve inventory follows live valve state and rejects changed geometry',()=>{
-  for(const [valveState,wpState,defrost] of [[null,'on',false],['unknown','unknown',false],['on','off',false],['off','unavailable',false],['50','on',true]]) {
-    const raw={speicher:{typ:'schicht',volumen:500},fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'},
+  for(const type of ['schicht','trennblech']) for(const [valveState,wpState,defrost] of [[null,'on',false],['unknown','unknown',false],['on','off',false],['off','unavailable',false],['50','on',true]]) {
+    const raw={speicher:{typ:type,volumen:500},fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'},
       wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',...(defrost?{abtauen:'sensor.defrost'}:{}),...(valveState===null?{}:{ventil:'sensor.valve'})}};
     const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
     c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:wpState},'sensor.defrost':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'},
@@ -224,4 +229,60 @@ test('air WP fan and valve inventory follows live valve state and rejects change
     assert.equal(complete(c,candidate,svg).status,'unsupported');blade.attrs.transform='rotate(72 390 226)';
     shapes.push({localName:'circle',getAttribute:()=>null,closest:()=>null});assert.equal(complete(c,candidate,svg).status,'unsupported');
   }
+});
+test('separated tanks bind both measured labels, shadows, contours and complete primary routes',()=>{
+  const raw={speicher:{typ:'getrennt',volumen:500,volumen_ww:200},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}};
+  const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+  c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'on'}}};
+  const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:-110,y:14}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}});
+  assert.equal(candidate.status,'candidate',JSON.stringify(candidate.errors));
+  const html=renderGeometry(c,candidate),records=[];
+  for(const match of html.matchAll(/<text\s+([^>]*)>([^<]*)<\/text>/g)) {
+    const a=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(m=>[m[1],m[2]]));
+    const x=Number(a.x),y=Number(a.y),dx=x===352||x===418?-450:0;
+    records.push({text:match[2],x:a.x,y:a.y,className:a.class??null,matrix:{a:1,b:0,c:0,d:1,e:dx,f:0},box:{x:x+dx-1,y:y-5,width:2,height:4}});
+  }
+  assert.equal(inspect(c,candidate,records).reason,'text-inventory-staged-only');
+  assert.equal(shadow(c,candidate,html).reason,'layout-shadow-policy-bound-only');
+  assert.equal(symbols(c,candidate,records,html).reason,'layout-symbol-paint-bound-only');
+  assert.equal(pipes(c,candidate,html).reason,'layout-pipe-paint-bound-only');
+  const realLabel=records.map(r=>({...r,box:{...r.box}}));
+  realLabel.find(r=>r.x==='137'&&r.y==='38').box={x:85.45336,y:29.62047,width:103.09326,height:12.00604};
+  assert.equal(inspect(c,candidate,realLabel).reason,'text-inventory-staged-only');
+  assert.equal(symbols(c,candidate,realLabel,html).reason,'layout-symbol-paint-bound-only');
+  realLabel.find(r=>r.x==='137'&&r.y==='38').box.y+=1;
+  assert.equal(symbols(c,candidate,realLabel,html).reason,'text-obstacle-contact');
+  const matrix={a:1,b:0,c:0,d:1,e:0,f:0},shapes=[],svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
+  const fan={localName:'g',parentElement:svg,getAttribute:name=>name==='class'?'wr':null};
+  for(const match of html.slice(html.indexOf('</defs>')+7,html.indexOf('</svg>')).matchAll(/<(path|rect|circle|line)\b([^>]*)\/?\s*>/g)) {
+    const a=Object.fromEntries([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+    const moved=a.d?.startsWith('M430 30C424');
+    shapes.push({localName:match[1],attrs:a,parentElement:a.d==='M390 226Q405 213 397 192Q383 203 390 226Z'?fan:svg,
+      getAttribute:name=>a[name]??null,closest:()=>null,getScreenCTM:()=>moved?{...matrix,e:-450}:matrix});
+  }
+  assert.equal(complete(c,candidate,svg).status,'complete');
+  const contour=shapes.find(el=>el.attrs.d?.startsWith('M72 40Q'));const original=contour.attrs.d;contour.attrs.d='M0 0H999';
+  assert.equal(complete(c,candidate,svg).status,'unsupported');contour.attrs.d=original;
+  const bad=records.map(r=>({...r,box:{...r.box}}));bad.find(r=>r.x==='137'&&r.y==='38').box.width=150;
+  assert.equal(inspect(c,candidate,bad).reason,'text-slot-overflow');
+});
+test('separated buffer feet follow the exact model translation and reject forged CTMs',()=>{
+  const raw={speicher:{typ:'getrennt'},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}};
+  const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+  c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'on'}}};
+  const candidate=resolve(raw,c._cfg,{version:2,components:{fm:{x:-110,y:14},buffer:{x:42,y:218}},
+    ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}});
+  assert.equal(candidate.status,'candidate',JSON.stringify(candidate.errors));
+  const html=renderGeometry(c,candidate),matrix={a:1,b:0,c:0,d:1,e:0,f:0},shapes=[],svg={isConnected:true,getScreenCTM:()=>matrix,querySelectorAll:()=>shapes};
+  const fan={localName:'g',parentElement:svg,getAttribute:name=>name==='class'?'wr':null};
+  for(const match of html.slice(html.indexOf('</defs>')+7,html.indexOf('</svg>')).matchAll(/<(path|rect|circle|line)\b([^>]*)\/?\s*>/g)) {
+    const a=Object.fromEntries([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(x=>[x[1],x[2]]));
+    const foot=match[1]==='rect' && (a.x==='93'||a.x==='170') && a.y==='362' && a.width==='11' && a.height==='22';
+    const moved=a.d?.startsWith('M430 30C424');
+    shapes.push({localName:match[1],attrs:a,foot,parentElement:a.d==='M390 226Q405 213 397 192Q383 203 390 226Z'?fan:svg,
+      getAttribute:name=>a[name]??null,closest:()=>null,getScreenCTM:()=>foot?{...matrix,e:-30,f:15}:moved?{...matrix,e:-450}:matrix});
+  }
+  assert.equal(complete(c,candidate,svg).status,'complete');
+  const foot=shapes.find(s=>s.foot);foot.getScreenCTM=()=>matrix;
+  assert.equal(complete(c,candidate,svg).status,'unsupported');
 });

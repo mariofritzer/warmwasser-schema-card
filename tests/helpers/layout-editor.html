@@ -29,9 +29,16 @@
     <button id="simple-commit">FM-only apply + card commit</button>
     <button id="simple-stale">FM-only stale + rollback</button>
     <button id="wp-commit">FM + air WP apply + card reload</button>
+    <button id="baffle-wp-commit">Baffle FM + WP apply/reload</button>
+    <button id="baffle-fm-commit">Baffle FM apply/reload</button>
     <button id="wp-drag-setup">Prepare visible WP drag</button>
+    <button id="touch-320">Touch diagnostics 320 px</button>
+    <button id="touch-390">Touch diagnostics 390 px</button>
     <button id="wp-diagnose">Diagnose current WP draft</button>
     <button id="wp-drag-commit">Apply dragged WP and reload card</button>
+    <button id="separated-commit">Separated tanks + auto ports Apply/reload</button>
+    <button id="separated-fm-cycle">Separated FM-only + WP disable/restore</button>
+    <button id="separated-buffer-commit">Separated moved buffer Apply/reload</button>
     <button id="fm-live-commit">FM live + volume apply/commit</button>
     <button id="smoke">Run smoke checks</button>
   </div>
@@ -74,7 +81,7 @@
       const realSymbolPaint=inspectLayoutSymbolPaint;
       const realPipePaint=inspectLayoutPipePaint;
       const realCompleteFm=inspectCompleteSimpleFmPaint;
-      let lastInventory=null,lastComplete=null,lastStage=null,lastCompleteMatrix=null;
+      let lastInventory=null,lastComplete=null,lastStage=null,lastCompleteMatrix=null,lastSymbol=null;
       inspectMeasuredLayoutTexts=(...args)=>{
         const checked=realTextInventory(...args);
         lastInventory=checked;
@@ -93,7 +100,8 @@
       };
       inspectLayoutSymbolPaint=(...args)=>{
         const checked=realSymbolPaint(...args);
-        result.textContent+=` | symbol paint: ${checked.reason}${checked.symbols ? ` (${checked.symbols.length})` : ''}`;
+        lastSymbol=checked;
+        result.textContent+=` | symbol paint: ${checked.reason}${checked.symbols ? ` (${checked.symbols.length})` : ''}${checked.detail ? ` ${JSON.stringify(checked.detail)}` : ''}`;
         return checked;
       };
       inspectLayoutPipePaint=(...args)=>{
@@ -183,7 +191,8 @@
           reset();
           let ui = editor._layoutPanel;
           check(!!ui.previewRoot.querySelector('svg'), 'canonical SVG preview');
-          check(ui.overlay.getBoundingClientRect().width > 0 && getComputedStyle(ui.overlay).touchAction === 'none', 'interactive touch overlay');
+          check(ui.overlay.getBoundingClientRect().width > 0 && getComputedStyle(ui.overlay).pointerEvents === 'none' &&
+            ui.handles.length > 0 && ui.handles.every(handle=>getComputedStyle(handle).pointerEvents==='auto' && getComputedStyle(handle).touchAction==='none'), 'device-only touch hit areas');
           const x = Number(ui.inputs.x.value), y = Number(ui.inputs.y.value);
           ui.inputs.x.value = String(x + 30); ui.inputs.x.dispatchEvent(new Event('change', { bubbles: true }));
           ui.inputs.y.value = String(y + 15); ui.inputs.y.dispatchEvent(new Event('change', { bubbles: true }));
@@ -316,25 +325,101 @@
           const x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value);
           if(!Number.isInteger(x)||!Number.isInteger(y)||(x===330&&y===150))throw Error('drag WP to another whole-unit position first');
           for(let i=0;i<90&&ui.apply.disabled;i++)await frame();
-          if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);
+          if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol&&{reason:lastSymbol.reason,detail:lastSymbol.detail})}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);
           ui.apply.click();if(config.layout?.components?.wp?.x!==x || config.layout?.components?.wp?.y!==y)throw Error(`dragged position not emitted: ${editor.dataset.lastApply||'no handler'}`);
           host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
           const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;
             host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
           let card=mount();const committed=async()=>{for(let i=0;i<90&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
-            if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}`);
+            if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol&&{reason:lastSymbol.reason,detail:lastSymbol.detail})}; complete ${JSON.stringify(lastComplete)}`);
             if(card._model.components.wp.origin.x!==x||card._model.components.wp.origin.y!==y)throw Error('card WP position differs');};
           await committed();card=mount();await committed();
           result.textContent=`PASS real dragged WP (${x},${y}) editor Apply, separate Card commit and reload`;
         } catch(error) {result.textContent=`FAIL dragged WP commit: ${error.message}`;}
         finally {host?.remove();}
       });
-      document.getElementById('wp-commit').addEventListener('click',async()=>{
+      document.getElementById('separated-fm-cycle').addEventListener('click',async()=>{
+        let host;
+        try {
+          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'}}};
+          const wp={betrieb:'sensor.wp'},wpPosition={x:360,y:165};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'getrennt',volumen:500,volumen_ww:200},
+            fm:{pumpe:'sensor.fm'},wp:{},layout:{version:2,components:{wp:wpPosition}}});
+          const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+          ui.select.value='fm';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.x.value='-110';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.y.value='14';ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          for(const name of ['tankSelect','fmSelect']) {ui.portControls[name].value='auto';ui.portControls[name].dispatchEvent(new Event('change',{bubbles:true}));}
+          for(let i=0;i<120&&ui.apply.disabled;i++)await frame();
+          if(ui.apply.disabled)throw Error(`FM-only editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol&&{reason:lastSymbol.reason,detail:lastSymbol.detail})}; complete ${JSON.stringify(lastComplete)}`);
+          ui.apply.click();
+          if(config.layout?.components?.fm?.x!==-110 || JSON.stringify(config.layout?.components?.wp)!==JSON.stringify(wpPosition))
+            throw Error('FM Apply lost the inactive WP position');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=next=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;
+            host.replaceChildren(card);card.setConfig(copy(next));card.hass=hass;return card;};
+          const wait=async card=>{for(let i=0;i<120&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
+            if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol&&{reason:lastSymbol.reason,detail:lastSymbol.detail})}; complete ${JSON.stringify(lastComplete)}`);};
+          let card=mount(config);await wait(card);if(card._model.components.wp)throw Error('disabled WP still rendered');
+          card=mount(config);await wait(card);if(card._model.components.fm.origin.x!==-110)throw Error('FM-only reload lost position');
+          const enabled={...copy(config),wp};editor.setConfig(copy(enabled));
+          if(JSON.stringify(editor._config.layout.components.wp)!==JSON.stringify(wpPosition))throw Error('editor lost reactivated WP position');
+          card=mount(enabled);
+          for(let i=0;i<120&&card._layoutStatus?.status==='pending';i++)await frame();
+          if(card._layoutStatus?.status!=='unsupported' || card._layoutCandidate ||
+              JSON.stringify(card._savedLayout?.value?.components?.wp)!==JSON.stringify(wpPosition))
+            throw Error(`420px fallback did not preserve WP position: ${JSON.stringify(card._layoutStatus)}`);
+          // Use a separately verified wider viewport for the positive cycle.
+          host.style.width='990px';
+          card=mount(enabled);await wait(card);
+          if(card._model.components.wp.origin.x!==wpPosition.x || card._model.components.wp.origin.y!==wpPosition.y)throw Error('reactivated WP position differs');
+          const disabled={...enabled,wp:{}};editor.setConfig(copy(disabled));
+          if(JSON.stringify(editor._config.layout.components.wp)!==JSON.stringify(wpPosition))throw Error('second disable lost WP position');
+          card=mount(disabled);await wait(card);if(card._model.components.wp)throw Error('WP appeared after disabling');
+          card=mount(enabled);await wait(card);
+          if(card._model.components.wp.origin.x!==wpPosition.x || card._model.components.wp.origin.y!==wpPosition.y)throw Error('second activation lost WP position');
+          result.textContent='PASS separated FM-only Apply/Card/reload and repeated WP disable/reactivate preserving position';
+        } catch(error) {result.textContent=`FAIL separated FM-only/WP cycle: ${error.message}`;}
+        finally {host?.remove();}
+      });
+      async function separatedCommit(moveBuffer=false) {
+        let host;
+        try {
+          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'on'}}};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'getrennt',volumen:500,volumen_ww:200},
+            fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve'}});
+          const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+          ui.select.value='fm';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.x.value='-110';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.inputs.y.value='14';ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
+          for(const name of ['tankSelect','fmSelect']) {ui.portControls[name].value='auto';ui.portControls[name].dispatchEvent(new Event('change',{bubbles:true}));}
+          if(moveBuffer) {
+            ui.select.value='buffer';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+            ui.inputs.x.value='77';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          }
+          for(let i=0;i<90&&ui.apply.disabled;i++)await frame();
+          if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol&&{reason:lastSymbol.reason,detail:lastSymbol.detail})}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);
+          ui.apply.click();if(config.layout?.components?.fm?.x!==-110 || config.layout?.ports?.['fm.supply']?.mode!=='auto' || (moveBuffer && config.layout?.components?.buffer?.x!==77))throw Error('configuration not emitted');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;
+            host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
+          let card=mount();const committed=async()=>{for(let i=0;i<90&&card._layoutStatus?.status!=='rendered-candidate';i++)await frame();
+            if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol&&{reason:lastSymbol.reason,detail:lastSymbol.detail})}; complete ${JSON.stringify(lastComplete)}`);
+            if(card._model.components.fm.origin.x!==-110 || card._model.components.fm.ports.supply.effectiveSide!=='right' ||
+              (moveBuffer && (card._model.components['buffer-tank'].origin.x!==77 || card._model.components['tank-feet'].origin.x!==98)))throw Error('auto-side or buffer/feet geometry differs');};
+          await committed();card=mount();await committed();
+          result.textContent=`PASS separated tanks${moveBuffer?' with moved buffer and feet':''}, grouped auto ports, editor Apply, independent Card commit and reload`;
+        } catch(error) {result.textContent=`FAIL separated commit: ${error.message}`;}
+        finally {host?.remove();}
+      }
+      document.getElementById('separated-commit').addEventListener('click',()=>separatedCommit(false));
+      document.getElementById('separated-buffer-commit').addEventListener('click',()=>separatedCommit(true));
+      async function verifyWpCommit(type='schicht') {
         let host;
         try {
           hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'},
             'sensor.wp':{state:'on'},'sensor.power':{state:'1200'},'sensor.cop':{state:'3.2'},'sensor.vl':{state:'40'},'sensor.rl':{state:'35'},'sensor.valve':{state:'on'}}};
-          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'schicht',volumen:500},
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type,volumen:500},
             fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'},
             wp:{betrieb:'sensor.wp',leistung:'sensor.power',cop:'sensor.cop',vorlauf:'sensor.vl',ruecklauf:'sensor.rl',ventil:'sensor.valve'}});
           const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value),frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
@@ -373,7 +458,9 @@
           result.textContent='PASS FM + moved WP keyboard editor Apply, HA update, independent card commit, reload and overflow fallback';
         } catch(error) {result.textContent=`FAIL FM + air WP: ${error.message}`;}
         finally {host?.remove();}
-      });
+      }
+      document.getElementById('wp-commit').addEventListener('click',()=>verifyWpCommit());
+      document.getElementById('baffle-wp-commit').addEventListener('click',()=>verifyWpCommit('trennblech'));
       document.getElementById('simple-stale').addEventListener('click',async()=>{
         try {
           const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve)),checks=[];
@@ -411,11 +498,11 @@
           result.textContent=`PASS real stale/rollback checks: ${checks.join(', ')}`;
         } catch(error) {result.textContent=`FAIL FM-only stale: ${error.message}`;}
       });
-      document.getElementById('fm-live-commit').addEventListener('click',async()=>{
+      async function verifyFmLiveCommit(type='schicht') {
         let host;
         try {
           hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.temp':{state:'42'},'sensor.flow':{state:'3'}}};
-          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:'schicht',volumen:500},
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type,volumen:500},
             fm:{pumpe:'sensor.fm',temp:'sensor.temp',durchfluss:'sensor.flow'}});
           const ui=editor._layoutPanel,x=Number(ui.inputs.x.value),y=Number(ui.inputs.y.value),frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
           ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
@@ -444,7 +531,26 @@
           result.textContent='PASS FM volume/live HA update, editor Apply, independent card commit, reload and overflow fallback';
         } catch(error) {result.textContent=`FAIL FM live commit: ${error.message}`;}
         finally {host?.remove();}
-      });
+      }
+      document.getElementById('fm-live-commit').addEventListener('click',()=>verifyFmLiveCommit());
+      document.getElementById('baffle-fm-commit').addEventListener('click',()=>verifyFmLiveCommit('trennblech'));
+      let stopTouchDiagnostics=()=>{};
+      function touchDiagnostics(width) {
+        stopTouchDiagnostics(); reset();
+        const ui=editor._layoutPanel, logs=[];
+        ui.viewport.style.width=`${width}px`;ui.viewport.style.maxWidth='100%';
+        ui.viewport.scrollIntoView({block:'center'});
+        const note=message=>{logs.push(message);result.textContent=`Touch ${width}px: ${logs.slice(-5).join(' | ')}. Drag a device; scroll or pinch on empty space; use a second finger during drag.`;};
+        const events=['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture'];
+        const record=event=>{if(event.type==='pointermove')return;note(`${event.type} ${event.pointerType||''} ${event.pointerId ?? ''}, drag ${editor._layoutDrag?'active':'inactive'}`);};
+        const scroll=()=>note(`scroll top ${Math.round(window.scrollY)}, viewport ${ui.viewport.scrollLeft}/${ui.viewport.scrollTop}`);
+        for(const type of events) document.addEventListener(type,record,true);
+        document.addEventListener('scroll',scroll,true);window.visualViewport?.addEventListener('scroll',scroll);
+        stopTouchDiagnostics=()=>{for(const type of events) document.removeEventListener(type,record,true);document.removeEventListener('scroll',scroll,true);window.visualViewport?.removeEventListener('scroll',scroll);};
+        note(`overlay ${getComputedStyle(ui.overlay).pointerEvents}, ${ui.handles?.length||0} device hit areas`);
+      }
+      document.getElementById('touch-320').addEventListener('click',()=>touchDiagnostics(320));
+      document.getElementById('touch-390').addEventListener('click',()=>touchDiagnostics(390));
       document.getElementById('smoke').addEventListener('click', smoke);
       window.layoutHarness = { reset, separated, temperature, wp, smoke, viewportEvents, get editor() { return editor; }, get config() { return copy(config); } };
       reset();

@@ -4055,9 +4055,15 @@ function inspectMeasuredVolumeSlots(card,candidate,records) {
           Math.abs(m.a-1)>eps || Math.abs(m.b)>eps || Math.abs(m.c)>eps || Math.abs(m.d-1)>eps ||
           Math.abs(m.e-dx)>eps || Math.abs(m.f-dy)>eps || q.width<0 || q.height<0 ||
           ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('volume-text-unproven');
-      const slot={x:o.x+27,y:o.y+6,width:76,height:b.height-12};
+      const slot=cfg.typ==='getrennt'?{x:o.x+1,y:o.y+1,width:128,height:b.height-2}
+        :{x:o.x+27,y:o.y+6,width:76,height:b.height-12};
       if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
         return fail('volume-label-overflow');
+      if(cfg.typ==='getrennt') {
+        const inside=(x,y)=>{const cy=y<o.y+22?o.y+22:y>o.y+b.height-22?o.y+b.height-22:null;
+          return cy===null || ((x-o.x-65)/64)**2+((y-cy)/21)**2<=1;};
+        if(![q.x,q.x+q.width].every(x=>[q.y,q.y+q.height].every(y=>inside(x,y))))return fail('volume-label-overflow');
+      }
       boxes.push(q);
     }
     if (!boxes.length) return fail('volume-text-unproven');
@@ -4089,8 +4095,8 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
   try {
     const c=card?._cfg,m=candidate?.model;
     if (!c || !m || !Array.isArray(records) || !candidate.routes || !m.routingScope?.fm ||
-        !['schicht','trennblech'].includes(c.typ) || c.fuehler.length || c.weiche || c.energie.length ||
-        !m.components.fm || !m.components.tank) return fail('text-inventory-unproven');
+        !['schicht','trennblech','getrennt'].includes(c.typ) || c.fuehler.length || c.weiche || c.energie.length ||
+        !m.components.fm || (c.typ==='getrennt' ? !m.components['hot-tank'] || !m.components['buffer-tank'] : !m.components.tank)) return fail('text-inventory-unproven');
     const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],F=c.farben;
     const fm=c.fm,wp=c.wp,items=[];
     for(const [id,x,y,width,height] of [['fm',340,14,110,90],...(wp?[['wp',330,150,120,222]]:[])]) {
@@ -4123,9 +4129,17 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
     }
     const cold=diagramPort(m,m.connections['domestic-cold'].from),hot=diagramPort(m,m.connections['domestic-hot'].to);
     const boundary=m.components['domestic-boundary'],offset=boundary.origin.y-boundary.baseOrigin.y;
-    add(null,cold.x-8,-14+offset,'we',c.text_tw_kalt ?? L.kalt,{x:cold.x-138,y:-31+offset,width:132,height:20});
-    add(null,hot.x+8,-14+offset,null,c.text_tw_warm ?? L.warm,{x:hot.x+6,y:-31+offset,width:132,height:20});
-    if (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') {
+    add(null,cold.x-8,-14+offset,'we',c.text_tw_kalt ?? L.kalt,{x:cold.x-138,y:-31+offset,width:132,height:21});
+    add(null,hot.x+8,-14+offset,null,c.text_tw_warm ?? L.warm,{x:hot.x+6,y:-31+offset,width:132,height:21});
+    if (c.typ==='getrennt') {
+      for(const [id,y,prefix,value] of [['hot-tank',38,L.ww,c.volumen_ww],['buffer-tank',338,L.puffer,c.volumen]]) {
+        const tank=m.components[id],b=tank?.bounds,o=tank?.baseOrigin;
+        if (!b || !o || b.x!==0 || b.y!==0 || b.width!==130 || !Number.isFinite(b.height) || b.height<44) return fail('text-inventory-unproven');
+        const text=[prefix,value!==null && value!==undefined && value!==''?`${value} l`:null].filter(Boolean).join(' · ');
+        add(id,137,y,'wc wt wo',text,{x:o.x+1,y:o.y+1,width:128,height:b.height-2});
+        items[items.length-1].tankEllipse={x:o.x,y:o.y,height:b.height};
+      }
+    } else if (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') {
       const tank=m.components.tank;
       add('tank',137,338,'wc wt wo',`${c.volumen} l`,{x:tank.baseOrigin.x+27,y:tank.baseOrigin.y+6,width:76,height:tank.bounds.height-12});
     }
@@ -4144,6 +4158,13 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
           Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven',{owner:item.owner,x:item.x,y:item.y,matrix:t,expected:{x:dx,y:dy},box:q});
       if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
         return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
+      if(item.tankEllipse) {
+        const e=item.tankEllipse,ex=e.x+dx,ey=e.y+dy,h=e.height;
+        const inside=(x,y)=>{const cx=ex+65,cy=y<ey+22?ey+22:y>ey+h-22?ey+h-22:null;
+          return cy===null || ((x-cx)/64)**2+((y-cy)/21)**2<=1;};
+        if(![q.x,q.x+q.width].every(x=>[q.y,q.y+q.height].every(y=>inside(x,y))))
+          return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
+      }
       boxes.push({owner:item.owner,anchor:{x:item.x,y:item.y},...q});
     }
     // Boxes already include one unit on each side for obstacle clearance.
@@ -4185,17 +4206,18 @@ function inspectLayoutShadowPolicy(card,candidate,html) {
   const fail=()=>({status:'unsupported',reason:'layout-shadow-policy-unproven'});
   try {
     const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech'].includes(c.typ) || typeof html!=='string') return fail();
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || typeof html!=='string') return fail();
     const filter='<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter>';
-    const expectedCount=c.wp?3:2;
+    const expectedCount=(c.typ==='getrennt'?3:2)+(c.wp?1:0);
     if (html.split(filter).length!==2 || (html.match(/<filter\b/g)||[]).length!==1 ||
         (html.match(/\bfilter\s*=/g)||[]).length!==expectedCount ||
         (html.match(/filter="url\(#wwShadow\)"/g)||[]).length!==expectedCount) return fail();
-    const specs=[['tank',130,360,'65" ry="22','wwTemp'],['fm',110,90,'12','wwRed'],...(c.wp?[['wp',120,222,'14','wwRed']]:[])];
+    const tanks=c.typ==='getrennt'?['hot-tank','buffer-tank']:['tank'];
+    const specs=[...tanks.map(id=>{const b=m.components[id];return [id,130,b?.bounds?.height,'65" ry="22',b?.origin?.y===b?.baseOrigin?.y?'wwTemp':`wwTemp-${id}`];}),['fm',110,90,'12','wwRed'],...(c.wp?[['wp',120,222,'14','wwRed']]:[])];
     const shadows=[];
     for (const [id,width,height,rx,fill] of specs) {
       const b=m.components[id],o=b?.origin,box=b?.bounds;
-      if (!o || !box || box.x!==0 || box.y!==0 || box.width!==width || box.height!==height ||
+      if (!o || !box || box.x!==0 || box.y!==0 || box.width!==width || box.height!==height || !Number.isFinite(height) || height<44 ||
           ![o.x,o.y].every(Number.isFinite)) return fail();
       const rendered=`<rect x="${o.x}" y="${o.y}" width="${width}" height="${height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`;
       if (html.split(rendered).length!==2) return fail();
@@ -4245,10 +4267,10 @@ function inspectLayoutTargetReferences(parent,html) {
 // Display text and the valve's M are intentionally painted over their own
 // display/motor background. Shadows are handled separately as decorative.
 function inspectLayoutSymbolPaint(card,candidate,records,html) {
-  const fail=reason=>({status:'unsupported',reason});
+  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
   try {
     const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech'].includes(c.typ) || !Array.isArray(records) || typeof html!=='string')
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || !Array.isArray(records) || typeof html!=='string')
       return fail('layout-symbol-paint-unproven');
     const fm=m.components.fm,wp=m.components.wp,boundary=m.components['domestic-boundary'];
     if (!fm || !boundary || !!wp!==!!c.wp) return fail('layout-symbol-paint-unproven');
@@ -4270,13 +4292,20 @@ function inspectLayoutSymbolPaint(card,candidate,records,html) {
     if (html.split(coldPath).length!==2 || html.split(hotPath).length!==2) return fail('layout-symbol-paint-unproven');
     icons.push({id:'domestic-cold-arrow',x:cold.x-4.8,y:-23.8+dy,width:9.6,height:5.6},
       {id:'domestic-hot-arrow',x:hot.x-4.8,y:-23.8+dy,width:9.6,height:5.6});
-    const tank=m.components.tank,o=tank?.origin,b=tank?.bounds;
+    for(const id of c.typ==='getrennt'?['hot-tank','buffer-tank']:['tank']) {
+    const tank=m.components[id],o=tank?.origin,b=tank?.bounds;
     if (!o || !b || ![o.x,o.y,b.width,b.height].every(Number.isFinite)) return fail('layout-symbol-paint-unproven');
     const top=`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
       bottom=`M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`;
     if (html.split(top).length!==2 || html.split(bottom).length!==2) return fail('layout-symbol-paint-unproven');
-    icons.push({id:'tank-top-contour',x:o.x-.6,y:o.y+25.4,width:131.2,height:21.2},
+    if(c.typ==='getrennt') {
+      for(const baseY of [o.y+26,o.y+b.height-26]) for(let i=0;i<512;i++) {
+        const a=i/512,z=(i+1)/512,curve=t=>baseY+40*t*(1-t),ys=[curve(a),curve(z),...(a<=.5 && z>=.5?[curve(.5)]:[])];
+        icons.push({id:`${id}-contour`,x:o.x+130*a-.6,y:Math.min(...ys)-.6,width:130/512+1.2,height:Math.max(...ys)-Math.min(...ys)+1.2});
+      }
+    } else icons.push({id:'tank-top-contour',x:o.x-.6,y:o.y+25.4,width:131.2,height:21.2},
       {id:'tank-bottom-contour',x:o.x-.6,y:o.y+b.height-26.6,width:131.2,height:21.2});
+    }
     if (c.typ==='trennblech') {
       const y=m.geometry.yt;
       if (!Number.isFinite(y) || html.split(`<rect x="73" y="${y-2}" width="128" height="4" fill="url(#wwGrid)"/>`).length!==2 ||
@@ -4287,8 +4316,9 @@ function inspectLayoutSymbolPaint(card,candidate,records,html) {
     if (icons.some(a=>![a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite)) ||
         records.some(r=>!r?.box || ![r.box.x,r.box.y,r.box.width,r.box.height,r.box.x+r.box.width,r.box.y+r.box.height].every(Number.isFinite)))
       return fail('layout-symbol-paint-unproven');
-    if (records.some(r=>icons.some(icon=>hit({x:r.box.x-1,y:r.box.y-1,width:r.box.width+2,height:r.box.height+2},icon))))
-      return fail('text-obstacle-contact');
+    for(const r of records) for(const icon of icons)
+      if(hit({x:r.box.x-1,y:r.box.y-1,width:r.box.width+2,height:r.box.height+2},icon))
+        return fail('text-obstacle-contact',{text:r.text,x:r.x,y:r.y,box:r.box,icon});
     return {status:'unsupported',reason:'layout-symbol-paint-bound-only',symbols:icons,
       unresolved:['remaining-decorative-paint','commit-freshness']};
   } catch (_) { return fail('layout-symbol-paint-unproven'); }
@@ -4298,7 +4328,7 @@ function inspectLayoutPipePaint(card,candidate,html) {
   const fail=()=>({status:'unsupported',reason:'layout-pipe-paint-unproven'});
   try {
     const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech'].includes(c.typ) || typeof html!=='string' || !candidate.routes) return fail();
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || typeof html!=='string' || !candidate.routes) return fail();
     const controlled=new Set(['w0','w1','w2','w3','wk']);
     for (const match of html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bclass\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi)) {
       const raw=match[2],value=(raw[0]==='"' || raw[0]==="'")?raw.slice(1,-1):raw;
@@ -4312,7 +4342,7 @@ function inspectLayoutPipePaint(card,candidate,html) {
     const {S,ON,NUM}=sensorReader(card._hass),F=c.farben,L=T[sprache(c,card._hass)],point=ref=>diagramPort(m,ref);
     const water=freshWaterState(c,c.fm,false,S,ON,NUM),heat=heatPumpState(c,L,F,S,ON,NUM),groups={};
     const primaryPipe=(id,_legacy,color,on,duration)=>{groups[id]=rohr(candidate.routes[id].path,color,on,duration);return '';};
-    renderPrimaryPipes({primaryPipe,FM:true,WP:!!c.wp,model:m,point,F,fm_on:water.fm_on,c,SPLIT:false,
+    renderPrimaryPipes({primaryPipe,FM:true,WP:!!c.wp,model:m,point,F,fm_on:water.fm_on,c,SPLIT:c.typ==='getrennt',
       y_bo:m.geometry.bo,y_bu:m.geometry.bu,CK:heat.CK,wpO:heat.wpO,tO:heat.tO,wpU:heat.wpU,tU:heat.tU,
       wp_on:heat.wp_on,y_ro:m.geometry.ro,y_ru:m.geometry.ru,CW:heat.CW,HK:false,QS:false,W:heat.W,ON,QT:heat.QT});
     if (Object.keys(groups).length!==ids.length || ids.some(id=>typeof groups[id]!=='string')) return fail();
@@ -4329,7 +4359,8 @@ function inspectLayoutPipePaint(card,candidate,html) {
       `<path d="M${dw.x-4}${-19+offset}l4-4 4 4" class="wa"/>`,
       `<text x="${dc.x-8}" y="${-14+offset}"`,`<text x="${dw.x+8}" y="${-14+offset}"`];
     if (c.wp) {const v=m.components.valve;markers.push(`<line x1="${v.origin.x+34}" y1="${v.origin.y+14}" x2="${v.origin.x+16}"`);}
-    for (const [id,rx,fill] of [['tank','65" ry="22','wwTemp'],['fm','12','wwRed'],...(c.wp?[['wp','14','wwRed']]:[])]) {
+    const tanks=c.typ==='getrennt'?['hot-tank','buffer-tank']:['tank'];
+    for (const [id,rx,fill] of [...tanks.map(id=>[id,'65" ry="22',m.components[id].origin.y===m.components[id].baseOrigin.y?'wwTemp':`wwTemp-${id}`]),['fm','12','wwRed'],...(c.wp?[['wp','14','wwRed']]:[])]) {
       const b=m.components[id];markers.push(`<rect x="${b.origin.x}" y="${b.origin.y}" width="${b.bounds.width}" height="${b.bounds.height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`);
     }
     let last=html.indexOf(fragment)+fragment.length;
@@ -4343,14 +4374,15 @@ function inspectLayoutPipePaint(card,candidate,html) {
       unresolved:['remaining-decorative-paint','commit-freshness']};
   } catch (_) { return fail(); }
 }
-// Complete paint inventory for the experimental FM/air-WP stratified path.
-// Other tank types and equipment remain closed.
+// Complete paint inventory for the experimental FM/air-WP stratified and
+// baffle-tank paths. Other tank types and equipment remain closed.
 function inspectCompleteSimpleFmPaint(card,candidate,svg) {
   const fail=()=>({status:'unsupported',reason:'layout-complete-paint-unproven'});
   try {
     const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || c.typ!=='schicht' || !c.fm || !svg?.isConnected) return fail();
-    const wp=!!c.wp,allowed=['domestic-boundary','fm','tank','tank-feet',...(wp?['wp','valve']:[])];
+    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || !c.fm || !svg?.isConnected) return fail();
+    const split=c.typ==='getrennt',tankIds=split?['hot-tank','buffer-tank']:['tank'];
+    const wp=!!c.wp,allowed=['domestic-boundary','fm',...tankIds,'tank-feet',...(wp?['wp','valve']:[])];
     const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=wp?heatPumpState(c,L,c.farben,S,ON,NUM):null;
     const valveFraction=wp && c.wp.ventil ? heat.vb : null;
     if (wp && m.layoutValveRotation) return fail();
@@ -4358,30 +4390,48 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     const shapes=Array.from(svg.querySelectorAll('path,rect,circle,line')).filter(el=>!el.closest('defs')),
       paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect'),
       circles=shapes.filter(el=>el.localName==='circle'),lines=shapes.filter(el=>el.localName==='line');
-    const hasDisplay=!!(c.fm.temp || c.fm.durchfluss);
+    const hasDisplay=!!(c.fm.temp || c.fm.durchfluss), baffle=c.typ==='trennblech';
     if (shapes.length!==paths.length+rects.length+circles.length+lines.length ||
-        rects.length!==(hasDisplay?15:14)+(wp?11:0) || circles.length!==(wp?7:0) || lines.length!==(wp?1:0)) return fail();
+        rects.length!==(hasDisplay?15:14)+(wp?11:0)+(baffle?1:0)+(split?4:0) || circles.length!==(wp?7:0) || lines.length!==(wp?1:0)) return fail();
     const cls=el=>el.getAttribute('class')||'',plain=paths.filter(el=>!['w0','w1','w2','w3','wa'].includes(cls(el)));
-    const tank=m.components.tank,fm=m.components.fm,o=tank.origin,b=tank.bounds;
+    const tank=m.components[tankIds[0]],fm=m.components.fm,o=tank.origin,b=tank.bounds;
     const expectedPaths=[`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
       `M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`,
       hasDisplay?'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
         :'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'];
-    if (plain.length!==(wp?(valveFraction===null?9:11):3) || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
+    if (baffle) expectedPaths.push(`M73 ${m.geometry.yt-2}H201M73 ${m.geometry.yt+2}H201`);
+    if (split) {const q=m.components['buffer-tank'],p=q.origin,h=q.bounds.height;
+      expectedPaths.push(`M${p.x} ${p.y+26}Q${p.x+65} ${p.y+46} ${p.x+130} ${p.y+26}`,
+        `M${p.x} ${p.y+h-26}Q${p.x+65} ${p.y+h-6} ${p.x+130} ${p.y+h-26}`);}
+    if (plain.length!==(wp?(valveFraction===null?9:11):3)+(baffle?1:0)+(split?2:0) || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
     const match=(el,x,y,w,h)=>el.getAttribute('x')===String(x) && el.getAttribute('y')===String(y) &&
       el.getAttribute('width')===String(w) && el.getAttribute('height')===String(h);
-    const tankRects=rects.filter(el=>match(el,o.x,o.y,130,360)),fmRects=rects.filter(el=>match(el,fm.origin.x,fm.origin.y,110,90));
-    if (tankRects.length!==3 || fmRects.length!==2 || rects.filter(el=>cls(el)==='wk').length!==(wp?13:6) ||
-        rects.filter(el=>match(el,o.x+14,o.y+30,7,300)).length!==1 ||
-        rects.filter(el=>match(el,93,362,11,22)).length!==1 || rects.filter(el=>match(el,170,362,11,22)).length!==1) return fail();
+    const fmRects=rects.filter(el=>match(el,fm.origin.x,fm.origin.y,110,90)),
+      feetRects=rects.filter(el=>match(el,93,362,11,22)||match(el,170,362,11,22)),feet=m.components['tank-feet'];
+    const footParent=m.components[split?'buffer-tank':'tank'];
+    if (!feet || feet.parent!==footParent?.id || feet.localOrigin?.x!==93-footParent.baseOrigin.x ||
+        feet.localOrigin?.y!==362-footParent.baseOrigin.y ||
+        feet.origin.x-feet.baseOrigin.x!==footParent.origin.x-footParent.baseOrigin.x ||
+        feet.origin.y-feet.baseOrigin.y!==footParent.origin.y-footParent.baseOrigin.y) return fail();
+    if (baffle) {
+      const y=m.geometry.yt,plates=rects.filter(el=>match(el,73,y-2,128,4)),edges=plain.filter(el=>el.getAttribute('d')===expectedPaths[3]);
+      if (!Number.isFinite(y) || plates.length!==1 || plates[0].getAttribute('fill')!=='url(#wwGrid)' ||
+          edges.length!==1 || edges[0].getAttribute('stroke')!=='#fff' || edges[0].getAttribute('stroke-opacity')!=='.6' ||
+          edges[0].getAttribute('stroke-width')!=='.7') return fail();
+    }
+    if (fmRects.length!==2 || rects.filter(el=>cls(el)==='wk').length!==(wp?13:6) ||
+        feetRects.length!==2 || rects.filter(el=>match(el,93,362,11,22)).length!==1 || rects.filter(el=>match(el,170,362,11,22)).length!==1) return fail();
     const displays=rects.filter(el=>match(el,392,62,52,34));
     if (displays.length!==(hasDisplay?1:0) || displays.some(el=>el.getAttribute('rx')!=='5' ||
         el.getAttribute('fill')!=='#0f1114' || el.getAttribute('fill-opacity')!=='.85' ||
         el.getAttribute('stroke')!=='#fff' || el.getAttribute('stroke-opacity')!=='.08')) return fail();
-    if (tankRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
+    for(const id of tankIds) {const q=m.components[id],p=q.origin,h=q.bounds.height,
+      tankRects=rects.filter(el=>match(el,p.x,p.y,130,h));
+    if (!Number.isFinite(h) || h<44 || tankRects.length!==3 || rects.filter(el=>match(el,p.x+14,p.y+30,7,h-60)).length!==1 ||
+        tankRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
         tankRects.filter(el=>el.getAttribute('fill')==='url(#wwCyl)').length!==1 ||
-        tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1 ||
-        fmRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
+        tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1) return fail();}
+    if (fmRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
         fmRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1) return fail();
     let wpDisplays=[],petals=[],fanGroup,valvePath;
     if (wp) {
@@ -4414,6 +4464,7 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
     const matrix=svg.getScreenCTM(),det=matrix && matrix.a*matrix.d-matrix.b*matrix.c;
     if (!matrix || !Number.isFinite(det) || !det) return fail();
     const delta={x:fm.origin.x-fm.baseOrigin.x,y:fm.origin.y-fm.baseOrigin.y},droplet=plain.find(el=>el.getAttribute('d')===expectedPaths[2]);
+    const feetDelta={x:feet.origin.x-feet.baseOrigin.x,y:feet.origin.y-feet.baseOrigin.y};
     const wpDelta=wp?{x:m.components.wp.origin.x-m.components.wp.baseOrigin.x,y:m.components.wp.origin.y-m.components.wp.baseOrigin.y}:null;
     const fixedShapes=[...rects,...plain.filter(el=>!petals.includes(el)),...circles,...lines];
     if (wp) fixedShapes.push(fanGroup.parentElement);
@@ -4424,16 +4475,17 @@ function inspectCompleteSimpleFmPaint(card,candidate,svg) {
         e:(matrix.d*(a.e-matrix.e)-matrix.c*(a.f-matrix.f))/det,
         f:(-matrix.b*(a.e-matrix.e)+matrix.a*(a.f-matrix.f))/det};
       const moved=el===droplet || displays.includes(el),wpMoved=wp && (wpDisplays.includes(el) || (circles.includes(el) && el.getAttribute('r')!=='2.5') || el===fanGroup.parentElement),
-        x=moved?delta.x:wpMoved?wpDelta.x:0,y=moved?delta.y:wpMoved?wpDelta.y:0;
+        x=moved?delta.x:wpMoved?wpDelta.x:feetRects.includes(el)?feetDelta.x:0,
+        y=moved?delta.y:wpMoved?wpDelta.y:feetRects.includes(el)?feetDelta.y:0;
       if (![rel.a-1,rel.b,rel.c,rel.d-1,rel.e-x,rel.f-y].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8)) return fail();
     }
-    const bodies=['tank','tank-feet','fm',...(wp?['wp','valve']:[])].map(id=>{const q=m.components[id];return {id,x:q.origin.x-2,y:q.origin.y-2,width:q.bounds.width+4,height:q.bounds.height+4};});
+    const bodies=[...tankIds,'tank-feet','fm',...(wp?['wp','valve']:[])].map(id=>{const q=m.components[id];return {id,x:q.origin.x+q.bounds.x-2,y:q.origin.y+q.bounds.y-2,width:q.bounds.width+4,height:q.bounds.height+4};});
     for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++) {
-      const a=bodies[i],d=bodies[j];if(a.id==='tank' && d.id==='tank-feet') continue;
+      const a=bodies[i],d=bodies[j];if((a.id==='tank'||a.id==='buffer-tank') && d.id==='tank-feet') continue;
       if (![a.x,a.y,a.width,a.height,d.x,d.y,d.width,d.height].every(Number.isFinite) || a.width<=4 || a.height<=4 || d.width<=4 || d.height<=4 ||
           (a.x<=d.x+d.width && a.x+a.width>=d.x && a.y<=d.y+d.height && a.y+a.height>=d.y)) return fail();
     }
-    return {status:'complete',scope:wp?'fm-air-wp-schicht':'fm-schicht'};
+    return {status:'complete',scope:`fm${wp?'-air-wp':''}-${c.typ}`};
   } catch (_) {return fail();}
 }
 function layoutRelevantHassKey(card,hass) {
@@ -5752,6 +5804,19 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     ui.marker.style.display = 'none';
     const draft = this._layoutDraft?.history[this._layoutDraft.index], proposed = draft?.components?.[ui.select.value];
     const box = ui.hitBoxes?.find(item => item.id === ui.select.value), m = svg.getScreenCTM?.();
+    if (!this._layoutDrag) {
+      for (const handle of ui.handles || []) handle.remove?.();
+      ui.handles = [];
+      if (m && [m.a,m.b,m.c,m.d,m.e,m.f].every(Number.isFinite)) for (const hit of ui.hitBoxes || []) {
+        const corners = [[hit.x,hit.y],[hit.x+hit.width,hit.y],[hit.x,hit.y+hit.height],[hit.x+hit.width,hit.y+hit.height]]
+          .map(([x,y])=>({x:m.a*x+m.c*y+m.e-rect.left,y:m.b*x+m.d*y+m.f-rect.top}));
+        const xs=corners.map(p=>p.x), ys=corners.map(p=>p.y), left=Math.min(...xs), top=Math.min(...ys);
+        if (![...xs,...ys].every(Number.isFinite)) continue;
+        const handle=document.createElement('div'); handle.className='layout-device-hit';
+        Object.assign(handle.style,{left:`${left}px`,top:`${top}px`,width:`${Math.max(...xs)-left}px`,height:`${Math.max(...ys)-top}px`});
+        ui.overlay.appendChild(handle); ui.handles.push(handle);
+      }
+    }
     if (ui.unchecked && !this._layoutDraftNeedsRebind && box && layoutObject(proposed) &&
         Number.isFinite(proposed.x) && Number.isFinite(proposed.y) && m && m.a > 0 && m.d > 0 && m.b === 0 && m.c === 0) {
       Object.assign(ui.marker.style, { display: 'block', left: `${m.a * proposed.x + m.e - rect.left}px`,
@@ -5843,13 +5908,29 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._layoutDrag = { pointerId: event.pointerId, point, start, position: { x: hit.originX, y: hit.originY },
       id: hit.id, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
       viewport: ui.previewRoot.querySelector('[data-layout-viewport]') ? layoutCandidateViewport(svg) : null,
-      frame: null, pending: null, edited: false };
+      inverseSnapshot: [inverse.a,inverse.b,inverse.c,inverse.d,inverse.e,inverse.f], frame: null, pending: null, edited: false };
+    const doc=ui.viewport.ownerDocument || document, view=doc?.defaultView || globalThis.window;
+    const cancel=()=>this._endLayoutDrag(true), second=ev=>{if(ev.pointerType==='touch' && ev.pointerId!==event.pointerId) cancel();};
+    doc?.addEventListener?.('pointerdown',second,true); doc?.addEventListener?.('scroll',cancel,true);
+    view?.addEventListener?.('resize',cancel); view?.visualViewport?.addEventListener?.('resize',cancel);
+    view?.visualViewport?.addEventListener?.('scroll',cancel);
+    this._layoutDrag.cleanup=()=>{doc?.removeEventListener?.('pointerdown',second,true);doc?.removeEventListener?.('scroll',cancel,true);
+      view?.removeEventListener?.('resize',cancel);view?.visualViewport?.removeEventListener?.('resize',cancel);view?.visualViewport?.removeEventListener?.('scroll',cancel);};
     this._refreshLayoutUI(); event.preventDefault();
+  }
+
+  _layoutDragMatrixStable(drag) {
+    try {
+      const inverse=this._layoutPanel?.previewRoot.querySelector('svg')?.getScreenCTM()?.inverse();
+      return !!inverse && [inverse.a,inverse.b,inverse.c,inverse.d,inverse.e,inverse.f]
+        .every((n,i)=>Number.isFinite(n) && Math.abs(n-drag.inverseSnapshot[i])<1e-8);
+    } catch (_) { return false; }
   }
 
   _moveLayoutDrag(event) {
     const drag = this._layoutDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
     drag.pending = { x: event.clientX, y: event.clientY };
     if (drag.frame === null) drag.frame = requestAnimationFrame(() => {
       if (this._layoutDrag !== drag) return;
@@ -5860,6 +5941,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _paintLayoutDrag(drag) {
     if (this._layoutDrag !== drag || !drag.pending || this._layoutPanel?.select.value !== drag.id) return;
+    if (drag.inverseSnapshot && !this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
     const point = drag.point(drag.pending.x, drag.pending.y); drag.pending = null;
     // Match the editor's one-unit controls. Whole SVG units also avoid
     // introducing unproven fractional transform quantization during drag.
@@ -5872,6 +5954,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _finishLayoutDrag(event) {
     const drag = this._layoutDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
     drag.pending = { x: event.clientX, y: event.clientY };
     if (drag.frame !== null) { cancelAnimationFrame(drag.frame); drag.frame = null; }
     this._paintLayoutDrag(drag); this._endLayoutDrag(false); event.preventDefault();
@@ -5881,6 +5964,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const drag = this._layoutDrag;
     if (!drag) return;
     this._layoutDrag = null;
+    drag.cleanup?.();
     if (drag.frame !== null) cancelAnimationFrame(drag.frame);
     if (restore && this._layoutDraft) { this._layoutDraft.history = drag.history; this._layoutDraft.index = drag.index; }
     try { this._layoutPanel?.overlay.releasePointerCapture(drag.pointerId); } catch (_) {}
@@ -6020,7 +6104,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button.rm{border:none;background:none;color:var(--error-color,#db4437);padding:2px 6px}
       button.add{color:var(--primary-color)}
       .layout-editor{margin-top:20px;border:1px solid var(--divider-color,#ddd);padding:12px;border-radius:10px}
-      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;touch-action:none;cursor:grab}.layout-drag-overlay:active{cursor:grabbing}.layout-draft-marker{position:absolute;display:none;pointer-events:none;border:2px dashed var(--error-color,#c22);box-sizing:border-box;color:var(--error-color,#c22);font-size:12px;font-weight:bold}
+      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;pointer-events:none}.layout-device-hit{position:absolute;pointer-events:auto;touch-action:none;cursor:grab}.layout-device-hit:active{cursor:grabbing}.layout-draft-marker{position:absolute;display:none;pointer-events:none;border:2px dashed var(--error-color,#c22);box-sizing:border-box;color:var(--error-color,#c22);font-size:12px;font-weight:bold}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
     this._layoutNoticeContainer = w; this._layoutNotice = null; this._removeLayoutButton = null;
