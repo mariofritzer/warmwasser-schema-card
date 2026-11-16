@@ -28,6 +28,14 @@
     <button id="viewport-real">Card + editor viewport check</button>
     <button id="simple-commit">FM-only apply + card commit</button>
     <button id="simple-stale">FM-only stale + rollback</button>
+    <button id="sensors-commit">Sensors + WP Apply/reload</button>
+    <button id="sensors-fm">Sensors + FM Apply/reload</button>
+    <button id="sensors-heater">Sensors + heater + WP</button>
+    <button id="sensors-split-heater">Separated sensors + heater + WP</button>
+    <button id="sensors-baffle">Baffle sensors + WP</button>
+    <button id="sensors-split">Separated sensors + WP</button>
+    <button id="sensors-split-moved">Separated sensors + moved buffer</button>
+    <button id="sensors-split-hot">Separated sensors + moved hot tank</button>
     <button id="wp-source-commit">FM + WP source temperatures Apply/reload</button>
     <button id="split-heater-wp-lower">Separated lower heater + WP</button>
     <button id="split-heater-wp-both">Separated both heaters + WP</button>
@@ -424,8 +432,8 @@
           ui.inputs.x.value='-110';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
           ui.inputs.y.value='14';ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));
           for(const name of ['tankSelect','fmSelect']) {ui.portControls[name].value='auto';ui.portControls[name].dispatchEvent(new Event('change',{bubbles:true}));}
-          if(moveBuffer) {
-            ui.select.value='buffer';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          if(moveTank) {
+            ui.select.value=moveTank;ui.select.dispatchEvent(new Event('change',{bubbles:true}));
             ui.inputs.x.value='77';ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
           }
           for(let i=0;i<90&&ui.apply.disabled;i++)await frame();
@@ -652,6 +660,56 @@
         } catch(error) {result.textContent=`FAIL FM + air WP: ${error.message}`;}
         finally {host?.remove();}
       }
+      async function verifySensors(type='schicht',withWp=true,moveTank=null,withHeater=false) {
+        let host;
+        try {
+          hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.top':{state:'55'},'sensor.bottom':{state:'35'},'sensor.heater':{state:'2'}}};
+          install({type:'custom:warmwasser-schema-card',sprache:'en',speicher:{typ:type},fm:{pumpe:'sensor.fm'},...(withWp?{wp:{betrieb:'sensor.wp'}}:{}),...(withHeater?{heizstab_oben:{stufe:'sensor.heater'}}:{}),fuehler:[{name:'Top',entity:'sensor.top',hoehe:10},{name:'Bottom',entity:'sensor.bottom',hoehe:90}]});
+          const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+          ui.select.value='fm';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          const x=Number(ui.inputs.x.value),offset=type==='getrennt'&&withWp?60:30;
+          ui.inputs.x.value=String(x+offset);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          if(moveTank) {
+            ui.select.value=moveTank;ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+            ui.inputs.x.value=String(Number(ui.inputs.x.value)-20);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          }
+          const ready=async()=>{for(let i=0;i<120 && ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
+          await ready();hass={...hass,states:{...hass.states,'sensor.top':{state:'56'}}};editor.hass=hass;
+          if(!ui.apply.disabled)throw Error('sensor update did not invalidate receipt');await ready();
+          if(!ui.previewRoot.querySelector('svg')?.textContent.includes('56.0°'))throw Error('live value missing');
+          if(withHeater) {
+            hass={...hass,states:{...hass.states,'sensor.heater':{state:'0'}}};editor.hass=hass;
+            if(!ui.apply.disabled)throw Error('heater update did not invalidate receipt');await ready();
+            hass={...hass,states:{...hass.states,'sensor.heater':{state:'2'}}};editor.hass=hass;await ready();
+          }
+          editor.hass={...hass,states:{...hass.states,'sensor.top':{state:'10000000000000000000'}}};
+          for(let i=0;i<120;i++)await frame();if(!ui.apply.disabled)throw Error('oversized value accepted');editor.hass=hass;await ready();
+          ui.apply.click();if(config.layout?.components?.fm?.x!==x+offset)throw Error('configuration not emitted');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
+          let card=mount();const committed=async()=>{for(let i=0;i<120 && card._layoutStatus?.status!=='rendered-candidate';i++)await frame();if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card not committed: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
+          await committed();card=mount();await committed();if(!card.shadowRoot.querySelector('svg')?.textContent.includes('56.0°'))throw Error('reloaded value missing');
+          if(moveTank) {
+            const svg=card.shadowRoot.querySelector('[data-layout-viewport] svg'),inverse=svg.getScreenCTM().inverse();
+            for(const [name,expected] of [['Top',moveTank==='tank'?-20:0],['Bottom',moveTank==='buffer'?-20:0]]) {
+              const text=[...svg.querySelectorAll('text')].find(el=>el.textContent===name),matrix=text && inverse.multiply(text.getScreenCTM());
+              if(!matrix || Math.abs(matrix.e-expected)>1e-6 || Math.abs(matrix.f)>1e-6)throw Error(`${name} translation wrong: ${matrix?.e}, ${matrix?.f}`);
+            }
+            if(config.layout?.components?.[moveTank]?.x!==52)throw Error('tank movement not saved');
+          }
+          card.hass={...hass,states:{...hass.states,'sensor.top':{state:'10000000000000000000'}}};
+          if(card._layoutCandidate || card._layoutStatus?.status==='rendered-candidate')throw Error('oversized sensor value remained committed');
+          result.textContent=`PASS ${type} sensors ${withWp?'+ WP':'+ FM'}${withHeater?' + heater':''} editor Apply, live state, overflow rejection and card reload`;
+        } catch(error){result.textContent=`FAIL sensors: ${error.message}`;}finally{host?.remove();}
+      }
+      document.getElementById('sensors-commit').addEventListener('click',()=>verifySensors());
+      document.getElementById('sensors-fm').addEventListener('click',()=>verifySensors('schicht',false));
+      document.getElementById('sensors-heater').addEventListener('click',()=>verifySensors('schicht',true,null,true));
+      document.getElementById('sensors-split-heater').addEventListener('click',()=>verifySensors('getrennt',true,null,true));
+      document.getElementById('sensors-baffle').addEventListener('click',()=>verifySensors('trennblech'));
+      document.getElementById('sensors-split').addEventListener('click',()=>verifySensors('getrennt'));
+      document.getElementById('sensors-split-moved').addEventListener('click',()=>verifySensors('getrennt',true,'buffer'));
+      document.getElementById('sensors-split-hot').addEventListener('click',()=>verifySensors('getrennt',true,'tank'));
       document.getElementById('wp-source-commit').addEventListener('click',()=>verifyWpCommit('schicht',false,true));
       document.getElementById('wp-sg-commit').addEventListener('click',()=>verifyWpCommit('schicht',true));
       document.getElementById('wp-commit').addEventListener('click',()=>verifyWpCommit());

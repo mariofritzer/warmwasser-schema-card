@@ -420,7 +420,7 @@ test('config echo and entity reorder preserve but unbind the draft until explici
   editor.setConfig({ ...editor._config, fuehler: [...editor._config.fuehler].reverse() });
   assert.deepEqual(plain(editor._layoutDraftState().layout), before);
   assert.equal(editor._applyLayoutDraft().status, 'unbound'); assert.equal(events.length, 1);
-  assert.equal(editor._rebindLayoutDraft().status, 'unsupported');
+  assert.equal(editor._rebindLayoutDraft().status, 'rendered-candidate');
   editor.setConfig({ ...editor._config, fuehler: [] });
   assert.equal(editor._applyLayoutDraft().status, 'unbound');
   assert.equal(editor._rebindLayoutDraft().status, 'rendered-candidate');

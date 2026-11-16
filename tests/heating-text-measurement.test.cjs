@@ -462,3 +462,15 @@ test('staging permits plain ellipses but rejects active attributes and external 
   ellipse.attributes.push({name:'onload',value:'alert(1)'});assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');ellipse.attributes.pop();
   ellipse.attributes.push({name:'fill',value:'url(https://example.test/x)'});assert.equal(namespace(svg,root).reason,'text-stage-unresolved-reference');
 });
+test('sensor theme fill accepts only a directly resolved color before staging',()=>{
+  const value='var(--secondary-background-color,#2a2d33)';
+  const child={localName:'rect',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[{name:'style',value:`fill:${value}`}],
+    style:{0:'fill',length:1,getPropertyValue:()=>value,getPropertyPriority:()=>''},setAttribute(){}};
+  const svg={localName:'svg',namespaceURI:'http://www.w3.org/2000/svg',id:'',attributes:[],querySelectorAll:()=>[child]};
+  let resolved='#242424';
+  const root={querySelectorAll:()=>[],host:{ownerDocument:{defaultView:{getComputedStyle:()=>({getPropertyValue:()=>resolved})}}}};
+  assert.equal(namespace(svg,root).status,'prepared');
+  for(const unsafe of ['url(https://example.test/x)','var(--other)','red; background:url(https://example.test/x)']) {
+    resolved=unsafe;assert.equal(namespace(svg,root).reason,'text-stage-invalid-candidate');
+  }
+});
