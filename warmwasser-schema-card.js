@@ -6307,10 +6307,14 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const point = drag.point(drag.pending.x, drag.pending.y); drag.pending = null;
     // Match the editor's one-unit controls. Whole SVG units also avoid
     // introducing unproven fractional transform quantization during drag.
-    const x = Math.round(drag.position.x + point.x - drag.start.x);
-    const y = Math.round(drag.position.y + point.y - drag.start.y);
-    if (Number.isFinite(x) && Number.isFinite(y) && (x !== drag.position.x || y !== drag.position.y || drag.edited))
-      this._setLayoutUIPosition({ x, y }, true);
+    const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
+    const x = dx === 0 ? drag.position.x : Math.round(drag.position.x + dx);
+    const y = dy === 0 ? drag.position.y : Math.round(drag.position.y + dy);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      drag.finalPosition = { x, y };
+      if (x !== drag.position.x || y !== drag.position.y || drag.edited)
+        this._setLayoutUIPosition({ x, y }, true);
+    }
   }
 
   _finishLayoutDrag(event) {
@@ -6319,7 +6323,11 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (!this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
     drag.pending = { x: event.clientX, y: event.clientY };
     if (drag.frame !== null) { cancelAnimationFrame(drag.frame); drag.frame = null; }
-    this._paintLayoutDrag(drag); this._endLayoutDrag(false); event.preventDefault();
+    this._paintLayoutDrag(drag);
+    // Returning to the original position is a no-op, including for a draft
+    // that had no explicit position. Preserve its existing redo branch.
+    const unchanged = drag.finalPosition && drag.finalPosition.x === drag.position.x && drag.finalPosition.y === drag.position.y;
+    this._endLayoutDrag(unchanged); event.preventDefault();
   }
 
   _endLayoutDrag(restore) {

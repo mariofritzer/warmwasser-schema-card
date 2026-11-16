@@ -312,6 +312,53 @@ test('pointer drag uses inverse screen matrix, coalesces moves and cancels stale
   stale(); assert.equal(editor._layoutDraft.history.length, 2); assert.equal(editor._layoutDraft.index, 0);
 });
 
+test('mouse drag back to its start preserves the redo branch', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel;
+  const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
+    getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+  ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null;
+  ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
+  const box = ui.hitBoxes.find(item => item.id === 'fm');
+  const event = { pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0, clientX: box.x + 10, clientY: box.y + 10 };
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointerup', { ...event, clientX: event.clientX + 20 });
+  ui.undo.emit('click');
+  const history = plain(editor._layoutDraft.history);
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointermove', { ...event, clientX: event.clientX + 10 });
+  const frame = [...frames.values()][0]; frames.clear(); frame();
+  ui.overlay.emit('pointerup', event);
+  assert.deepEqual(plain(editor._layoutDraft.history), history);
+  assert.equal(editor._layoutDraft.index, 0);
+  ui.redo.emit('click'); assert.equal(editor._layoutDraft.index, 1);
+});
+
+test('mouse click and one-axis drag preserve untouched fractional coordinates', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui = editor._layoutPanel;
+  const svg = { getScreenCTM: () => ({ inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) }),
+    getAttribute: () => '0 0 800 600', setAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+  ui.previewRoot.querySelector = selector => selector === 'svg' ? svg : null;
+  ui.viewport.scrollLeft = ui.viewport.scrollTop = 0;
+  ui.overlay.setPointerCapture = () => {}; ui.overlay.releasePointerCapture = () => {};
+  const box = ui.hitBoxes.find(item => item.id === 'fm');
+  const x = box.originX + 0.25, y = box.originY + 0.5;
+  editor._editLayoutDraft({ version: 2, components: { fm: { x, y } } }, false);
+  ui.hitBoxes = [{ ...box, originX: x, originY: y }];
+  const event = { pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0, clientX: box.x + 10, clientY: box.y + 10 };
+  const history = plain(editor._layoutDraft.history);
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointerup', event);
+  assert.deepEqual(plain(editor._layoutDraft.history), history);
+  ui.hitBoxes = [{ ...box, originX: x, originY: y }];
+  ui.overlay.emit('pointerdown', event); ui.overlay.emit('pointerup', { ...event, clientX: event.clientX + 10 });
+  assert.equal(Number(ui.inputs.x.value), Math.round(x + 10));
+  assert.equal(Number(ui.inputs.y.value), y);
+});
+
 test('rebuild and disconnect cancel a drag and reject old animation frames', () => {
   const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
   editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
