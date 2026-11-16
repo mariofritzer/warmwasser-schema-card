@@ -17,6 +17,13 @@
   <h1>Local layout editor harness</h1>
   <p>Test instance only. The normal editor and card gates remain closed. Mock entities are local to this page.</p>
   <div class="actions">
+    <button id="circulation-test">Circulation editor + card</button>
+    <button id="circulation-baffle">Circulation baffle</button>
+    <button id="circulation-split">Circulation separated</button>
+    <button id="circulation-sensors">Circulation + sensors</button>
+    <button id="circulation-wp">Circulation + moved WP</button>
+    <button id="circulation-wp-sensors">Circulation + WP + sensors</button>
+    <button id="circulation-de">Zirkulation Deutsch</button>
     <button id="reset">Reset fixture</button>
     <button id="separated">Load separated tank fixture</button>
     <button id="temperature">Toggle FM label overflow</button>
@@ -710,6 +717,41 @@
       document.getElementById('sensors-split').addEventListener('click',()=>verifySensors('getrennt'));
       document.getElementById('sensors-split-moved').addEventListener('click',()=>verifySensors('getrennt',true,'buffer'));
       document.getElementById('sensors-split-hot').addEventListener('click',()=>verifySensors('getrennt',true,'tank'));
+      async function verifyCirculation(type='schicht',withSensors=false,withWp=false,language='en') {
+        let host;
+        try {
+          const calls=[];hass={language,states:{'sensor.fm':{state:'on'},'switch.zirk':{state:'off'},'sensor.top':{state:'55'},'sensor.bottom':{state:'35'},'sensor.wp':{state:'on'}},callService:(...args)=>calls.push(args)};
+          install({type:'custom:warmwasser-schema-card',sprache:language,speicher:{typ:type},fm:{pumpe:'sensor.fm'},zirkulationspumpe:'switch.zirk',...(withWp?{wp:{betrieb:'sensor.wp'}}:{}),...(withSensors?{fuehler:[{name:'Top',entity:'sensor.top',hoehe:10},{name:'Bottom',entity:'sensor.bottom',hoehe:90}]}:{})});
+          const ui=editor._layoutPanel,frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));ui.select.value='fm';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+          const x=Number(ui.inputs.x.value);ui.inputs.x.value=String(x+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));
+          ui.undo.click();if(Number(ui.inputs.x.value)!==x)throw Error('undo failed');ui.redo.click();if(Number(ui.inputs.x.value)!==x+30)throw Error('redo failed');
+          if(withWp) {ui.select.value='wp';ui.select.dispatchEvent(new Event('change',{bubbles:true}));
+            if(!withSensors) {ui.inputs.x.value=String(Number(ui.inputs.x.value)+30);ui.inputs.x.dispatchEvent(new Event('change',{bubbles:true}));}
+            ui.inputs.y.value=String(Number(ui.inputs.y.value)+15);ui.inputs.y.dispatchEvent(new Event('change',{bubbles:true}));}
+          const ready=async()=>{for(let i=0;i<150 && ui.apply.disabled;i++)await frame();if(ui.apply.disabled)throw Error(`editor not ready: ${ui.status.textContent}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
+          await ready();hass={...hass,states:{...hass.states,'switch.zirk':{state:'on'}}};editor.hass=hass;
+          if(!ui.apply.disabled)throw Error('pump state did not invalidate receipt');await ready();
+          if(withSensors) {hass={...hass,states:{...hass.states,'sensor.top':{state:'56'}}};editor.hass=hass;
+            if(!ui.apply.disabled)throw Error('sensor update did not invalidate receipt');await ready();
+            if(!ui.previewRoot.querySelector('svg')?.textContent.includes('56.0°'))throw Error('sensor value missing');}
+          ui.apply.click();if(config.layout?.components?.fm?.x!==x+30)throw Error('layout not emitted');
+          host=document.createElement('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:420px';document.body.append(host);
+          const mount=()=>{const card=document.createElement('warmwasser-schema-card');card._layoutFeatureEnabled=()=>true;host.replaceChildren(card);card.setConfig(copy(config));card.hass=hass;return card;};
+          let card=mount();const committed=async()=>{for(let i=0;i<150 && card._layoutStatus?.status!=='rendered-candidate';i++)await frame();if(card._layoutStatus?.status!=='rendered-candidate')throw Error(`card: ${JSON.stringify(card._layoutStatus)}; inventory ${JSON.stringify(lastInventory)}; symbol ${JSON.stringify(lastSymbol)}; complete ${JSON.stringify(lastComplete)}; stage ${JSON.stringify(lastStage)}`);};
+          await committed();card=mount();await committed();if(card._model.components.fm.origin.x!==x+30)throw Error('layout not restored');
+          if(withWp && (card._model.components.wp.origin.x!==(withSensors?330:360) || card._model.components.wp.origin.y!==165))throw Error('WP layout not restored');
+          const button=card.shadowRoot.querySelector('svg [data-act="zirk"]');if(!button)throw Error('circulation control missing');button.dispatchEvent(new MouseEvent('click',{bubbles:true,composed:true}));
+          if(calls.length!==1 || calls[0][0]!=='homeassistant' || calls[0][1]!=='toggle' || calls[0][2]?.entity_id!=='switch.zirk')throw Error(`control action failed ${JSON.stringify(calls)}`);
+          result.textContent=`PASS ${type} circulation${withSensors?' + sensors':''} undo/redo, Apply, live pump, card reload and toggle`;
+        }catch(error){result.textContent=`FAIL circulation: ${error.message}`;}finally{host?.remove();}
+      }
+      document.getElementById('circulation-test').addEventListener('click',()=>verifyCirculation());
+      document.getElementById('circulation-baffle').addEventListener('click',()=>verifyCirculation('trennblech'));
+      document.getElementById('circulation-split').addEventListener('click',()=>verifyCirculation('getrennt'));
+      document.getElementById('circulation-sensors').addEventListener('click',()=>verifyCirculation('schicht',true));
+      document.getElementById('circulation-wp').addEventListener('click',()=>verifyCirculation('schicht',false,true));
+      document.getElementById('circulation-wp-sensors').addEventListener('click',()=>verifyCirculation('schicht',true,true));
+      document.getElementById('circulation-de').addEventListener('click',()=>verifyCirculation('schicht',true,true,'de'));
       document.getElementById('wp-source-commit').addEventListener('click',()=>verifyWpCommit('schicht',false,true));
       document.getElementById('wp-sg-commit').addEventListener('click',()=>verifyWpCommit('schicht',true));
       document.getElementById('wp-commit').addEventListener('click',()=>verifyWpCommit());
