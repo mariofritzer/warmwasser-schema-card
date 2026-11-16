@@ -638,7 +638,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
-    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
+    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
 
 }
 
@@ -4130,6 +4130,7 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
       add('wp',390,wp.leistung?320:309,'wc',display.wpStatus[0],{x:343,y:wp.leistung?308:283,width:94,height:wp.leistung?17:43});
       if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
       add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
+      if (wp.sg_ready) add('wp',424,356,'we wt wx',`SG ${S(wp.sg_ready)}`,{x:336,y:343,width:91,height:20});
       const valve=m.components.valve;
       const rotation=m.layoutValveRotation || 0;
       if (!valve || ![0,90,180,270].includes(rotation) || (rotation && c.typ!=='getrennt')) return fail('text-inventory-unproven');

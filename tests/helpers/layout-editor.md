@@ -13,3 +13,5 @@ For a physical touchscreen check, use **Touch diagnostics 320 px** and **Touch d
 If the configuration changes while a draft is pending, Apply is blocked until you explicitly continue with that draft on the current card or discard it. An invalid position is shown as a dashed “Unchecked” marker over the canonical diagram; it is not a validated route.
 
 The **Load separated tank fixture** button loads a guarded FM/WP example with the tank connector pair on the left and the FM pair on the right. The port controls apply to each pair together. Try Standard, Auto, Left, and Right; only configurations whose full pipe batch passes validation can be applied.
+
+The **FM + WP SG Ready Apply/reload** check exercises an air heat pump with a live SG Ready entity. It changes the state, checks overflow rejection and recovery, applies the editor draft, reloads the card, and checks canonical fallback for an oversized value. The normal public gates remain closed.

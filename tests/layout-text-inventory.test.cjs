@@ -334,3 +334,26 @@ test('rotated valve text stays upright inside the rotated motor and rejects tamp
     motor.box.width=100;assert.equal(inspect(c,candidate,changed).reason,'text-slot-overflow');
   }
 });
+
+test('air WP SG Ready state is model-bound, measured and kept clear of text and symbols',()=>{
+  for(const type of ['schicht','trennblech','getrennt']) {
+    const raw={speicher:{typ:type},fm:{pumpe:'sensor.fm'},wp:{betrieb:'sensor.wp',ventil:'sensor.valve',sg_ready:'sensor.sg'}};
+    const c=new (registry.get('warmwasser-schema-card'))();c.setConfig(raw);
+    c._hass={language:'en',states:{'sensor.fm':{state:'on'},'sensor.wp':{state:'on'},'sensor.valve':{state:'on'},'sensor.sg':{state:'2'}}};
+    const layout=type==='getrennt'?{version:2,components:{fm:{x:-110,y:14}},ports:{'tank.fm-supply':{mode:'auto'},'fm.supply':{mode:'auto'}}}:{version:2,components:{fm:{x:370,y:29}}};
+    const candidate=resolve(raw,c._cfg,layout);assert.equal(candidate.status,'candidate',`${type}: ${JSON.stringify(candidate.errors)}`);
+    const html=renderGeometry(c,candidate),records=[];
+    for(const match of html.matchAll(/<text\s+([^>]*)>([^<]*)<\/text>/g)) {
+      const attrs=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(m=>[m[1],m[2]]));
+      const x=Number(attrs.x),y=Number(attrs.y),fm=x===352||x===418,dx=fm?(type==='getrennt'?-450:30):0,dy=fm?(type==='getrennt'?0:15):0;
+      records.push({text:match[2],x:attrs.x,y:attrs.y,className:attrs.class??null,matrix:{a:1,b:0,c:0,d:1,e:dx,f:dy},box:{x:x+dx-(x===424?3:1),y:y+dy-5,width:2,height:4}});
+    }
+    const result=inspect(c,candidate,records);assert.equal(result.reason,'text-inventory-staged-only',`${type}: ${JSON.stringify(result)}`);
+    assert.equal(symbols(c,candidate,records,html).reason,'layout-symbol-paint-bound-only');
+    const mutated=records.map(r=>({...r,box:{...r.box},matrix:{...r.matrix}})),sg=mutated.find(r=>r.text==='SG 2');
+    sg.text='SG 1';assert.equal(inspect(c,candidate,mutated).reason,'text-inventory-unproven');sg.text='SG 2';
+    sg.box.width=200;assert.equal(inspect(c,candidate,mutated).reason,'text-slot-overflow');sg.box={...records.find(r=>r.text==='SG 2').box};
+    sg.box={x:433,y:348,width:3,height:4};assert.equal(symbols(c,candidate,mutated,html).reason,'text-obstacle-contact');
+    c._hass.states['sensor.sg'].state='3';assert.equal(inspect(c,candidate,records).reason,'text-inventory-unproven');
+  }
+});
