@@ -2163,13 +2163,20 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
                 !unchanged(svg,targetSnapshot)) return result;
             if (commit) {
               let rollbackAvailable=true,consumedReceipt=false,targetMutated=false;
+              const scrollAtCommit={x:doc.defaultView.scrollX??0,y:doc.defaultView.scrollY??0};
+              const targetScreenValid=node=>{
+                const x=doc.defaultView.scrollX??0,y=doc.defaultView.scrollY??0;
+                if (![x,y,scrollAtCommit.x,scrollAtCommit.y].every(Number.isFinite)) return false;
+                return sameScreen({...referenceInitial,e:referenceInitial.e-(x-scrollAtCommit.x),
+                  f:referenceInitial.f-(y-scrollAtCommit.y)},screen(node),allMatrix);
+              };
               const targetObserver=new doc.defaultView.MutationObserver(()=>{targetMutated=true;invalidateTarget();});
               targetObserver.observe(svg,{attributes:true,childList:true,characterData:true,subtree:true});
               const targetClean=()=>{if(targetObserver.takeRecords().length)targetMutated=true;return !targetMutated;};
               const targetCurrent=()=>{
                 try {
                   if (!targetClean() || !isOwner(generation) || !isCurrent(generation) || !svg.isConnected || svg.parentNode!==parent ||
-                      !unchanged(svg,targetSnapshot) || !sameScreen(referenceInitial,screen(svg),allMatrix)) return false;
+                      !unchanged(svg,targetSnapshot) || !targetScreenValid(svg)) return false;
                   const live=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
                   if (!live.entries || live.fontEpoch!==afterVerify.fontEpoch || !same(afterVerify.entries,live.entries) ||
                       inspectStagedLayoutSymbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
@@ -2178,7 +2185,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
                       inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
                       verify(svg,records(live.entries))!==true || !isCurrent(generation) || !isOwner(generation) ||
                       !targetClean() || !unchanged(svg,targetSnapshot) ||
-                      !sameScreen(referenceInitial,screen(svg),allMatrix) ||
+                      !targetScreenValid(svg) ||
                       inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
                       !isCurrent(generation) || !isOwner(generation) || !targetClean() || !unchanged(svg,targetSnapshot)) return false;
                   return true;
@@ -2197,7 +2204,7 @@ async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,g
                   const ids=[restore,...restore.querySelectorAll('[id]')].map(el=>el.id).filter(Boolean);
                   if (Array.from(root.querySelectorAll('[id]')).some(el=>ids.includes(el.id)) || !isOwner(generation)) return false;
                   parent.insertBefore(restore,next?.parentNode===parent?next:null);
-                  return restore.isConnected && restore.outerHTML===referenceSnapshot.markup && sameScreen(referenceInitial,screen(restore),allMatrix);
+                  return restore.isConnected && restore.outerHTML===referenceSnapshot.markup && targetScreenValid(restore);
                 } catch (_) {return false;}
               };
               const consume=()=>{
@@ -4134,7 +4141,7 @@ function inspectMeasuredLayoutTexts(card,candidate,records) {
       const q=measured && {x:measured.x-1,y:measured.y-1,width:measured.width+2,height:measured.height+2};
       if (!q || !t || ![q.x,q.y,q.width,q.height,t.a,t.b,t.c,t.d,t.e,t.f].every(Number.isFinite) || q.width<0 || q.height<0 ||
           Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 || Math.abs(t.d-1)>1e-8 ||
-          Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven');
+          Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven',{owner:item.owner,x:item.x,y:item.y,matrix:t,expected:{x:dx,y:dy},box:q});
       if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
         return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
       boxes.push({owner:item.owner,anchor:{x:item.x,y:item.y},...q});
@@ -5854,8 +5861,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _paintLayoutDrag(drag) {
     if (this._layoutDrag !== drag || !drag.pending || this._layoutPanel?.select.value !== drag.id) return;
     const point = drag.point(drag.pending.x, drag.pending.y); drag.pending = null;
-    const x = Math.round((drag.position.x + point.x - drag.start.x) * 10) / 10;
-    const y = Math.round((drag.position.y + point.y - drag.start.y) * 10) / 10;
+    // Match the editor's one-unit controls. Whole SVG units also avoid
+    // introducing unproven fractional transform quantization during drag.
+    const x = Math.round(drag.position.x + point.x - drag.start.x);
+    const y = Math.round(drag.position.y + point.y - drag.start.y);
     if (Number.isFinite(x) && Number.isFinite(y) && (x !== drag.position.x || y !== drag.position.y || drag.edited))
       this._setLayoutUIPosition({ x, y }, true);
   }
@@ -5875,6 +5884,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (drag.frame !== null) cancelAnimationFrame(drag.frame);
     if (restore && this._layoutDraft) { this._layoutDraft.history = drag.history; this._layoutDraft.index = drag.index; }
     try { this._layoutPanel?.overlay.releasePointerCapture(drag.pointerId); } catch (_) {}
+    // A measurement started while painting the drag is tied to a temporary
+    // preview. Discard it before refresh so the settled draft starts a fresh
+    // measurement against the final connected viewport.
+    cancelLayoutTextMeasurement(this);
     if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
 

@@ -445,6 +445,31 @@ test('invalid layout keeps a marked draft while canonical preview remains visibl
   assert.ok(ui.previewRoot._html.includes('<svg')); assert.match(ui.status.textContent, /overlap/);
 });
 
+test('drag rounds negative coordinates to the same whole units shown by the marker', () => {
+  const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
+  editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };
+  editor.setConfig({ speicher: { typ: 'schicht' }, fm: { pumpe: 'sensor.fm' } });
+  const ui=editor._layoutPanel,svg={getScreenCTM:()=>({a:1,b:0,c:0,d:1,e:0,f:0}),
+    getBoundingClientRect:()=>({left:0,top:0,width:800,height:600})};
+  ui.previewRoot.querySelector=selector=>selector==='svg'?svg:null;ui.viewport.scrollLeft=ui.viewport.scrollTop=0;
+  const drag={id:'fm',position:{x:340,y:14},start:{x:0,y:0},pending:{x:-412.4,y:-26.6},point:(x,y)=>({x,y}),edited:false};
+  editor._layoutDrag=drag;editor._paintLayoutDrag(drag);
+  assert.equal(Number(ui.inputs.x.value),-72);assert.equal(Number(ui.inputs.y.value),-13);
+  assert.equal(ui.marker.style.display,'block');assert.equal(ui.marker.style.left,'-72px');assert.equal(ui.marker.style.top,'-13px');
+});
+
+test('ending a drag discards the temporary measurement before refreshing the settled draft', () => {
+  const editor=new Editor();editor._visualLayoutEditorEnabled=()=>true;
+  editor.hass={language:'en',states:{'sensor.fm':{state:'on'}}};
+  editor.setConfig({speicher:{typ:'schicht'},fm:{pumpe:'sensor.fm'}});
+  let aborted=false,cleaned=false,refreshed=false;
+  editor._layoutPanel.overlay.releasePointerCapture=()=>{};
+  editor._layoutDrag={pointerId:4,frame:null};
+  testContext.setLayoutMeasurementJob(editor,{pending:true,controller:{abort(){aborted=true;}},cleanup(){cleaned=true;},parent:editor._layoutPanel.previewRoot});
+  editor._refreshLayoutUI=()=>{assert.ok(aborted && cleaned,'temporary job must be cancelled before refresh');refreshed=true;};
+  editor._endLayoutDrag(false);assert.ok(refreshed);
+});
+
 test('rejected drag viewport keeps canonical viewBox and reports unsupported', () => {
   const editor = new Editor(); editor._visualLayoutEditorEnabled = () => true;
   editor.hass = { language: 'en', states: { 'sensor.fm': { state: 'on' } } };

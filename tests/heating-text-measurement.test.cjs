@@ -254,7 +254,7 @@ test('candidate and reference mutations during font wait cannot become a new bas
 });
 test('target probe uses the measured node once and rolls back on success or failure',async()=>{
   const originalTargetCheck=context.api.setTargetCheck(()=>({reason:'layout-target-references-bound-only'}));
-  try {for(const outcome of ['accept','reject','throw','stale','mutate','reparent','reference-mutated','new-owner','clone-replaces-owner','rearm-mutation','commit','commit-reject','commit-stale','commit-cleanup-owner','commit-cleanup-mutate','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent']) {
+  try {for(const outcome of ['accept','reject','throw','stale','mutate','reparent','reference-mutated','new-owner','clone-replaces-owner','rearm-mutation','commit','commit-scroll','commit-scroll-corrupt','commit-reject','commit-stale','commit-cleanup-owner','commit-cleanup-mutate','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent']) {
     const f=stagingFixture();f.ready();f.style.height='150px';f.svg.style={};f.svg.outerHTML='<svg/>';
     if(outcome==='rearm-mutation')f.svg.removeAttribute=()=>{f.svg.outerHTML='<svg><path d="M0 0H999"/></svg>';};
     const observers=[];
@@ -298,7 +298,7 @@ test('target probe uses the measured node once and rolls back on success or fail
       }
       return outcome!=='reject';
     });
-    const probeAccepted=['accept','commit','commit-reject','commit-stale','commit-cleanup-owner','commit-cleanup-mutate','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent'].includes(outcome);
+    const probeAccepted=['accept','commit','commit-scroll','commit-scroll-corrupt','commit-reject','commit-stale','commit-cleanup-owner','commit-cleanup-mutate','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent'].includes(outcome);
     assert.equal(result.status,probeAccepted?'validated-target-probe':'unsupported');
     assert.equal(calls,outcome==='clone-replaces-owner'?0:1);
     if(outcome==='clone-replaces-owner') {assert.equal(referenceRemovals,0);staged.held.release();}
@@ -311,7 +311,7 @@ test('target probe uses the measured node once and rolls back on success or fail
       }
       let armed=false;
       const consumed=staged.held.consume((node)=>{assert.equal(node,f.svg);if(armed){armed=false;observers.at(-1).records.push({type:'attributes'});}return outcome!=='commit-reject';});
-      const committed=['commit','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent'].includes(outcome);
+      const committed=['commit','commit-scroll','commit-scroll-corrupt','commit-receipt-font','commit-receipt-dom','commit-receipt-transient','commit-receipt-transient-late','commit-receipt-reparent'].includes(outcome);
       assert.equal(consumed.status,committed?'committed-target':'unsupported');
       if(committed) {
         assert.equal(f.svg.parentNode,f.parent);assert.equal(reference.isConnected,false);
@@ -324,8 +324,16 @@ test('target probe uses the measured node once and rolls back on success or fail
         if(outcome==='commit-receipt-dom')f.svg.outerHTML='<svg><path fill="red"/></svg>';
         if(outcome==='commit-receipt-transient')observers.at(-1).records.push({type:'attributes'});
         if(outcome==='commit-receipt-transient-late')armed=true;
-        assert.equal(consumed.consume(),outcome==='commit');assert.equal(consumed.consume(),false);
-        if(outcome==='commit')consumed.seal();else {assert.equal(consumed.rollback(),true);assert.equal(reference.parentNode,f.parent);}
+        if(outcome==='commit-scroll' || outcome==='commit-scroll-corrupt') {
+          f.svg.ownerDocument.defaultView.scrollY=899;
+          const matrix={...identity,f:outcome==='commit-scroll'?-899:-898};
+          f.svg.getScreenCTM=()=>matrix;f.node.getScreenCTM=()=>matrix;
+          for(const shape of [drop,...arrows,...paths,...stubs]) shape.getScreenCTM=()=>matrix;
+        }
+        assert.equal(consumed.consume(),outcome==='commit'||outcome==='commit-scroll',outcome);assert.equal(consumed.consume(),false);
+        if(outcome==='commit'||outcome==='commit-scroll')consumed.seal();
+        else if(outcome==='commit-scroll-corrupt') consumed.rollback();
+        else {assert.equal(consumed.rollback(),true);assert.equal(reference.parentNode,f.parent);}
       }
       else if(outcome==='commit-cleanup-owner') {assert.equal(f.parent.lastInserted,replacement);assert.equal(reference.isConnected,false);}
       else {assert.equal(reference.parentNode,f.parent);staged.held.release();}
