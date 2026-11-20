@@ -638,9 +638,36 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
       components[id].routingAreas = [{ x:-80, y:0, width:240, height:30 }];
     }
   }
+  declarePortSides(components);
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
     routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
 
+}
+
+// Ports with a proven alternative connector side (left/right). The alternative
+// mirrors the drawn anchor and stub about the component's vertical centre line;
+// the symbols of these components are symmetric. All other ports stay fixed.
+const PORT_SIDES = { 'hot-tank': ['fm-supply', 'fm-return'], tank: ['fm-supply'], fm: ['supply', 'return'] };
+function declarePortSides(components) {
+  for (const [id, names] of Object.entries(PORT_SIDES)) for (const name of names) {
+    const comp = components[id], port = comp?.ports[name];
+    if (!port || !['left', 'right'].includes(port.direction)) continue;
+    const width = comp.bounds.width, other = port.direction === 'left' ? 'right' : 'left';
+    port.sides = {
+      [port.direction]: { x: port.x, direction: port.direction, stub: port.stub },
+      [other]: { x: width - port.x, direction: other, stub: port.stub && { ...port.stub, x: width - port.stub.x - port.stub.width } },
+    };
+    port.side = port.direction;
+  }
+}
+// Select one of a port's declared sides; anchor, stub, escape direction and
+// routing area change together. Undeclared sides are rejected.
+function setPortSide(model, reference, side) {
+  const [id, name] = reference.split('.'), comp = model.components[id], port = comp?.ports[name], geometry = port?.sides?.[side];
+  if (!geometry) return false;
+  port.x = geometry.x; port.direction = geometry.direction; port.stub = geometry.stub && { ...geometry.stub }; port.side = side;
+  if (comp.routingAreas) comp.routingAreas = [{ ...comp.bounds }, ...Object.values(comp.ports).filter((p) => p.stub).map((p) => ({ ...p.stub }))];
+  return true;
 }
 
 function diagramModel(c) {
@@ -678,27 +705,52 @@ function diagramStub(model, reference) {
 }
 
 /* ---------- Experimentelles Layout (versteckte Kartenoption layout_editor_beta) ----------
- * `layout: { version: 1, <key>: { x, y } }` stores offsets in SVG units. Without
- * `layout_editor_beta: true` a saved layout is ignored and rendering is unchanged.
- * First scope: configurations whose fresh-water pipes the router already covers. */
+ * Format (docs/layout-editor-beta.md):
+ *   layout: { version: 2, components: { <id>: { x, y } }, ports: { '<id>.<port>': { mode: 'auto' | 'manual', side } } }
+ * Components use absolute SVG origins; only deviations are stored. Ports default
+ * to `auto`. Without `layout_editor_beta: true` a saved layout is ignored and
+ * rendering is unchanged. First scope: configurations whose fresh-water pipes
+ * the router already covers. */
 const LAYOUT_LABELS = {
-  de: { speicher: 'Beide Speicher', tank: 'Speicher', warmwasser: 'Warmwasserspeicher', puffer: 'Pufferspeicher', fm: 'Frischwassermodul' },
-  en: { speicher: 'Both tanks', tank: 'Tank', warmwasser: 'Hot-water tank', puffer: 'Buffer tank', fm: 'Fresh water module' },
+  de: { tanks: 'Beide Speicher', tank: 'Speicher', 'hot-tank': 'Warmwasserspeicher', 'buffer-tank': 'Pufferspeicher', fm: 'Frischwassermodul' },
+  en: { tanks: 'Both tanks', tank: 'Tank', 'hot-tank': 'Hot-water tank', 'buffer-tank': 'Buffer tank', fm: 'Fresh water module' },
 };
 const LAYOUT_LIMIT = 600;
+const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-layout', 'unknown-id', 'unknown-port', 'invalid-position', 'invalid-mode', 'invalid-side', 'out-of-range'];
+// Editable keys: model component ids, plus `tanks` for both separate tanks.
 function layoutKeys(c, model) {
   if (!model.routingScope?.fm || c.wp) return [];
-  return c.typ === 'getrennt' ? ['warmwasser', 'puffer', 'speicher', 'fm'] : ['speicher', 'fm'];
+  return c.typ === 'getrennt' ? ['hot-tank', 'buffer-tank', 'tanks', 'fm'] : ['tank', 'fm'];
 }
-function layoutOffset(layout, key) {
-  const value = layout && layout[key], n = (axis) => (isNum(value?.[axis]) ? Math.round(Number(value[axis])) : 0);
-  return { x: n('x'), y: n('y') };
-}
-// Model component that a layout key moves directly.
-function layoutComponentIds(c, key) {
-  const split = c.typ === 'getrennt';
-  return key === 'fm' ? ['fm'] : key === 'warmwasser' ? ['hot-tank'] : key === 'puffer' ? ['buffer-tank']
-    : key === 'speicher' ? (split ? ['hot-tank', 'buffer-tank'] : ['tank']) : [];
+function layoutComponentIds(c, key) { return key === 'tanks' ? ['hot-tank', 'buffer-tank'] : [key]; }
+const layoutObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+// Validate a saved layout against the model. Returns { components, ports } or { status, code }.
+function parseLayout(c, model) {
+  const layout = c.layout, fail = (status, code) => ({ status, code });
+  if (!layoutObject(layout)) return fail('invalid', 'invalid-layout');
+  if (layout.version === 1) return fail('invalid', 'legacy-version');
+  if (layout.version !== 2) return fail('invalid', 'unsupported-version');
+  if (Object.keys(layout).some((k) => !['version', 'components', 'ports'].includes(k))) return fail('invalid', 'invalid-layout');
+  const movable = new Set(layoutKeys(c, model).flatMap((k) => layoutComponentIds(c, k)));
+  const components = {}, ports = {};
+  if (layout.components !== undefined && !layoutObject(layout.components)) return fail('invalid', 'invalid-layout');
+  for (const [id, value] of Object.entries(layout.components || {})) {
+    if (!model.components[id]) return fail('invalid', 'unknown-id');
+    if (!movable.has(id)) return fail('unsupported', 'unsupported-configuration');
+    if (!layoutObject(value) || !isNum(value.x) || !isNum(value.y)) return fail('invalid', 'invalid-position');
+    const base = model.components[id].baseOrigin, x = Math.round(Number(value.x)), y = Math.round(Number(value.y));
+    if (Math.abs(x - base.x) > LAYOUT_LIMIT || Math.abs(y - base.y) > LAYOUT_LIMIT) return fail('invalid', 'out-of-range');
+    if (x !== base.x || y !== base.y) components[id] = { x, y };
+  }
+  if (layout.ports !== undefined && !layoutObject(layout.ports)) return fail('invalid', 'invalid-layout');
+  for (const [ref, value] of Object.entries(layout.ports || {})) {
+    const [id, name] = ref.split('.'), port = model.components[id]?.ports[name];
+    if (!port?.sides || !movable.has(id)) return fail('invalid', 'unknown-port');
+    if (!layoutObject(value) || !['auto', 'manual'].includes(value.mode)) return fail('invalid', 'invalid-mode');
+    if (value.mode === 'manual' && !port.sides[value.side]) return fail('invalid', 'invalid-side');
+    if (value.mode === 'manual') ports[ref] = value.side;
+  }
+  return { components, ports };
 }
 // Painted areas that must not overlap between independently moved groups.
 function layoutCollision(c, model) {
@@ -738,33 +790,23 @@ function layoutViewBox(model, routes, legend) {
   const pad = 14;
   return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 }
-// Mirror side ports and their connector stubs to the opposite side of a component.
-function mirrorLayoutPorts(component, names) {
-  const width = component.bounds.width, flip = { left: 'right', right: 'left' };
-  for (const name of names) {
-    const port = component.ports[name];
-    if (!port || !flip[port.direction]) continue;
-    port.x = width - port.x;
-    if (port.stub) port.stub = { ...port.stub, x: width - port.stub.x - port.stub.width };
-    port.direction = flip[port.direction];
-    if (port.canonicalSide) port.canonicalSide = flip[port.canonicalSide];
-  }
-  if (component.routingAreas) component.routingAreas = [{ ...component.bounds }, ...Object.values(component.ports).filter((p) => p.stub).map((p) => ({ ...p.stub }))];
-}
 // Returns { status: 'none' | 'applied' | 'invalid' | 'unsupported', code?, model? }.
+// User-facing reason why a saved layout is not drawn (card notice and editor).
+function layoutNotice(code, de) {
+  const shown = de ? ' Die Standardansicht wird angezeigt.' : ' The standard diagram is shown.';
+  if (code === 'legacy-version') return (de ? 'Das gespeicherte Layout hat das alte Format (Version 1) und wird nicht mehr unterstützt. Im Editor „Zurücksetzen“ wählen und neu anordnen.' : 'The saved layout uses the old format (version 1), which is no longer supported. Choose “Reset” in the editor and arrange again.') + shown;
+  if (code === 'unsupported-version') return (de ? 'Diese Layout-Version wird nicht unterstützt.' : 'This layout version is not supported.') + shown;
+  if (['invalid-layout', 'unknown-id', 'unknown-port', 'invalid-position', 'invalid-mode', 'invalid-side', 'out-of-range'].includes(code))
+    return (de ? `Das gespeicherte Layout enthält einen ungültigen Eintrag (${code}).` : `The saved layout contains an invalid entry (${code}).`) + shown;
+  return (de ? 'Die gespeicherte Anordnung kann mit dieser Anlage derzeit nicht dargestellt werden.' : 'The saved arrangement cannot currently be displayed for this system.') + shown;
+}
 function layoutDiagramModel(c) {
-  const layout = c.layout;
-  if (!layout || typeof layout !== 'object' || Array.isArray(layout)) return { status: 'invalid', code: 'invalid-layout' };
-  if (layout.version !== 1) return { status: 'invalid', code: 'unsupported-version' };
-  const keys = layoutKeys(c, diagramModel(c));
-  const entries = Object.keys(layout).filter((k) => k !== 'version').map((k) => [k, layoutOffset(layout, k)]).filter(([, d]) => d.x || d.y);
-  if (!entries.length) return { status: 'none' };
-  if (entries.some(([k]) => !keys.includes(k))) return { status: 'unsupported', code: 'unsupported-configuration' };
-  if (entries.some(([, d]) => Math.abs(d.x) > LAYOUT_LIMIT || Math.abs(d.y) > LAYOUT_LIMIT)) return { status: 'invalid', code: 'out-of-range' };
-  // Try both connection sides between module and hot-water tank, preferring
-  // the facing sides, and keep the variant with the shortest clear pipes.
-  // The other variant is only tried when the module and the tank overlap
-  // horizontally (no clear facing side) or the facing sides fail.
+  const parsed = parseLayout(c, diagramModel(c));
+  if (parsed.status) return parsed;
+  if (!Object.keys(parsed.components).length && !Object.keys(parsed.ports).length) return { status: 'none' };
+  // Ports in `auto` take the sides facing their partner. The other variant is
+  // only tried when module and tank overlap horizontally (no clear facing
+  // side) or the facing sides fail; the shorter routed variant wins.
   let best = null, failure = null;
   const evaluate = (model) => {
     if (layoutCollision(c, model)) { failure ??= 'collision'; return; }
@@ -776,40 +818,39 @@ function layoutDiagramModel(c) {
     model.layoutRoutes = routes;   // reused by the renderer
     if (!best || length < best.length) best = { model, length };
   };
-  const preferred = layoutVariant(c, layout, entries, null);
+  const preferred = layoutVariant(c, parsed, null);
   evaluate(preferred);
   const fm = preferred.components.fm, hot = preferred.components[c.typ === 'getrennt' ? 'hot-tank' : 'tank'];
   const overlap = fm.origin.x < hot.origin.x + hot.bounds.width && hot.origin.x < fm.origin.x + fm.bounds.width;
-  if (!best || overlap) evaluate(layoutVariant(c, layout, entries, !preferred.mirrored));
+  if (!best || overlap) evaluate(layoutVariant(c, parsed, !preferred.facingLeft));
   return best ? { status: 'applied', model: best.model } : { status: 'unsupported', code: failure };
 }
-// One candidate model. mirrored === null selects the facing sides.
-function layoutVariant(c, layout, entries, mirrored) {
+// One candidate model. tankLeft === null: the tank's auto ports face the module.
+function layoutVariant(c, parsed, tankLeft) {
   const model = diagramModel(c);
-  for (const [k, d] of entries) for (const id of layoutComponentIds(c, k)) {
-    const origin = model.components[id].origin; origin.x += d.x; origin.y += d.y;
-  }
+  for (const [id, p] of Object.entries(parsed.components)) Object.assign(model.components[id].origin, p);
+  model.layoutRouting = true;
   const split = c.typ === 'getrennt', fm = model.components.fm, hot = model.components[split ? 'hot-tank' : 'tank'];
   const fmCenter = fm.origin.x + fm.bounds.width / 2;
-  model.mirrored = mirrored === null ? fmCenter < hot.origin.x + hot.bounds.width / 2 : mirrored;
-  if (model.mirrored) {
-    mirrorLayoutPorts(hot, split ? ['fm-supply', 'fm-return'] : ['fm-supply']);
-    mirrorLayoutPorts(fm, ['supply', 'return']);
+  model.facingLeft = tankLeft === null ? fmCenter < hot.origin.x + hot.bounds.width / 2 : tankLeft;
+  for (const [id, comp] of Object.entries(model.components)) for (const [name, port] of Object.entries(comp.ports)) {
+    if (!port.sides) continue;
+    const ref = `${id}.${name}`, auto = id === 'fm' ? (model.facingLeft ? 'right' : 'left') : (model.facingLeft ? 'left' : 'right');
+    setPortSide(model, ref, parsed.ports[ref] || auto);
   }
   // Sensor plates block only their painted plate and connector line. They sit
-  // on the side away from the module: on the hot-water tank opposite its
-  // module ports, on the buffer opposite the module.
+  // on the tank side with fewer module ports; on the buffer, away from the module.
   for (const [id, b] of Object.entries(model.components)) {
     if (!id.startsWith('sensor-')) continue;
-    const tank = model.components[b.parent];
-    const right = tank === hot ? model.mirrored : fmCenter < tank.origin.x + tank.bounds.width / 2;
+    const tank = model.components[b.parent], sides = Object.values(tank.ports).filter((p) => p.sides).map((p) => p.side);
+    const right = sides.length ? sides.filter((s) => s === 'left').length > sides.filter((s) => s === 'right').length
+      : fmCenter < tank.origin.x + tank.bounds.width / 2;
     const dx = right ? tank.origin.x + tank.bounds.width - b.origin.x : 0;   // right plates start at the tank edge
-    if (right) { b.sensorSide = 'right'; b.bounds = { ...b.bounds, x: dx }; }
+    if (right) { b.side = 'right'; b.bounds = { ...b.bounds, x: dx }; }
     b.routingAreas = [{ x: dx - 1, y: 0, width: 76, height: 30 }];
   }
   // The temperature legend belongs to the fresh water module.
-  model.legendOffset = layoutOffset(layout, 'fm');
-  model.layoutRouting = true;
+  model.legendOffset = { x: fm.origin.x - fm.baseOrigin.x, y: fm.origin.y - fm.baseOrigin.y };
   return model;
 }
 
@@ -1442,7 +1483,7 @@ function sequentialLayoutRoutes(candidates, obstacles) {
 // Select and validate the complete routed batch before drawing any pipe.
 function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
   const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
-  const movedRouting = FM && [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; });
+  const movedRouting = FM && (model.layoutRouting || [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; }));
   const routes = movedRouting ? (model.layoutRoutes || routeDiagramConnections(model, routingIds)) : null;
   if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
@@ -1539,7 +1580,7 @@ function renderTankSensors({ fl, col, more, openComponent, closeComponent, model
       `<text x="${tx}" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
       `<circle cx="${cx}" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
   };
-  return fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f, model?.components[id]?.sensorSide === 'right') + closeComponent(id); }).join('');
+  return fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f, model?.components[id]?.side === 'right') + closeComponent(id); }).join('');
 }
 
 function renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S }) {
@@ -2491,7 +2532,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     let html = this._render();
     if (this._layoutResult && this._layoutResult.status !== 'none') {
       const de = sprache(this._cfg, this._hass) === 'de';
-      html += `<div class="layout-note" role="status">${de ? 'Die gespeicherte Anordnung kann mit dieser Anlage derzeit nicht dargestellt werden. Die Standardansicht wird angezeigt.' : 'The saved arrangement cannot currently be displayed for this system. The standard diagram is shown.'}</div>`;
+      html += `<div class="layout-note" role="status">${esc(layoutNotice(this._layoutResult.code, de))}</div>`;
     }
     return html;
   }
@@ -2872,10 +2913,26 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     catch (_) { return { status: 'invalid', code: 'invalid-configuration' }; }
     return { ...(card._layoutResult || { status: 'none' }), keys: layoutKeys(card._cfg, card._baseModel), card };
   }
+  // The editor works with offsets from the canonical position; the layout
+  // stores absolute origins (V2). A legacy V1 layout is replaced on first move.
+  _layoutBase(id) { return this._preview?._baseModel?.components[id]?.baseOrigin || null; }
+  _layoutOrigin(id) {
+    const base = this._layoutBase(id), layout = this._config.layout, v = layout?.version === 2 && layoutObject(layout.components) ? layout.components[id] : null;
+    return !base ? null : layoutObject(v) && isNum(v.x) && isNum(v.y) ? { x: Math.round(Number(v.x)), y: Math.round(Number(v.y)) } : { ...base };
+  }
   _layoutWith(key, x, y) {
-    const layout = { ...(this._config.layout || {}), version: 1 };
-    if (x || y) layout[key] = { ...(layout[key] || {}), x, y }; else delete layout[key];
-    return Object.keys(layout).length > 1 ? layout : null;
+    const layout = this._config.layout, current = layout?.version === 2 && layoutObject(layout) ? layout : {};
+    const components = { ...(layoutObject(current.components) ? current.components : {}) };
+    const ids = layoutComponentIds(this._preview?._cfg, key), first = this._layoutCurrent(key);
+    for (const id of ids) {
+      const base = this._layoutBase(id), origin = this._layoutOrigin(id);
+      if (!base) continue;
+      // A group keeps the relative positions of its members.
+      const nx = origin.x + x - first.x, ny = origin.y + y - first.y;
+      if (nx === base.x && ny === base.y) delete components[id]; else components[id] = { x: nx, y: ny };
+    }
+    const next = { version: 2, ...(Object.keys(components).length ? { components } : {}), ...(current.ports ? { ports: current.ports } : {}) };
+    return Object.keys(next).length > 1 ? next : null;
   }
   _layoutConfig(layout) {
     const config = { ...this._config };
@@ -2913,10 +2970,14 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const de = this._layoutDe();
     return code === 'collision' ? (de ? 'Bauteile würden sich überlappen. Letzte gültige Position bleibt.' : 'Components would overlap. The last valid position is kept.')
       : code === 'label-overflow' ? (de ? 'Ein Anzeigewert ist für diese Anordnung zu lang.' : 'A displayed value is too long for this arrangement.')
-      : (de ? 'Kein freier Rohrweg gefunden. Letzte gültige Position bleibt.' : 'No clear pipe route found. The last valid position is kept.');
+      : ['collision', 'label-overflow', 'unsupported-configuration'].includes(code) || !LAYOUT_NOTICE_CODES.includes(code) ? (de ? 'Kein freier Rohrweg gefunden. Letzte gültige Position bleibt.' : 'No clear pipe route found. The last valid position is kept.')
+      : layoutNotice(code, de);
   }
   _layoutMessage(text) { if (this._layoutStatus) this._layoutStatus.textContent = text; }
-  _layoutCurrent(key) { return layoutOffset(this._config.layout, key); }
+  _layoutCurrent(key) {
+    const id = layoutComponentIds(this._preview?._cfg, key)[0], base = this._layoutBase(id), origin = this._layoutOrigin(id);
+    return base ? { x: origin.x - base.x, y: origin.y - base.y } : { x: 0, y: 0 };
+  }
   _layoutControls() {
     if (!this._layoutStatus) return;
     const de = this._layoutDe(), names = LAYOUT_LABELS[de ? 'de' : 'en'];
@@ -2926,7 +2987,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const select = this._componentSelect;
     select.replaceChildren(...['', ...keys].map((key) => {
       const option = document.createElement('option');
-      option.value = key; option.textContent = key ? (key === 'speicher' && this._config.speicher?.typ !== 'getrennt' ? names.tank : names[key]) : '–';
+      option.value = key; option.textContent = key ? names[key] : '–';
       return option;
     }));
     select.value = this._selected || '';
@@ -2937,7 +2998,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._layoutStatus.textContent = !keys.length
       ? (de ? 'Für diese Anlagenkonfiguration ist das Verschieben noch nicht verfügbar.' : 'Moving is not yet available for this system configuration.')
       : probe.result && !['applied', 'none'].includes(probe.result.status) ? this._layoutReason(probe.result.code)
-      : this._selected ? `${select.selectedOptions[0]?.textContent}: x ${this._layoutCurrent(this._selected).x}, y ${this._layoutCurrent(this._selected).y}`
+      : this._selected ? (() => { const o = this._layoutOrigin(layoutComponentIds(this._preview._cfg, this._selected)[0]); return `${select.selectedOptions[0]?.textContent}: x ${o.x}, y ${o.y}`; })()
       : (de ? 'Bauteil in der Vorschau ziehen oder auswählen.' : 'Drag a component in the preview or select it.');
     this._layoutHighlight();
   }
@@ -2960,7 +3021,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const svg = this._preview?.shadowRoot?.querySelector('svg'), model = this._preview?._drawnModel, matrix = svg?.getScreenCTM();
     if (!svg || !model || !matrix) return null;
     const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(matrix.inverse());
-    const keys = layoutKeys(this._preview._cfg, this._preview._baseModel).filter((k) => k !== 'speicher' || this._config.speicher?.typ !== 'getrennt');
+    const keys = layoutKeys(this._preview._cfg, this._preview._baseModel).filter((k) => k !== 'tanks');
     for (const key of keys) for (const id of layoutComponentIds(this._preview._cfg, key)) {
       const members = Object.values(model.components).filter((b) => { let r = b; while (r.parent) r = model.components[r.parent]; return r.id === id && !b.boundary; });
       if (members.some((b) => { const x = b.origin.x + b.bounds.x, y = b.origin.y + b.bounds.y;

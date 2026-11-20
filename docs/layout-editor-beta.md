@@ -22,16 +22,29 @@ Eine Position wird nur übernommen, wenn sich keine Bauteile überlappen und ein
 Rohrweg existiert; beim Ziehen bleibt das Bauteil sonst an der letzten gültigen
 Position stehen.
 
-Gespeichert werden Verschiebungen in SVG-Einheiten:
+Gespeichert wird das Format aus dem Konzept (`docs/layout-editor-router-concept.md`),
+Koordinaten in SVG-Einheiten:
 
 ```yaml
 layout:
-  version: 1
-  fm: { x: 40, y: 60 }        # Frischwassermodul, inklusive Legende
-  warmwasser: { x: 0, y: 0 }  # nur bei getrennten Speichern
-  puffer: { x: 150, y: 0 }    # nur bei getrennten Speichern
-  speicher: { x: -40, y: 0 }  # beide Speicher bzw. der einzelne Speicher
+  version: 2
+  components:              # absolute Ursprünge; nur Abweichungen von der Standardposition
+    fm: { x: 380, y: 74 }
+    buffer-tank: { x: 222, y: 203 }
+  ports:                   # optional; fehlende Einträge = auto
+    fm.supply: { mode: manual, side: left }
 ```
+
+Verschiebbar sind `fm` sowie `hot-tank` und `buffer-tank` (getrennte Speicher) bzw.
+`tank`. Im Editor bewegt „Beide Speicher“ beide Einträge gemeinsam. Anschlussseiten
+sind im Komponentenmodell deklariert; derzeit dürfen `fm.supply`, `fm.return`,
+`hot-tank.fm-supply`, `hot-tank.fm-return` und `tank.fm-supply` links oder rechts
+liegen. Bei `auto` zeigen die Anschlüsse von FM und Warmwasserspeicher zueinander;
+liegen beide übereinander, wird die kürzere gültige Variante gewählt. Fühlerplatten
+wechseln auf die Speicherseite mit weniger Anschlüssen. Rohrpunkte werden nicht
+gespeichert. Das frühere Format `version: 1` wird mit einem Hinweis abgelehnt
+(im Editor „Zurücksetzen“ oder neu anordnen); ungültige Einträge werden mit ihrem
+Fehlercode gemeldet.
 
 Unterstützt sind zunächst Anlagen mit Frischwassermodul ohne Wärmepumpe, Heizkreise,
 Zusatzwärme, Solar, Heizstäbe, Zirkulation, Trinkwasser- und Legionellenanzeige – also die
@@ -65,16 +78,28 @@ routed automatically. A position is only accepted when no components overlap and
 clear pipe route exists; while dragging, the component otherwise stays at its last
 valid position.
 
-Offsets are saved in SVG units:
+The format follows the concept (`docs/layout-editor-router-concept.md`), coordinates
+in SVG units:
 
 ```yaml
 layout:
-  version: 1
-  fm: { x: 40, y: 60 }        # fresh water module, including the legend
-  warmwasser: { x: 0, y: 0 }  # separate tanks only
-  puffer: { x: 150, y: 0 }    # separate tanks only
-  speicher: { x: -40, y: 0 }  # both tanks, or the single tank
+  version: 2
+  components:              # absolute origins; only deviations from the default position
+    fm: { x: 380, y: 74 }
+    buffer-tank: { x: 222, y: 203 }
+  ports:                   # optional; missing entries = auto
+    fm.supply: { mode: manual, side: left }
 ```
+
+Movable are `fm` and `hot-tank` and `buffer-tank` (separate tanks) or `tank`. In the
+editor, “Both tanks” moves both entries together. Port sides are declared in the
+component model; currently `fm.supply`, `fm.return`, `hot-tank.fm-supply`,
+`hot-tank.fm-return` and `tank.fm-supply` may be on the left or right. With `auto`,
+the ports of the fresh water module and the hot-water tank face each other; when
+both are stacked, the shorter valid variant is used. Sensor plates move to the tank
+side with fewer ports. Pipe points are not stored. The former format `version: 1`
+is rejected with a notice (reset or rearrange in the editor); invalid entries are
+reported with their error code.
 
 The first scope covers systems with a fresh water module and without heat pump,
 heating circuits, additional heat, solar, heaters, circulation, domestic water and

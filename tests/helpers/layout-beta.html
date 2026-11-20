@@ -47,7 +47,7 @@
     document.getElementById('split').onclick = () => install(base('getrennt'));
     document.getElementById('single').onclick = () => install(base('schicht'));
     document.getElementById('wp').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
-    install(base('getrennt', new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":1,"fm":{"x":40,"y":60},"puffer":{"x":150,"y":0}}') } : {}));
+    install(base('getrennt', new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":2,"components":{"fm":{"x":380,"y":74},"buffer-tank":{"x":222,"y":203}}}') } : {}));
 
     // Synthetic mouse drag in SVG units, relative to the component's centre.
     async function drag(id, dx, dy) {
@@ -64,35 +64,43 @@
     async function selftest() {
       const out = [], check = (name, ok, detail = '') => { out.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' ' + detail : ''}`); document.getElementById('result').textContent = 'PROGRESS ' + out.join(' | '); };
       install(base('getrennt'));
-      await drag('fm', 40, 60);
-      check('drag fm emits layout', config.layout?.fm?.x === 40 && config.layout?.fm?.y === 60, JSON.stringify(config.layout));
+      const fm = () => config.layout?.components?.fm, layout = () => JSON.stringify(config.layout ?? null);
+      await drag('fm', 40, 60);   // canonical origin (340,14)
+      check('drag fm emits a V2 layout', config.layout?.version === 2 && fm()?.x === 380 && fm()?.y === 74, layout());
       check('card draws layout', card._layoutResult?.status === 'applied', JSON.stringify(card._layoutResult));
       check('legend follows fm', card.shadowRoot.innerHTML.includes('x="445" y="182"'));
-      const beforeBuffer = JSON.stringify(config.layout);
+      const beforeBuffer = layout();
       await drag('buffer-tank', 150, 0);
-      check('drag buffer emits layout', config.layout?.puffer?.x === 150, JSON.stringify(config.layout));
-      const before = JSON.stringify(config.layout);
-      await drag('fm', -330, 0);   // into the hot-water tank: never valid
-      check('invalid target keeps the last valid layout', card._layoutResult?.status === 'applied' && JSON.stringify(config.layout) === before, JSON.stringify(config.layout));
+      check('drag buffer emits layout', config.layout?.components?.['buffer-tank']?.x === 222, layout());
+      const before = layout();
+      // The target (x 50) overlaps the hot-water tank. Intermediate steps may
+      // be valid depending on the window size, so only the end state is fixed.
+      await drag('fm', -330, 0);
+      const afterInvalid = layout(), moved = afterInvalid !== before;
+      check('invalid target keeps the last valid layout', card._layoutResult?.status === 'applied' && fm()?.x !== 50, afterInvalid);
       editor._undoButton.click();
-      check('undo restores previous layout', JSON.stringify(config.layout) === beforeBuffer, JSON.stringify(config.layout));
+      check('undo restores previous layout', layout() === (moved ? before : beforeBuffer), layout());
       editor._redoButton.click();
-      check('redo reapplies layout', JSON.stringify(config.layout) === before, JSON.stringify(config.layout));
-      editor._selected = 'fm'; editor._moveButtons[1].click();
-      check('arrow moves selected component by 5', config.layout?.fm?.x === 45, JSON.stringify(config.layout));
+      check('redo reapplies layout', layout() === (moved ? afterInvalid : before), layout());
+      editor._selected = 'fm'; const x0 = fm()?.x ?? 340; editor._moveButtons[1].click();
+      check('arrow moves selected component by 5', fm()?.x === x0 + 5, layout());
       editor._resetButton.click();
-      check('reset removes layout', config.layout === undefined && card._layoutResult === null, JSON.stringify(config.layout));
+      check('reset removes layout', config.layout === undefined && card._layoutResult === null, layout());
       install(base('getrennt'));
       const zoomIn = editor.shadowRoot.querySelector('[data-cmd="zoom-in"]');
       zoomIn.click(); zoomIn.click();
       check('zoom enlarges the preview only', editor._preview.style.width === '150%' && card.style.width === '');
       await drag('fm', 40, 60);
-      check('drag while zoomed keeps SVG units', config.layout?.fm?.x === 40 && config.layout?.fm?.y === 60, JSON.stringify(config.layout));
+      check('drag while zoomed keeps SVG units', fm()?.x === 380 && fm()?.y === 74, layout());
       editor.shadowRoot.querySelector('[data-cmd="zoom-reset"]').click();
       check('zoom reset', editor._preview.style.width === '100%');
+      install(base('getrennt', { layout: { version: 1, fm: { x: 40, y: 60 } } }));
+      check('a V1 layout shows the standard diagram with a notice', card._layoutResult?.code === 'legacy-version' && /Version 1/.test(editor._layoutStatus.textContent));
+      await drag('fm', 40, 60);
+      check('moving replaces a V1 layout with V2', config.layout?.version === 2 && fm()?.x === 380, layout());
       install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
       check('unsupported configuration offers no component', editor._componentSelect.options.length === 1);
-      install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 1, fm: { x: 40, y: 60 } } });
+      install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 2, components: { fm: { x: 380, y: 74 } } } });
       check('without beta option layout is ignored', card._layoutResult === null && !editor._preview);
       editor.setConfig({ ...config, layout_editor_beta: true });
       check('enabling the option in YAML shows the editor section', !!editor._preview);
