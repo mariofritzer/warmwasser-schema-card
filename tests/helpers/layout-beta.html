@@ -47,7 +47,7 @@
     document.getElementById('split').onclick = () => install(base('getrennt'));
     document.getElementById('single').onclick = () => install(base('schicht'));
     document.getElementById('wp').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
-    install(base('getrennt', new URLSearchParams(location.search).has('demo') ? { layout: { version: 1, fm: { x: 40, y: 60 }, puffer: { x: 150, y: 0 } } } : {}));
+    install(base('getrennt', new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":1,"fm":{"x":40,"y":60},"puffer":{"x":150,"y":0}}') } : {}));
 
     // Synthetic mouse drag in SVG units, relative to the component's centre.
     async function drag(id, dx, dy) {

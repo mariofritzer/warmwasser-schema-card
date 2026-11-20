@@ -75,7 +75,7 @@ test('buffer sensor plates may not overlap the hot-water tank', () => {
 });
 
 test('a position without a clear route falls back instead of throwing', () => {
-  const { card, html } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: 0, y: -140 } } }));
+  const { card, html } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: -60, y: 60 } } }));
   assert.equal(card._layoutResult.status, 'unsupported');
   assert.notEqual(card._layoutResult.code, 'collision');
   assert.match(html, /class="layout-note"/);
@@ -102,4 +102,23 @@ test('a long live value falls back and recovers on the next update', () => {
   card._hass = hass;
   card._renderWithLayout();
   assert.equal(card._layoutResult.status, 'applied');
+});
+
+test('the fresh water module can move to the left of the tanks; facing ports follow', () => {
+  const { card, html } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: -540, y: 0 } } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  const m = card._drawnModel;
+  assert.equal(m.components['hot-tank'].ports['fm-supply'].direction, 'left');
+  assert.equal(m.components['hot-tank'].ports['fm-return'].direction, 'left');
+  assert.equal(m.components.fm.ports.supply.direction, 'right');
+  assert.equal(m.components.fm.ports.return.direction, 'right');
+  // The drawing fits its content instead of growing by the full offset.
+  const [x, , width] = html.match(/<svg viewBox="([^"]+)"/)[1].split(' ').map(Number);
+  assert.ok(x > -260 && width < 500, `viewBox ${x} ${width}`);
+});
+
+test('tanks below the module route both pipes without contact', () => {
+  const { card } = render(config({ layout_editor_beta: true, layout: { version: 1, speicher: { x: -80, y: 100 } } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(card._drawnModel.components['hot-tank'].ports['fm-supply'].direction, 'right');
 });

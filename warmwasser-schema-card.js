@@ -725,6 +725,32 @@ function layoutCollision(c, model) {
   return boxes.some((a, i) => boxes.slice(i + 1).some((b) => a.group !== b.group &&
     a.x < b.x + b.width + margin && b.x < a.x + a.width + margin && a.y < b.y + b.height + margin && b.y < a.y + a.height + margin));
 }
+// Content bounds of a moved layout: components, domestic labels, legend and pipes.
+function layoutViewBox(model, routes, legend) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const add = (x, y, width = 0, height = 0) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x + width); maxY = Math.max(maxY, y + height); };
+  for (const b of Object.values(model.components)) if (!b.boundary) add(b.origin.x + b.bounds.x, b.origin.y + b.bounds.y, b.bounds.width, b.bounds.height);
+  const boundary = model.components['domestic-boundary'];
+  if (boundary) add(boundary.origin.x - 60, boundary.origin.y - 8, boundary.bounds.width + 120, 22);
+  const d = model.legendOffset || { x: 0, y: 0 };
+  if (legend) add(362 + d.x, 112 + d.y, 88, 24);
+  for (const route of Object.values(routes || {})) for (const p of route.points || []) add(p.x - 6, p.y - 6, 12, 12);
+  const pad = 14;
+  return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+}
+// Mirror side ports and their connector stubs to the opposite side of a component.
+function mirrorLayoutPorts(component, names) {
+  const width = component.bounds.width, flip = { left: 'right', right: 'left' };
+  for (const name of names) {
+    const port = component.ports[name];
+    if (!port || !flip[port.direction]) continue;
+    port.x = width - port.x;
+    if (port.stub) port.stub = { ...port.stub, x: width - port.stub.x - port.stub.width };
+    port.direction = flip[port.direction];
+    if (port.canonicalSide) port.canonicalSide = flip[port.canonicalSide];
+  }
+  if (component.routingAreas) component.routingAreas = [{ ...component.bounds }, ...Object.values(component.ports).filter((p) => p.stub).map((p) => ({ ...p.stub }))];
+}
 // Returns { status: 'none' | 'applied' | 'invalid' | 'unsupported', code?, model? }.
 function layoutDiagramModel(c) {
   const layout = c.layout;
@@ -738,8 +764,19 @@ function layoutDiagramModel(c) {
   for (const [k, d] of entries) for (const id of layoutComponentIds(c, k)) {
     const origin = model.components[id].origin; origin.x += d.x; origin.y += d.y;
   }
+  // Sensor plates block only their painted plate and connector line, so pipes
+  // may pass beside them when a component moves to the left of the tanks.
+  for (const [id, b] of Object.entries(model.components)) if (id.startsWith('sensor-')) b.routingAreas = [{ x: -1, y: 0, width: 76, height: 30 }];
+  // The fresh water module and the hot-water tank use the sides facing one
+  // another, so either can move to the other side of its partner.
+  const split = c.typ === 'getrennt', fm = model.components.fm, hot = model.components[split ? 'hot-tank' : 'tank'];
+  if (fm.origin.x + fm.bounds.width / 2 < hot.origin.x + hot.bounds.width / 2) {
+    mirrorLayoutPorts(hot, split ? ['fm-supply', 'fm-return'] : ['fm-supply']);
+    mirrorLayoutPorts(fm, ['supply', 'return']);
+  }
   // The temperature legend belongs to the fresh water module.
   model.legendOffset = layoutOffset(layout, 'fm');
+  model.layoutRouting = true;
   if (layoutCollision(c, model)) return { status: 'unsupported', code: 'collision' };
   return { status: 'applied', model };
 }
@@ -1319,14 +1356,52 @@ function routeDiagramConnections(model, ids, options = {}) {
     const routed = routeOrthogonalConnection({ from: resolved[0], to: resolved.at(-1), vias: resolved.slice(1,-1).map(p => ({ id:p.ref, x:p.x, y:p.y })), obstacles, clearance:13, lead:16 });
     if (routed.status !== 'routed') { result[id] = routed; continue; }
     const role = resolved[0].role === 'supply' && resolved.at(-1).role === 'supply' ? 'supply' : 'neutral';
-    candidates.push({ id, role, points:routed.points, nodes:resolved.map(p => ({ ref:p.ref, x:p.x, y:p.y })) });
+    candidates.push({ id, role, points:routed.points, nodes:resolved.map(p => ({ ref:p.ref, x:p.x, y:p.y })),
+      ...(model.layoutRouting ? { endpoints: { from: resolved[0], to: resolved.at(-1), vias: resolved.slice(1,-1).map(p => ({ id:p.ref, x:p.x, y:p.y })) } } : {}) });
   }
   if (candidates.length) {
-    const compiled = compilePipeRoutes(candidates, { radius:8, bridgeRadius:6, halfWidth:5, obstacles });
+    let compiled = compilePipeRoutes(model.layoutRouting ? candidates.map(({ endpoints, ...route }) => route) : candidates, { radius:8, bridgeRadius:6, halfWidth:5, obstacles });
+    // Experimental layouts only: independently routed pipes may share a
+    // channel. Retry in sequence with earlier pipes as obstacles.
+    if (compiled.status !== 'routed' && model.layoutRouting && candidates.length > 1 && candidates.length === ids.length) {
+      const retry = sequentialLayoutRoutes(candidates, obstacles);
+      if (retry) compiled = retry;
+    }
     if (compiled.status === 'routed') for (const [id, route] of Object.entries(compiled.routes)) result[id] = { status:'routed', ...route, paintOrder:compiled.paintOrder.indexOf(id) };
     else for (const c of candidates) result[c.id] = { status:'failed', code:compiled.code, reason:compiled.reason };
   }
   return result;
+}
+
+// Route the candidates one after another, treating the inner segments of the
+// pipes already placed as obstacles. Tries every order of up to three pipes.
+function sequentialLayoutRoutes(candidates, obstacles) {
+  const orders = candidates.length > 3 ? [candidates] : (function permute(list) {
+    return list.length <= 1 ? [list] : list.flatMap((item, i) => permute([...list.slice(0, i), ...list.slice(i + 1)]).map(rest => [item, ...rest]));
+  })(candidates);
+  // Keep the escape leads of the other pipes' ports clear.
+  const vectors = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
+  const lead = (p) => { const [dx, dy] = vectors[p.direction] || [0, 0], q = { x: p.x + dx * 22, y: p.y + dy * 22 };
+    return { x: Math.min(p.x, q.x), y: Math.min(p.y, q.y), width: Math.abs(p.x - q.x), height: Math.abs(p.y - q.y) }; };
+  for (const order of orders) {
+    const placed = [], extra = [];
+    for (const candidate of order) {
+      const from = candidate.endpoints.from, to = candidate.endpoints.to;
+      const leads = candidates.filter((other) => other !== candidate).flatMap((other) => [lead(other.endpoints.from), lead(other.endpoints.to)]);
+      const routed = routeOrthogonalConnection({ from, to, vias: candidate.endpoints.vias, obstacles: [...obstacles, ...extra, ...leads], clearance:13, lead:16 });
+      if (routed.status !== 'routed') break;
+      placed.push({ ...candidate, points: routed.points });
+      // Port lead segments stay free so neighbouring ports can still escape.
+      for (let i = 1; i < routed.points.length - 2; i++) {
+        const a = routed.points[i], b = routed.points[i + 1];
+        extra.push({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) });
+      }
+    }
+    if (placed.length !== order.length) continue;
+    const compiled = compilePipeRoutes(placed.map(({ endpoints, ...route }) => route), { radius:8, bridgeRadius:6, halfWidth:5, obstacles });
+    if (compiled.status === 'routed') return compiled;
+  }
+  return null;
 }
 
 // Select and validate the complete routed batch before drawing any pipe.
@@ -2483,6 +2558,9 @@ class WarmwasserSchemaCard extends HTMLElement {
         minY = Math.min(minY, -30 + dy); maxY = Math.max(maxY, unten + dy);
       }
     }
+    // Experimental layouts fit the drawing to its content instead.
+    const layoutRoutes = model.layoutRouting ? preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) : undefined;
+    if (model.layoutRouting) ({ minX, minY, maxX, maxY } = layoutViewBox(model, layoutRoutes, fl.length > 0));
     o += `<svg viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs>`;
     o += `<linearGradient id="wwTemp" gradientUnits="userSpaceOnUse" x1="0" y1="14" x2="0" y2="374"><stop offset="0" stop-color="${col(stops[0].wert)}"/>` +
       stops.map((st) => `<stop offset="${Math.round(((st.y - 14) / 360) * 1000) / 1000}" stop-color="${col(st.wert)}"/>`).join('') +
@@ -2514,7 +2592,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     o += `<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter></defs>`;
 
     /* ---------- Rohre ---------- */
-    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
+    const routes = layoutRoutes !== undefined ? layoutRoutes : preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
     const primaryPipes = {};
     const primaryPipe = (id, legacyPath, color, on, duration) => {
       const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration);
