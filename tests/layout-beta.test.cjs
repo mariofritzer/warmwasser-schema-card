@@ -75,7 +75,7 @@ test('buffer sensor plates may not overlap the hot-water tank', () => {
 });
 
 test('a position without a clear route falls back instead of throwing', () => {
-  const { card, html } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: -60, y: 60 } } }));
+  const { card, html } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: -200, y: -160 } } }));
   assert.equal(card._layoutResult.status, 'unsupported');
   assert.notEqual(card._layoutResult.code, 'collision');
   assert.match(html, /class="layout-note"/);
@@ -114,11 +114,27 @@ test('the fresh water module can move to the left of the tanks; facing ports fol
   assert.equal(m.components.fm.ports.return.direction, 'right');
   // The drawing fits its content instead of growing by the full offset.
   const [x, , width] = html.match(/<svg viewBox="([^"]+)"/)[1].split(' ').map(Number);
-  assert.ok(x > -260 && width < 500, `viewBox ${x} ${width}`);
+  assert.ok(x > -260 && width < 560, `viewBox ${x} ${width}`);
 });
 
 test('tanks below the module route both pipes without contact', () => {
   const { card } = render(config({ layout_editor_beta: true, layout: { version: 1, speicher: { x: -80, y: 100 } } }));
   assert.equal(card._layoutResult.status, 'applied');
   assert.equal(card._drawnModel.components['hot-tank'].ports['fm-supply'].direction, 'right');
+});
+
+test('sensor plates move to the tank side away from the module', () => {
+  const { card, html } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: -215, y: 245 }, warmwasser: { x: 350, y: 70 }, puffer: { x: 415, y: 150 } } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  const m = card._drawnModel;
+  assert.equal(m.mirrored, true);
+  for (const id of ['sensor-0', 'sensor-1', 'sensor-2']) assert.equal(m.components[id].sensorSide, 'right');
+  // Right-hand plate recipe: line from the tank edge, plate to its right.
+  assert.match(html, /<line x1="202" y1="102" x2="214"/);
+});
+
+test('a module directly below the tank keeps the shorter side variant', () => {
+  const { card } = render(config({ layout_editor_beta: true, layout: { version: 1, fm: { x: -80, y: 255 }, warmwasser: { x: 385, y: 65 }, puffer: { x: 430, y: 150 } } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(card._drawnModel.mirrored, true);
 });

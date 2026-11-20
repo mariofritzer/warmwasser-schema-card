@@ -714,7 +714,7 @@ function layoutCollision(c, model) {
   if (fm && boundary) {
     const bx = boundary.origin.x, by = boundary.origin.y, bw = boundary.bounds.width;
     // Domestic labels and the vertical domestic pipes above the module.
-    boxes.push({ group: 'fm', x: bx - 60, y: by - 8, width: bw + 120, height: 22 });
+    boxes.push({ group: 'fm', x: bx - 60, y: by - 4, width: bw + 120, height: 20 });
     boxes.push({ group: 'fm', x: bx - 5, y: by, width: 10, height: fm.origin.y - by });
     boxes.push({ group: 'fm', x: bx + bw - 5, y: by, width: 10, height: fm.origin.y - by });
   }
@@ -756,29 +756,61 @@ function layoutDiagramModel(c) {
   const layout = c.layout;
   if (!layout || typeof layout !== 'object' || Array.isArray(layout)) return { status: 'invalid', code: 'invalid-layout' };
   if (layout.version !== 1) return { status: 'invalid', code: 'unsupported-version' };
-  const model = diagramModel(c), keys = layoutKeys(c, model);
+  const keys = layoutKeys(c, diagramModel(c));
   const entries = Object.keys(layout).filter((k) => k !== 'version').map((k) => [k, layoutOffset(layout, k)]).filter(([, d]) => d.x || d.y);
   if (!entries.length) return { status: 'none' };
   if (entries.some(([k]) => !keys.includes(k))) return { status: 'unsupported', code: 'unsupported-configuration' };
   if (entries.some(([, d]) => Math.abs(d.x) > LAYOUT_LIMIT || Math.abs(d.y) > LAYOUT_LIMIT)) return { status: 'invalid', code: 'out-of-range' };
+  // Try both connection sides between module and hot-water tank, preferring
+  // the facing sides, and keep the variant with the shortest clear pipes.
+  // The other variant is only tried when the module and the tank overlap
+  // horizontally (no clear facing side) or the facing sides fail.
+  let best = null, failure = null;
+  const evaluate = (model) => {
+    if (layoutCollision(c, model)) { failure ??= 'collision'; return; }
+    const routes = routeDiagramConnections(model, ['fm-supply', 'fm-return']);
+    const bad = Object.values(routes).find((r) => r.status !== 'routed');
+    if (bad) { failure ??= bad.code || bad.reason; return; }
+    let length = 0;
+    for (const r of Object.values(routes)) for (let i = 1; i < r.points.length; i++) length += Math.abs(r.points[i].x - r.points[i - 1].x) + Math.abs(r.points[i].y - r.points[i - 1].y);
+    model.layoutRoutes = routes;   // reused by the renderer
+    if (!best || length < best.length) best = { model, length };
+  };
+  const preferred = layoutVariant(c, layout, entries, null);
+  evaluate(preferred);
+  const fm = preferred.components.fm, hot = preferred.components[c.typ === 'getrennt' ? 'hot-tank' : 'tank'];
+  const overlap = fm.origin.x < hot.origin.x + hot.bounds.width && hot.origin.x < fm.origin.x + fm.bounds.width;
+  if (!best || overlap) evaluate(layoutVariant(c, layout, entries, !preferred.mirrored));
+  return best ? { status: 'applied', model: best.model } : { status: 'unsupported', code: failure };
+}
+// One candidate model. mirrored === null selects the facing sides.
+function layoutVariant(c, layout, entries, mirrored) {
+  const model = diagramModel(c);
   for (const [k, d] of entries) for (const id of layoutComponentIds(c, k)) {
     const origin = model.components[id].origin; origin.x += d.x; origin.y += d.y;
   }
-  // Sensor plates block only their painted plate and connector line, so pipes
-  // may pass beside them when a component moves to the left of the tanks.
-  for (const [id, b] of Object.entries(model.components)) if (id.startsWith('sensor-')) b.routingAreas = [{ x: -1, y: 0, width: 76, height: 30 }];
-  // The fresh water module and the hot-water tank use the sides facing one
-  // another, so either can move to the other side of its partner.
   const split = c.typ === 'getrennt', fm = model.components.fm, hot = model.components[split ? 'hot-tank' : 'tank'];
-  if (fm.origin.x + fm.bounds.width / 2 < hot.origin.x + hot.bounds.width / 2) {
+  const fmCenter = fm.origin.x + fm.bounds.width / 2;
+  model.mirrored = mirrored === null ? fmCenter < hot.origin.x + hot.bounds.width / 2 : mirrored;
+  if (model.mirrored) {
     mirrorLayoutPorts(hot, split ? ['fm-supply', 'fm-return'] : ['fm-supply']);
     mirrorLayoutPorts(fm, ['supply', 'return']);
+  }
+  // Sensor plates block only their painted plate and connector line. They sit
+  // on the side away from the module: on the hot-water tank opposite its
+  // module ports, on the buffer opposite the module.
+  for (const [id, b] of Object.entries(model.components)) {
+    if (!id.startsWith('sensor-')) continue;
+    const tank = model.components[b.parent];
+    const right = tank === hot ? model.mirrored : fmCenter < tank.origin.x + tank.bounds.width / 2;
+    const dx = right ? tank.origin.x + tank.bounds.width - b.origin.x : 0;   // right plates start at the tank edge
+    if (right) { b.sensorSide = 'right'; b.bounds = { ...b.bounds, x: dx }; }
+    b.routingAreas = [{ x: dx - 1, y: 0, width: 76, height: 30 }];
   }
   // The temperature legend belongs to the fresh water module.
   model.legendOffset = layoutOffset(layout, 'fm');
   model.layoutRouting = true;
-  if (layoutCollision(c, model)) return { status: 'unsupported', code: 'collision' };
-  return { status: 'applied', model };
+  return model;
 }
 
 // Only sides backed by the existing drawn connector geometry are declared here.
@@ -1339,7 +1371,10 @@ function routeDiagramConnections(model, ids, options = {}) {
       if (a.x !== b.x) obstacles.push({ id, x: Math.min(a.x,b.x) - 5, y: b.y - 5, width: Math.abs(a.x-b.x) + 10, height: 10 });
     }
     const boundary = model.components['domestic-boundary'];
-    if (boundary) obstacles.push({ id:'domestic-labels', x: boundary.origin.x - 120, y: boundary.origin.y - 8, width: 350, height: 22 });
+    // Experimental layouts reserve only the painted label area.
+    if (boundary) obstacles.push(model.layoutRouting
+      ? { id:'domestic-labels', x: boundary.origin.x - 60, y: boundary.origin.y - 4, width: boundary.bounds.width + 120, height: 20 }
+      : { id:'domestic-labels', x: boundary.origin.x - 120, y: boundary.origin.y - 8, width: 350, height: 22 });
     const legend = model.legendOffset || { x: 0, y: 0 };
     if (Object.keys(model.components).some(id => id.startsWith('sensor-'))) obstacles.push({ id:'legend', x: 370 + legend.x, y: 110 + legend.y, width: 90, height: 28 });
   }
@@ -1408,7 +1443,7 @@ function sequentialLayoutRoutes(candidates, obstacles) {
 function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
   const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
   const movedRouting = FM && [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; });
-  const routes = movedRouting ? routeDiagramConnections(model, routingIds) : null;
+  const routes = movedRouting ? (model.layoutRoutes || routeDiagramConnections(model, routingIds)) : null;
   if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
     error.code = route.code || route.reason; throw error;
@@ -1494,16 +1529,17 @@ function tankState(c, S, y_t) {
   return { fl, stops, avg, col };
 }
 
-function renderTankSensors({ fl, col, more, openComponent, closeComponent }) {
-  const pille = (f) => {
-    const y = r1(f.y), cl = col(f.wert);
-    return `<g${more(f.entity)}><line x1="60" y1="${y}" x2="72" y2="${y}" stroke="${cl}" stroke-width="1.5"/>` +
-      `<rect x="2" y="${r1(y - 15)}" width="58" height="30" rx="10" style="fill:var(--secondary-background-color,#2a2d33)" stroke="${cl}" stroke-width="1.5"/>` +
-      `<text x="31" y="${r1(y - 3)}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${esc(f.name)}</text>` +
-      `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
-      `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
+function renderTankSensors({ fl, col, more, openComponent, closeComponent, model }) {
+  const pille = (f, right) => {
+    // Right-hand plates (experimental layouts only) mirror the canonical recipe.
+    const y = r1(f.y), cl = col(f.wert), lx = right ? 202 : 60, px = right ? 214 : 2, tx = right ? 243 : 31, cx = right ? 202 : 72;
+    return `<g${more(f.entity)}><line x1="${lx}" y1="${y}" x2="${right ? 214 : 72}" y2="${y}" stroke="${cl}" stroke-width="1.5"/>` +
+      `<rect x="${px}" y="${r1(y - 15)}" width="58" height="30" rx="10" style="fill:var(--secondary-background-color,#2a2d33)" stroke="${cl}" stroke-width="1.5"/>` +
+      `<text x="${tx}" y="${r1(y - 3)}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${esc(f.name)}</text>` +
+      `<text x="${tx}" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
+      `<circle cx="${cx}" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
   };
-  return fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f) + closeComponent(id); }).join('');
+  return fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f, model?.components[id]?.sensorSide === 'right') + closeComponent(id); }).join('');
 }
 
 function renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S }) {
@@ -2656,7 +2692,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (K) o += portStub(`${bufferId}.additional-supply`) + portStub(`${bufferId}.additional-return`);
     if (FM) o += portStub(model.connections['fm-return'].to);
     o += renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S });
-    o += renderTankSensors({ fl, col, more, openComponent, closeComponent });
+    o += renderTankSensors({ fl, col, more, openComponent, closeComponent, model });
 
     /* Legionellenschutz */
     o += renderLegionellaBadge({ c, L, F, S, ON, TT, tankId, openComponent, closeComponent });
@@ -2920,7 +2956,8 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const keys = layoutKeys(this._preview._cfg, this._preview._baseModel).filter((k) => k !== 'speicher' || this._config.speicher?.typ !== 'getrennt');
     for (const key of keys) for (const id of layoutComponentIds(this._preview._cfg, key)) {
       const members = Object.values(model.components).filter((b) => { let r = b; while (r.parent) r = model.components[r.parent]; return r.id === id && !b.boundary; });
-      if (members.some((b) => p.x >= b.origin.x && p.x <= b.origin.x + b.bounds.width && p.y >= b.origin.y && p.y <= b.origin.y + b.bounds.height)) return { key, matrix };
+      if (members.some((b) => { const x = b.origin.x + b.bounds.x, y = b.origin.y + b.bounds.y;
+        return p.x >= x && p.x <= x + b.bounds.width && p.y >= y && p.y <= y + b.bounds.height; })) return { key, matrix };
     }
     return null;
   }
@@ -2974,6 +3011,10 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       let last = { ...origin }, frame = null, pending = null;
       try { this._preview.setPointerCapture(pointer); } catch (_) { /* best effort */ }
       dragging = true; this._preview.style.cursor = 'grabbing';
+      // Each step redraws the preview; paused flow animations avoid restarts.
+      const calm = document.createElement('style');
+      calm.textContent = 'svg *{animation:none!important}';
+      this._preview.shadowRoot?.appendChild(calm);
       this._layoutControls();
       const paint = () => {
         frame = null; if (!pending) return;
@@ -2981,9 +3022,11 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         pending = null;
         if (x === last.x && y === last.y) return;
         // Follow the pointer only through valid positions; otherwise stay put.
-        const config = this._layoutConfig(this._layoutWith(key, x, y)), result = this._layoutProbe(config);
-        if (result.status === 'applied' || result.status === 'none') { last = { x, y }; this._layoutPreview(config); }
-        else this._layoutMessage(this._layoutReason(result.code));
+        // The preview itself validates, so a valid step renders only once.
+        this._layoutPreview(this._layoutConfig(this._layoutWith(key, x, y)));
+        const result = this._preview._layoutResult;
+        if (!result || result.status === 'applied' || result.status === 'none') last = { x, y };
+        else { this._layoutPreview(this._layoutConfig(this._layoutWith(key, last.x, last.y))); this._layoutMessage(this._layoutReason(result.code)); }
       };
       const move = (e) => { if (e.pointerId !== pointer) return; pending = { x: e.clientX, y: e.clientY }; if (frame === null) frame = requestAnimationFrame(paint); };
       const finish = (e, commit) => {
@@ -2991,7 +3034,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         if (frame !== null) cancelAnimationFrame(frame);
         if (commit && pending) paint();
         for (const [name, fn] of handlers) this._preview.removeEventListener(name, fn);
-        dragging = false; this._preview.style.cursor = 'grab';
+        dragging = false; this._preview.style.cursor = 'grab'; calm.remove();
         if (commit && (last.x !== origin.x || last.y !== origin.y)) this._layoutSet(this._layoutWith(key, last.x, last.y));
         else this._layoutPreview();
       };
