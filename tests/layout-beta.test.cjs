@@ -105,7 +105,7 @@ test('invalid entries, versions, ranges and configurations are reported', () => 
   assert.equal(code({ version: 2, ports: { 'fm.cold-water': { mode: 'auto' } } }), 'unknown-port');
   assert.equal(code({ version: 2, ports: { 'fm.supply': { mode: 'manual', side: 'top' } } }), 'invalid-side');
   assert.equal(code({ version: 2, ports: { 'fm.supply': { mode: 'fixed' } } }), 'invalid-mode');
-  assert.equal(code({ version: 2, components: { fm: { x: 380, y: 74 } } }, { wp: { leistung: 'sensor.wp' } }), 'unsupported-configuration');
+  assert.equal(code({ version: 2, components: { fm: { x: 380, y: 74 } } }, { wp: { leistung: 'sensor.wp', wmz: 'sensor.wp' } }), 'unsupported-configuration');
 });
 
 test('a long live value falls back and recovers on the next update', () => {
@@ -150,7 +150,7 @@ test('sensor plates move to the tank side away from the module', () => {
   const { card, html } = render(config(at({ fm: { x: 125, y: 259 }, 'hot-tank': { x: 422, y: 84 }, 'buffer-tank': { x: 487, y: 353 } })));
   assert.equal(card._layoutResult.status, 'applied');
   const m = card._drawnModel;
-  assert.equal(m.facingLeft, true);
+  assert.equal(m.fmLeft, true);
   for (const id of ['sensor-0', 'sensor-1', 'sensor-2']) assert.equal(m.components[id].side, 'right');
   // Right-hand plate recipe: line from the tank edge, plate to its right.
   assert.match(html, /<line x1="202" y1="102" x2="214"/);
@@ -159,5 +159,49 @@ test('sensor plates move to the tank side away from the module', () => {
 test('a module directly below the tank keeps the shorter side variant', () => {
   const { card } = render(config(at({ fm: { x: 260, y: 269 }, 'hot-tank': { x: 457, y: 79 }, 'buffer-tank': { x: 502, y: 353 } })));
   assert.equal(card._layoutResult.status, 'applied');
-  assert.equal(card._drawnModel.facingLeft, true);
+  assert.equal(card._drawnModel.fmLeft, true);
+});
+
+// Simple air-source heat pump: canonical wp (330,150), valve (228,268.5) at 50 % split.
+const withWp = (components) => config({ wp: { leistung: 'sensor.wp' }, ...at(components) });
+
+test('an air heat pump and its valve are movable; other heat pumps are not', () => {
+  for (const [id, x, y] of [['wp', 450, 270], ['valve', 228, 428]]) assert.equal(render(withWp({ [id]: { x, y } })).card._layoutResult.status, 'applied', id);
+  const meter = render(config({ wp: { leistung: 'sensor.wp', wmz: 'sensor.wp' }, ...at({ wp: { x: 450, y: 270 } }) })).card._layoutResult;
+  assert.equal(meter.code, 'unsupported-configuration');
+});
+
+test('moving the heat pump routes all primary pipes with bridges where they cross', () => {
+  const { card, html } = render(withWp({ wp: { x: 450, y: 270 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(Object.keys(card._drawnModel.layoutRoutes).length, 7);
+  assert.match(html, /A6 6 0 0 [01]/);   // bridge arcs
+});
+
+test('the valve turns to face a heat pump on its left', () => {
+  // Valve right of the heat pump: its side port faces left, the motor moves right.
+  const { card, html } = render(withWp({ valve: { x: 420, y: 360 }, wp: { x: 330, y: 420 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  const v = card._drawnModel.components.valve;
+  assert.equal(v.ports.wp.side, 'left');
+  assert.equal(v.ports.upper.x, v.bounds.width - 34);
+  const vx = v.origin.x + v.bounds.width - 34;
+  assert.ok(html.includes(`<rect x="${vx + 18}" `), 'motor drawn on the right');
+});
+
+test('the valve symbol is mirrored together with its ports', () => {
+  const { card } = render(withWp({}));
+  const m = card._baseModel, v = m.components.valve;
+  assert.equal(v.ports.wp.side, 'right');
+  assert.deepEqual(plain(Object.keys(v.ports.wp.sides).sort()), ['left', 'right']);
+  assert.equal(v.ports.wp.sides.left.x, 0);
+  assert.equal(v.ports.wp.sides.left.siblings.upper, v.bounds.width - v.ports.upper.x);
+  assert.equal(m.components.wp.ports['upper-supply'].sides, undefined);   // the top connector stays fixed
+});
+
+test('moving the valve down keeps the module pipes on the facing sides', () => {
+  const { card } = render(withWp({ valve: { x: 228, y: 428 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(card._drawnModel.fmLeft, false);
+  assert.equal(card._drawnModel.components['hot-tank'].ports['fm-supply'].side, 'right');
 });

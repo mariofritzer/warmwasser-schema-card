@@ -17,7 +17,7 @@
        receives each emitted configuration like Home Assistant would.
        `?selftest=1` runs automated pointer checks and prints RESULT. -->
   <h1>Layout-Editor (Beta)</h1>
-  <p><button id="split">Getrennte Speicher + FM</button> <button id="single">Schichtspeicher + FM</button> <button id="wp">Mit Wärmepumpe (nicht unterstützt)</button></p>
+  <p><button id="split">Getrennte Speicher + FM</button> <button id="single">Schichtspeicher + FM</button> <button id="wp">Mit Luft-Wärmepumpe</button> <button id="wp-meter">WP mit Wärmemengenzähler (nicht unterstützt)</button></p>
   <main><div id="editor"></div><div><div id="card"></div><pre id="config"></pre></div></main>
   <pre id="result"></pre>
   <script>window.onerror = (m, f, l, c, e) => { document.getElementById('result').textContent += 'RESULT ONERROR ' + m + ' ' + l + ':' + c + ' ' + (e && e.stack); };</script>
@@ -47,7 +47,8 @@
     document.getElementById('split').onclick = () => install(base('getrennt'));
     document.getElementById('single').onclick = () => install(base('schicht'));
     document.getElementById('wp').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
-    install(base('getrennt', new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":2,"components":{"fm":{"x":380,"y":74},"buffer-tank":{"x":222,"y":203}}}') } : {}));
+    document.getElementById('wp-meter').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp', wmz: 'sensor.wp' } }));
+    install(base('getrennt', { ...(new URLSearchParams(location.search).has('wp') ? { wp: { leistung: 'sensor.wp' } } : {}), ...(new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":2,"components":{"fm":{"x":380,"y":74},"buffer-tank":{"x":222,"y":203}}}') } : {}) }));
 
     // Synthetic mouse drag in SVG units, relative to the component's centre.
     async function drag(id, dx, dy) {
@@ -99,6 +100,9 @@
       await drag('fm', 40, 60);
       check('moving replaces a V1 layout with V2', config.layout?.version === 2 && fm()?.x === 380, layout());
       install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
+      await drag('wp', 120, 120);   // canonical origin (330,150)
+      check('drag heat pump routes all pipes', config.layout?.components?.wp?.x === 450 && config.layout.components.wp.y === 270 && card._layoutResult?.status === 'applied', layout());
+      install(base('getrennt', { wp: { leistung: 'sensor.wp', wmz: 'sensor.wp' } }));
       check('unsupported configuration offers no component', editor._componentSelect.options.length === 1);
       install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 2, components: { fm: { x: 380, y: 74 } } } });
       check('without beta option layout is ignored', card._layoutResult === null && !editor._preview);

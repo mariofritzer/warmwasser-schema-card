@@ -647,15 +647,24 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
 // Ports with a proven alternative connector side (left/right). The alternative
 // mirrors the drawn anchor and stub about the component's vertical centre line;
 // the symbols of these components are symmetric. All other ports stay fixed.
-const PORT_SIDES = { 'hot-tank': ['fm-supply', 'fm-return'], tank: ['fm-supply'], fm: ['supply', 'return'] };
+const PORT_SIDES = {
+  'hot-tank': ['fm-supply', 'fm-return', 'wp-supply', 'wp-return'], 'buffer-tank': ['lower-supply', 'lower-return'],
+  tank: ['fm-supply', 'wp-supply', 'wp-return', 'lower-supply', 'lower-return'], fm: ['supply', 'return'],
+  wp: ['lower-supply', 'return'], valve: ['wp'],
+};
+// The valve symbol is asymmetric: its side port turns the whole symbol, so the
+// top and bottom ports move with it.
+const PORT_SIDE_SIBLINGS = { valve: { wp: ['upper', 'lower'] } };
 function declarePortSides(components) {
   for (const [id, names] of Object.entries(PORT_SIDES)) for (const name of names) {
     const comp = components[id], port = comp?.ports[name];
     if (!port || !['left', 'right'].includes(port.direction)) continue;
     const width = comp.bounds.width, other = port.direction === 'left' ? 'right' : 'left';
+    const siblings = (PORT_SIDE_SIBLINGS[id]?.[name] || []).filter((n) => comp.ports[n]);
     port.sides = {
-      [port.direction]: { x: port.x, direction: port.direction, stub: port.stub },
-      [other]: { x: width - port.x, direction: other, stub: port.stub && { ...port.stub, x: width - port.stub.x - port.stub.width } },
+      [port.direction]: { x: port.x, direction: port.direction, stub: port.stub, siblings: Object.fromEntries(siblings.map((n) => [n, comp.ports[n].x])) },
+      [other]: { x: width - port.x, direction: other, stub: port.stub && { ...port.stub, x: width - port.stub.x - port.stub.width },
+        siblings: Object.fromEntries(siblings.map((n) => [n, width - comp.ports[n].x])) },
     };
     port.side = port.direction;
   }
@@ -666,6 +675,7 @@ function setPortSide(model, reference, side) {
   const [id, name] = reference.split('.'), comp = model.components[id], port = comp?.ports[name], geometry = port?.sides?.[side];
   if (!geometry) return false;
   port.x = geometry.x; port.direction = geometry.direction; port.stub = geometry.stub && { ...geometry.stub }; port.side = side;
+  for (const [name, x] of Object.entries(geometry.siblings || {})) comp.ports[name].x = x;
   if (comp.routingAreas) comp.routingAreas = [{ ...comp.bounds }, ...Object.values(comp.ports).filter((p) => p.stub).map((p) => ({ ...p.stub }))];
   return true;
 }
@@ -712,15 +722,16 @@ function diagramStub(model, reference) {
  * rendering is unchanged. First scope: configurations whose fresh-water pipes
  * the router already covers. */
 const LAYOUT_LABELS = {
-  de: { tanks: 'Beide Speicher', tank: 'Speicher', 'hot-tank': 'Warmwasserspeicher', 'buffer-tank': 'Pufferspeicher', fm: 'Frischwassermodul' },
-  en: { tanks: 'Both tanks', tank: 'Tank', 'hot-tank': 'Hot-water tank', 'buffer-tank': 'Buffer tank', fm: 'Fresh water module' },
+  de: { tanks: 'Beide Speicher', tank: 'Speicher', 'hot-tank': 'Warmwasserspeicher', 'buffer-tank': 'Pufferspeicher', fm: 'Frischwassermodul', wp: 'Wärmepumpe', valve: 'Umschaltventil' },
+  en: { tanks: 'Both tanks', tank: 'Tank', 'hot-tank': 'Hot-water tank', 'buffer-tank': 'Buffer tank', fm: 'Fresh water module', wp: 'Heat pump', valve: 'Diverter valve' },
 };
 const LAYOUT_LIMIT = 600;
 const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-layout', 'unknown-id', 'unknown-port', 'invalid-position', 'invalid-mode', 'invalid-side', 'out-of-range'];
 // Editable keys: model component ids, plus `tanks` for both separate tanks.
 function layoutKeys(c, model) {
-  if (!model.routingScope?.fm || c.wp) return [];
-  return c.typ === 'getrennt' ? ['hot-tank', 'buffer-tank', 'tanks', 'fm'] : ['tank', 'fm'];
+  // routingScope.fm already limits a heat pump to the simple air-source case.
+  if (!model.routingScope?.fm) return [];
+  return [...(c.typ === 'getrennt' ? ['hot-tank', 'buffer-tank', 'tanks'] : ['tank']), 'fm', ...(c.wp ? ['wp', 'valve'] : [])];
 }
 function layoutComponentIds(c, key) { return key === 'tanks' ? ['hot-tank', 'buffer-tank'] : [key]; }
 const layoutObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -808,9 +819,11 @@ function layoutDiagramModel(c) {
   // only tried when module and tank overlap horizontally (no clear facing
   // side) or the facing sides fail; the shorter routed variant wins.
   let best = null, failure = null;
+  // With a heat pump the router requires the complete primary batch.
+  const routingIds = ['fm-supply', 'fm-return', ...(c.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
   const evaluate = (model) => {
     if (layoutCollision(c, model)) { failure ??= 'collision'; return; }
-    const routes = routeDiagramConnections(model, ['fm-supply', 'fm-return']);
+    const routes = routeDiagramConnections(model, routingIds);
     const bad = Object.values(routes).find((r) => r.status !== 'routed');
     if (bad) { failure ??= bad.code || bad.reason; return; }
     let length = 0;
@@ -818,25 +831,37 @@ function layoutDiagramModel(c) {
     model.layoutRoutes = routes;   // reused by the renderer
     if (!best || length < best.length) best = { model, length };
   };
-  const preferred = layoutVariant(c, parsed, null);
+  const preferred = layoutVariant(c, parsed, {});
   evaluate(preferred);
-  const fm = preferred.components.fm, hot = preferred.components[c.typ === 'getrennt' ? 'hot-tank' : 'tank'];
-  const overlap = fm.origin.x < hot.origin.x + hot.bounds.width && hot.origin.x < fm.origin.x + fm.bounds.width;
-  if (!best || overlap) evaluate(layoutVariant(c, parsed, !preferred.facingLeft));
+  const hot = preferred.components[c.typ === 'getrennt' ? 'hot-tank' : 'tank'];
+  const overlaps = (id) => { const b = preferred.components[id]; return !!b && b.origin.x < hot.origin.x + hot.bounds.width && hot.origin.x < b.origin.x + b.bounds.width; };
+  // Only an ambiguous side (module or heat pump above/below the tank) tries
+  // the other side; pipes around the far side of a tank are not offered.
+  const fmFlip = overlaps('fm'), wpFlip = !!c.wp && overlaps('wp');
+  if (fmFlip) evaluate(layoutVariant(c, parsed, { fm: !preferred.fmLeft }));
+  if (wpFlip) evaluate(layoutVariant(c, parsed, { wp: !preferred.wpLeft }));
+  if (fmFlip && wpFlip) evaluate(layoutVariant(c, parsed, { fm: !preferred.fmLeft, wp: !preferred.wpLeft }));
   return best ? { status: 'applied', model: best.model } : { status: 'unsupported', code: failure };
 }
-// One candidate model. tankLeft === null: the tank's auto ports face the module.
-function layoutVariant(c, parsed, tankLeft) {
+// One candidate model. Without a choice in `flip`, auto ports face their
+// partner: fm and tank fm ports each other, heat pump and tank heat-pump
+// ports each other, and the valve's side port the heat pump.
+function layoutVariant(c, parsed, flip) {
   const model = diagramModel(c);
   for (const [id, p] of Object.entries(parsed.components)) Object.assign(model.components[id].origin, p);
   model.layoutRouting = true;
   const split = c.typ === 'getrennt', fm = model.components.fm, hot = model.components[split ? 'hot-tank' : 'tank'];
-  const fmCenter = fm.origin.x + fm.bounds.width / 2;
-  model.facingLeft = tankLeft === null ? fmCenter < hot.origin.x + hot.bounds.width / 2 : tankLeft;
+  const center = (b) => b.origin.x + b.bounds.width / 2, fmCenter = center(fm), wp = model.components.wp;
+  model.fmLeft = flip.fm ?? fmCenter < center(hot);          // tank fm ports on the left
+  model.wpLeft = wp ? flip.wp ?? center(wp) < center(hot) : false;   // tank heat-pump ports on the left
+  const auto = (id, name) => id === 'fm' ? (model.fmLeft ? 'right' : 'left')
+    : id === 'wp' ? (model.wpLeft ? 'right' : 'left')
+    : id === 'valve' ? (center(wp) < center(model.components.valve) ? 'left' : 'right')
+    : name.startsWith('fm-') ? (model.fmLeft ? 'left' : 'right') : (model.wpLeft ? 'left' : 'right');
   for (const [id, comp] of Object.entries(model.components)) for (const [name, port] of Object.entries(comp.ports)) {
     if (!port.sides) continue;
-    const ref = `${id}.${name}`, auto = id === 'fm' ? (model.facingLeft ? 'right' : 'left') : (model.facingLeft ? 'left' : 'right');
-    setPortSide(model, ref, parsed.ports[ref] || auto);
+    const ref = `${id}.${name}`;
+    setPortSide(model, ref, parsed.ports[ref] || auto(id, name));
   }
   // Sensor plates block only their painted plate and connector line. They sit
   // on the tank side with fewer module ports; on the buffer, away from the module.
@@ -893,6 +918,15 @@ function routeOrthogonalConnection(request) {
   if (boxes.some(b => ![b.left, b.right, b.top, b.bottom].every(finite))) {
     return fail('invalid-input', 'Inflated obstacle coordinates must be finite.');
   }
+  const bridgeRoom = 20;
+  const crossable = (Array.isArray(request.crossable) ? request.crossable : []).filter(s => s && [s.a, s.b].every(pointValid) && (s.a.x === s.b.x) !== (s.a.y === s.b.y)).map(s => {
+    const horizontal = s.a.y === s.b.y, lo = horizontal ? Math.min(s.a.x, s.b.x) : Math.min(s.a.y, s.b.y), hi = horizontal ? Math.max(s.a.x, s.b.x) : Math.max(s.a.y, s.b.y);
+    // Parallel pipes keep the normal clearance. A bridge needs more room from
+    // both pipes' corners: corner radius, bridge radius and half the pipe
+    // width (compilePipeRoutes) plus one unit.
+    return { horizontal, line: horizontal ? s.a.y : s.a.x, left: Math.min(s.a.x, s.b.x) - clearance, right: Math.max(s.a.x, s.b.x) + clearance,
+      top: Math.min(s.a.y, s.b.y) - clearance, bottom: Math.max(s.a.y, s.b.y) + clearance, from: lo + bridgeRoom, to: hi - bridgeRoom, lo, hi };
+  });
   // Closed obstacle boundaries prevent a centerline from grazing the inflated body.
   const inside = (p, b) => p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom;
   const intersects = (a, c, b) => a.y === c.y
@@ -928,7 +962,7 @@ function routeOrthogonalConnection(request) {
   const anchors = [start, ...vias, end];
   const xs = new Set(), ys = new Set();
   for (const p of anchors) { xs.add(p.x); ys.add(p.y); }
-  for (const b of boxes) {
+  for (const b of [...boxes, ...crossable]) {
     xs.add(b.left - margin); xs.add(b.right + margin);
     ys.add(b.top - margin); ys.add(b.bottom + margin);
   }
@@ -939,11 +973,58 @@ function routeOrthogonalConnection(request) {
     while (stage < target.length && target[stage][0] === x && target[stage][1] === y) stage++;
     return stage;
   };
-  const key = (x, y, direction, stage) => `${x},${y},${direction},${stage}`;
+  // Numeric states and per-edge caches keep the search identical but fast:
+  // obstacle tests run once per grid edge instead of once per relaxation.
+  const NX = X.length, NY = Y.length, S = target.length + 1, dirIndex = { left: 0, right: 1, top: 2, bottom: 3 };
+  const key = (x, y, direction, stage) => ((x * NY + y) * 4 + dirIndex[direction]) * S + stage;
+  const edges = new Int16Array(NX * NY * 4).fill(-1), bands = new Int8Array(NX * NY).fill(-1);
+  // Hard obstacles: mark every grid edge a box touches (closed boundaries, as
+  // in intersects()). blockedH[x,y]: (x,y)-(x+1,y); blockedV[x,y]: (x,y)-(x,y+1).
+  const blockedH = new Uint8Array(NX * NY), blockedV = new Uint8Array(NX * NY);
+  const lower = (A, v) => { let lo = 0, hi = A.length; while (lo < hi) { const m = (lo + hi) >> 1; if (A[m] < v) lo = m + 1; else hi = m; } return lo; };
+  const upper = (A, v) => { let lo = 0, hi = A.length; while (lo < hi) { const m = (lo + hi) >> 1; if (A[m] <= v) lo = m + 1; else hi = m; } return lo; };
+  for (const b of boxes) {
+    const x0 = lower(X, b.left), x1 = upper(X, b.right) - 1, y0 = lower(Y, b.top), y1 = upper(Y, b.bottom) - 1;
+    // Horizontal edges on rows inside the box whose span reaches into [left, right].
+    for (let y = y0; y <= y1; y++) for (let x = Math.max(0, x0 - 1); x <= Math.min(NX - 2, x1); x++) blockedH[x * NY + y] = 1;
+    for (let x = x0; x <= x1; x++) for (let y = Math.max(0, y0 - 1); y <= Math.min(NY - 2, y1); y++) blockedV[x * NY + y] = 1;
+  }
+  // -2: blocked; otherwise the number of placed pipes crossed by the edge.
+  const edge = (x0, y0, d, x1, y1) => {
+    const i = (x0 * NY + y0) * 4 + d;
+    if (edges[i] !== -1) return edges[i];
+    const hard = d === 0 ? blockedH[(x0 - 1) * NY + y0] : d === 1 ? blockedH[x0 * NY + y0] : d === 2 ? blockedV[x0 * NY + y0 - 1] : blockedV[x0 * NY + y0];
+    let value = hard ? -2 : 0;
+    const a = { x: X[x0], y: Y[y0] }, b = { x: X[x1], y: Y[y1] };
+    if (value === 0) for (const pipe of crossable) {
+      // Optional placed pipes (layouts only) may be crossed at a right angle
+      // away from their ends; parallel runs are blocked.
+      if (!intersects(a, b, pipe)) continue;
+      const across = pipe.horizontal ? a.x === b.x : a.y === b.y, at = pipe.horizontal ? a.x : a.y;
+      if (!across || at < pipe.from || at > pipe.to) { value = -2; break; }
+      if (!inside(a, pipe)) value++;
+    }
+    return edges[i] = value;
+  };
+  // A turn at node cur: the run that arrived (cur.direction) or the edge that
+  // leaves (direction) must not cross a placed pipe closer than bridgeRoom.
+  const nearBridge = (cur, direction, crossingsOut) => {
+    const px = X[cur.x], py = Y[cur.y];
+    for (const pipe of crossable) {
+      const along = pipe.horizontal ? px : py, off = (pipe.horizontal ? py : px) - pipe.line;
+      if (along < pipe.lo || along > pipe.hi || off === 0 || Math.abs(off) >= bridgeRoom) continue;
+      const [ix, iy] = vectors[cur.direction], [ox, oy] = vectors[direction];
+      const inDir = pipe.horizontal ? iy : ix, outDir = pipe.horizontal ? oy : ox;
+      if (inDir && Math.sign(off) === Math.sign(inDir)) return true;              // crossed just before the turn
+      if (crossingsOut && outDir && Math.sign(off) === -Math.sign(outDir)) return true;   // about to cross after it
+    }
+    return false;
+  };
+  const band = (x, y) => { const i = x * NY + y; if (bands[i] === -1) { const a = { x: X[x], y: Y[y] }; bands[i] = crossable.some(pipe => inside(a, pipe)) ? 1 : 0; } return bands[i] === 1; };
   const heap = [];
   function push(item) {
     let i = heap.length; heap.push(item);
-    while (i) { const p = (i - 1) >> 1; if (heap[p].cost <= item.cost) break; heap[i] = heap[p]; i = p; }
+    while (i) { const p = (i - 1) >> 1; if (heap[p].f <= item.f) break; heap[i] = heap[p]; i = p; }
     heap[i] = item;
   }
   function pop() {
@@ -952,41 +1033,51 @@ function routeOrthogonalConnection(request) {
       let i = 0;
       while (2 * i + 1 < heap.length) {
         let c = 2 * i + 1;
-        if (c + 1 < heap.length && heap[c + 1].cost < heap[c].cost) c++;
-        if (heap[c].cost >= last.cost) break;
+        if (c + 1 < heap.length && heap[c + 1].f < heap[c].f) c++;
+        if (heap[c].f >= last.f) break;
         heap[i] = heap[c]; i = c;
       }
       heap[i] = last;
     }
     return first;
   }
+  // Optional A* (layouts only): admissible estimate = distance to the next
+  // anchor plus the remaining anchor-to-anchor distances. Without it the
+  // priority equals the cost, as before.
+  const rest = new Float64Array(S);
+  for (let k = target.length - 2; k >= 0; k--) rest[k] = rest[k + 1] + Math.abs(anchors[k].x - anchors[k + 1].x) + Math.abs(anchors[k].y - anchors[k + 1].y);
+  const estimate = request.astar ? (x, y, stage) => stage >= target.length ? 0 : Math.abs(X[x] - anchors[stage].x) + Math.abs(Y[y] - anchors[stage].y) + rest[stage] : () => 0;
   const sx = target[0][0], sy = target[0][1], initialStage = advance(sx, sy, 1);
   const initialKey = key(sx, sy, request.from.direction, initialStage);
-  const distance = new Map([[initialKey, 0]]), previous = new Map();
-  push({ x: sx, y: sy, direction: request.from.direction, stage: initialStage, cost: 0, key: initialKey });
-  let finish = null;
+  const distance = new Float64Array(NX * NY * 4 * S).fill(Infinity), previous = new Int32Array(NX * NY * 4 * S).fill(-1);
+  distance[initialKey] = 0;
+  push({ x: sx, y: sy, direction: request.from.direction, stage: initialStage, cost: 0, f: estimate(sx, sy, initialStage), key: initialKey });
+  let finish = -1;
   while (heap.length) {
     const cur = pop();
-    if (distance.get(cur.key) !== cur.cost) continue;
+    if (distance[cur.key] !== cur.cost) continue;
     if (cur.stage === target.length && cur.x === target[target.length - 1][0] && cur.y === target[target.length - 1][1] && cur.direction !== request.to.direction) { finish = cur.key; break; }
     for (const direction of dirs) {
       if (direction === opposite[cur.direction]) continue;
       const [dx, dy] = vectors[direction], x = cur.x + dx, y = cur.y + dy;
-      if (x < 0 || x >= X.length || y < 0 || y >= Y.length) continue;
-      const a = { x: X[cur.x], y: Y[cur.y] }, b = { x: X[x], y: Y[y] };
-      if (boxes.some(box => intersects(a, b, box))) continue;
+      if (x < 0 || x >= NX || y < 0 || y >= NY) continue;
+      const crossings = edge(cur.x, cur.y, dirIndex[direction], x, y);
+      if (crossings === -2) continue;
+      // No turn while crossing a placed pipe, nor within bridge room of a
+      // bridge just passed or about to be passed.
+      if (crossable.length && direction !== cur.direction && (band(cur.x, cur.y) || nearBridge(cur, direction, crossings))) continue;
       const stage = advance(x, y, cur.stage), nextKey = key(x, y, direction, stage);
-      const cost = cur.cost + Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + (direction === cur.direction ? 0 : 20);
-      if (cost >= (distance.get(nextKey) ?? Infinity)) continue;
-      distance.set(nextKey, cost); previous.set(nextKey, cur.key);
-      push({ x, y, direction, stage, cost, key: nextKey });
+      const cost = cur.cost + Math.abs(X[cur.x] - X[x]) + Math.abs(Y[cur.y] - Y[y]) + (direction === cur.direction ? 0 : 20) + crossings * 60;
+      if (cost >= distance[nextKey]) continue;
+      distance[nextKey] = cost; previous[nextKey] = cur.key;
+      push({ x, y, direction, stage, cost, f: cost + estimate(x, y, stage), key: nextKey });
     }
   }
-  if (!finish) return fail('no-route', 'No obstacle-free orthogonal route satisfies the ports and required vias.');
+  if (finish < 0) return fail('no-route', 'No obstacle-free orthogonal route satisfies the ports and required vias.');
   const raw = [];
-  for (let k = finish; k; k = previous.get(k)) {
-    const [x, y] = k.split(',').map(Number);
-    raw.push({ x: X[x], y: Y[y] });
+  for (let k = finish; k >= 0; k = previous[k]) {
+    const cell = Math.floor(k / (4 * S));
+    raw.push({ x: X[Math.floor(cell / NY)], y: Y[cell % NY] });
   }
   raw.reverse();
   // Preserve all mandatory via coordinates, even when collinear.
@@ -1429,7 +1520,7 @@ function routeDiagramConnections(model, ids, options = {}) {
     if (!resolved[0].direction || !resolved.at(-1).direction) { result[id] = { status:'unsupported', reason:'direction-required' }; continue; }
     if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).length) { result[id] = { status:'failed', code:'invalid-options' }; continue; }
     if (model.routingScope && !model.routingScope.fm) { result[id] = { status:'unsupported', reason:'unsupported-configuration' }; continue; }
-    const routed = routeOrthogonalConnection({ from: resolved[0], to: resolved.at(-1), vias: resolved.slice(1,-1).map(p => ({ id:p.ref, x:p.x, y:p.y })), obstacles, clearance:13, lead:16 });
+    const routed = routeOrthogonalConnection({ from: resolved[0], to: resolved.at(-1), vias: resolved.slice(1,-1).map(p => ({ id:p.ref, x:p.x, y:p.y })), obstacles, clearance:13, lead:16, ...(model.layoutRouting ? { astar: true } : {}) });
     if (routed.status !== 'routed') { result[id] = routed; continue; }
     const role = resolved[0].role === 'supply' && resolved.at(-1).role === 'supply' ? 'supply' : 'neutral';
     candidates.push({ id, role, points:routed.points, nodes:resolved.map(p => ({ ref:p.ref, x:p.x, y:p.y })),
@@ -1452,30 +1543,52 @@ function routeDiagramConnections(model, ids, options = {}) {
 // Route the candidates one after another, treating the inner segments of the
 // pipes already placed as obstacles. Tries every order of up to three pipes.
 function sequentialLayoutRoutes(candidates, obstacles) {
-  const orders = candidates.length > 3 ? [candidates] : (function permute(list) {
-    return list.length <= 1 ? [list] : list.flatMap((item, i) => permute([...list.slice(0, i), ...list.slice(i + 1)]).map(rest => [item, ...rest]));
-  })(candidates);
-  // Keep the escape leads of the other pipes' ports clear.
+  const span = (c) => Math.abs(c.endpoints.from.x - c.endpoints.to.x) + Math.abs(c.endpoints.from.y - c.endpoints.to.y);
   const vectors = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
-  const lead = (p) => { const [dx, dy] = vectors[p.direction] || [0, 0], q = { x: p.x + dx * 22, y: p.y + dy * 22 };
-    return { x: Math.min(p.x, q.x), y: Math.min(p.y, q.y), width: Math.abs(p.x - q.x), height: Math.abs(p.y - q.y) }; };
-  for (const order of orders) {
-    const placed = [], extra = [];
+  const lead = (p, length, owner) => { const [dx, dy] = vectors[p.direction] || [0, 0], q = { x: p.x + dx * length, y: p.y + dy * length };
+    return { owner, x: Math.min(p.x, q.x), y: Math.min(p.y, q.y), width: Math.abs(p.x - q.x), height: Math.abs(p.y - q.y) }; };
+  const segment = (a, b, owner) => ({ owner, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) });
+  const attempt = (order, crossing) => {
+    const placed = [], extra = [], crossable = [];
     for (const candidate of order) {
       const from = candidate.endpoints.from, to = candidate.endpoints.to;
-      const leads = candidates.filter((other) => other !== candidate).flatMap((other) => [lead(other.endpoints.from), lead(other.endpoints.to)]);
-      const routed = routeOrthogonalConnection({ from, to, vias: candidate.endpoints.vias, obstacles: [...obstacles, ...extra, ...leads], clearance:13, lead:16 });
-      if (routed.status !== 'routed') break;
+      // Without crossings: placed pipes are obstacles and the leads of all other
+      // ports stay clear. With crossings: placed pipes may be bridged (not
+      // followed), their leads are fixed, and only pending leads stay clear.
+      const others = crossing ? order.slice(order.indexOf(candidate) + 1) : candidates.filter((other) => other !== candidate);
+      const leads = others.flatMap((other) => [lead(other.endpoints.from, crossing ? 16 : 22, crossing ? other.endpoints.from.owner : undefined),
+        lead(other.endpoints.to, crossing ? 16 : 22, crossing ? other.endpoints.to.owner : undefined)]);
+      const routed = routeOrthogonalConnection({ from, to, vias: candidate.endpoints.vias, obstacles: [...obstacles, ...extra, ...leads], crossable, clearance:13, lead:16, astar: true });
+      if (routed.status !== 'routed') return { failed: candidate.id };
       placed.push({ ...candidate, points: routed.points });
-      // Port lead segments stay free so neighbouring ports can still escape.
-      for (let i = 1; i < routed.points.length - 2; i++) {
-        const a = routed.points[i], b = routed.points[i + 1];
-        extra.push({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) });
+      const pts = routed.points;
+      if (crossing) extra.push(segment(pts[0], pts[1], from.owner), segment(pts.at(-2), pts.at(-1), to.owner));
+      for (let i = 1; i < pts.length - 2; i++) {
+        if (crossing) crossable.push({ a: pts[i], b: pts[i + 1] });
+        else extra.push(segment(pts[i], pts[i + 1]));
       }
     }
-    if (placed.length !== order.length) continue;
     const compiled = compilePipeRoutes(placed.map(({ endpoints, ...route }) => route), { radius:8, bridgeRadius:6, halfWidth:5, obstacles });
-    if (compiled.status === 'routed') return compiled;
+    return compiled.status === 'routed' ? { compiled } : { failed: compiled.connectionIds?.at(-1) };
+  };
+  // Prefer layouts without crossings; bridges only when necessary. Short pipes
+  // go first; a pipe that fails moves to the front for the next try (rip-up).
+  for (const crossing of [false, true]) {
+    let order = [...candidates].sort((a, b) => span(a) - span(b));
+    const seen = new Set();
+    // Batches with more than three pipes (heat pump) need bridges in practice:
+    // a single crossing-free try is enough.
+    const limit = !crossing && candidates.length > 3 ? 1 : candidates.length + 1;
+    for (let tries = 0; tries < limit; tries++) {
+      const signature = order.map((c) => c.id).join();
+      if (seen.has(signature)) break;
+      seen.add(signature);
+      const result = attempt(order, crossing);
+      if (result.compiled) return result.compiled;
+      const failed = order.find((c) => c.id === result.failed);
+      if (!failed) break;
+      order = [failed, ...order.filter((c) => c !== failed)];
+    }
   }
   return null;
 }
@@ -1969,12 +2082,13 @@ const renderPumpe = (x, y, d, on, aktiv) => {
     `<circle cx="${x}" cy="${y}" r="10" fill="#2b2f35" stroke="${cl}" stroke-width="1.6"/>` +
     `<path d="M${r2(x + 10 * dx)} ${r2(y + 10 * dy)}L${r2(x - 5 * dx + 8.66 * dy)} ${r2(y - 5 * dy + 8.66 * dx)}L${r2(x - 5 * dx - 8.66 * dy)} ${r2(y - 5 * dy - 8.66 * dx)}Z" fill="${on ? aktiv : '#6b7280'}"/>`;
 };
-const renderMischer = (x, y, cl, a, cw, ck) =>
-  `<line x1="${x}" y1="${y}" x2="${x - 18}" y2="${y}" stroke="#8a9099" stroke-width="2"/>` +
-  `<rect x="${x - 34}" y="${y - 9}" width="16" height="18" rx="3" class="wm"/>` +
-  `<text x="${x - 26}" y="${y + 3}" font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
-  `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}ZM${x - 9} ${y + 14}H${x + 9}L${x} ${y}ZM${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="#1f2329" stroke="${cl}" stroke-width="1.6" stroke-linejoin="round"/>` +
-  (a !== null ? `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}Z" fill="${cw}" fill-opacity="${r2(0.1 + 0.8 * a)}"/><path d="M${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="${ck}" fill-opacity="${r2(0.9 - 0.8 * a)}"/>` : '') +
+// d = -1 draws the mirrored symbol (side port left, motor right); layouts only.
+const renderMischer = (x, y, cl, a, cw, ck, d = 1) =>
+  `<line x1="${x}" y1="${y}" x2="${x - 18 * d}" y2="${y}" stroke="#8a9099" stroke-width="2"/>` +
+  `<rect x="${d > 0 ? x - 34 : x + 18}" y="${y - 9}" width="16" height="18" rx="3" class="wm"/>` +
+  `<text x="${x - 26 * d}" y="${y + 3}" font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
+  `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}ZM${x - 9} ${y + 14}H${x + 9}L${x} ${y}ZM${x + 15 * d} ${y - 9}V${y + 9}L${x} ${y}Z" fill="#1f2329" stroke="${cl}" stroke-width="1.6" stroke-linejoin="round"/>` +
+  (a !== null ? `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}Z" fill="${cw}" fill-opacity="${r2(0.1 + 0.8 * a)}"/><path d="M${x + 15 * d} ${y - 9}V${y + 9}L${x} ${y}Z" fill="${ck}" fill-opacity="${r2(0.9 - 0.8 * a)}"/>` : '') +
   `<circle cx="${x}" cy="${y}" r="2.5" fill="${cl}"/>`;
 
 const renderChip = (icon, text, on, e, aktiv) =>
@@ -2229,8 +2343,10 @@ function renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComp
 
 function renderValve({ WP, W, model, more, mischer, CK, CW, vb }) {
   if (!WP) return '';
-  const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + v.bounds.height / 2;
-  return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK)}</g>` : mischer(vx, vy, CK);
+  // A layout may turn the valve so that its side port faces left.
+  const v = model.components.valve, d = v.ports.wp.side === 'left' ? -1 : 1;
+  const vx = v.origin.x + (d > 0 ? 34 : v.bounds.width - 34), vy = v.origin.y + v.bounds.height / 2;
+  return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK, d)}</g>` : mischer(vx, vy, CK, null, CW, CK, d);
 }
 
 function renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent }) {
@@ -2612,7 +2728,7 @@ class WarmwasserSchemaCard extends HTMLElement {
 
     /* ---------- Bausteine ---------- */
     const pumpe = (x, y, d, on) => renderPumpe(x, y, d, on, F.aktiv);
-    const mischer = (x, y, cl, a = null, cw = CW, ck = CK) => renderMischer(x, y, cl, a, cw, ck);
+    const mischer = (x, y, cl, a = null, cw = CW, ck = CK, d = 1) => renderMischer(x, y, cl, a, cw, ck, d);
     const chip = (icon, text, on, e) =>
       renderChip(icon, text, on, e, F.aktiv);
 

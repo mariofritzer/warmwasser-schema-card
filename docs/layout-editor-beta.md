@@ -36,19 +36,26 @@ layout:
 ```
 
 Verschiebbar sind `fm` sowie `hot-tank` und `buffer-tank` (getrennte Speicher) bzw.
-`tank`. Im Editor bewegt „Beide Speicher“ beide Einträge gemeinsam. Anschlussseiten
-sind im Komponentenmodell deklariert; derzeit dürfen `fm.supply`, `fm.return`,
-`hot-tank.fm-supply`, `hot-tank.fm-return` und `tank.fm-supply` links oder rechts
-liegen. Bei `auto` zeigen die Anschlüsse von FM und Warmwasserspeicher zueinander;
-liegen beide übereinander, wird die kürzere gültige Variante gewählt. Fühlerplatten
+`tank`, bei einer Luft-Wärmepumpe zusätzlich `wp` und `valve` (Umschaltventil). Im
+Editor bewegt „Beide Speicher“ beide Einträge gemeinsam. Anschlussseiten sind im
+Komponentenmodell deklariert. Links oder rechts liegen dürfen derzeit:
+`fm.supply`, `fm.return`; am Speicher `fm-supply`, `fm-return`, `wp-supply`,
+`wp-return`, `lower-supply`, `lower-return`; `wp.lower-supply`, `wp.return`; und
+`valve.wp`. Dreht sich der Ventilanschluss, wird das ganze Ventilsymbol gespiegelt.
+Der obere WP-Anschluss und der untere FM-Rücklauf am Schichtspeicher bleiben fest.
+Bei `auto` zeigen die Anschlüsse von FM bzw. Wärmepumpe und Speicher zueinander und
+der Ventilanschluss zur Wärmepumpe; nur wenn ein Gerät über oder unter dem Speicher
+liegt, wird auch die andere Seite probiert und die kürzere gültige Variante gewählt.
+Kreuzen sich Leitungen, wird eine Brücke gezeichnet. Fühlerplatten
 wechseln auf die Speicherseite mit weniger Anschlüssen. Rohrpunkte werden nicht
 gespeichert. Das frühere Format `version: 1` wird mit einem Hinweis abgelehnt
 (im Editor „Zurücksetzen“ oder neu anordnen); ungültige Einträge werden mit ihrem
 Fehlercode gemeldet.
 
-Unterstützt sind zunächst Anlagen mit Frischwassermodul ohne Wärmepumpe, Heizkreise,
-Zusatzwärme, Solar, Heizstäbe, Zirkulation, Trinkwasser- und Legionellenanzeige – also die
-Konfigurationen, die der vorhandene Router bereits vollständig abdeckt. Für andere
+Unterstützt sind zunächst Anlagen mit Frischwassermodul, optional mit einer einfachen
+Luft-Wärmepumpe (ohne Wärmemengenzähler, SG Ready und Quellentemperaturen), ohne
+Heizkreise, Zusatzwärme, Solar, Heizstäbe, Zirkulation, Trinkwasser- und
+Legionellenanzeige – also die Konfigurationen, die der vorhandene Router abdeckt. Für andere
 Anlagen zeigt der Editor keine verschiebbaren Bauteile. Kann eine gespeicherte
 Anordnung nicht dargestellt werden, zeigt die Karte die Standardansicht mit einem
 kurzen Hinweis; die gespeicherten Werte bleiben erhalten.
@@ -91,19 +98,25 @@ layout:
     fm.supply: { mode: manual, side: left }
 ```
 
-Movable are `fm` and `hot-tank` and `buffer-tank` (separate tanks) or `tank`. In the
-editor, “Both tanks” moves both entries together. Port sides are declared in the
-component model; currently `fm.supply`, `fm.return`, `hot-tank.fm-supply`,
-`hot-tank.fm-return` and `tank.fm-supply` may be on the left or right. With `auto`,
-the ports of the fresh water module and the hot-water tank face each other; when
-both are stacked, the shorter valid variant is used. Sensor plates move to the tank
+Movable are `fm` and `hot-tank` and `buffer-tank` (separate tanks) or `tank`, and with
+an air heat pump also `wp` and `valve` (diverter valve). In the editor, “Both tanks”
+moves both entries together. Port sides are declared in the component model. Currently
+allowed on the left or right: `fm.supply`, `fm.return`; on the tanks `fm-supply`,
+`fm-return`, `wp-supply`, `wp-return`, `lower-supply`, `lower-return`;
+`wp.lower-supply`, `wp.return`; and `valve.wp`. Turning the valve port mirrors the
+whole valve symbol. The top heat-pump port and the bottom module return of a single
+tank stay fixed. With `auto`, the ports of module or heat pump and tank face each other
+and the valve port faces the heat pump; only when a device is above or below the tank
+is the other side tried as well, keeping the shorter valid variant. Crossing pipes are
+drawn with a bridge. Sensor plates move to the tank
 side with fewer ports. Pipe points are not stored. The former format `version: 1`
 is rejected with a notice (reset or rearrange in the editor); invalid entries are
 reported with their error code.
 
-The first scope covers systems with a fresh water module and without heat pump,
-heating circuits, additional heat, solar, heaters, circulation, domestic water and
-legionella display, i.e. the configurations the existing router already covers completely. For
+The first scope covers systems with a fresh water module, optionally with a simple
+air heat pump (no heat meter, SG Ready or source temperatures), without heating
+circuits, additional heat, solar, heaters, circulation, domestic water and legionella
+display, i.e. the configurations the existing router covers. For
 other systems the editor offers no movable components. If a saved arrangement cannot
 be drawn, the card shows the standard diagram with a short notice and keeps the saved
 values.
