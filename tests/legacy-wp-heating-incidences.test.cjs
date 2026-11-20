@@ -84,6 +84,7 @@ test('rejects unsupported variants, altered topology, media and local axes', () 
   for (const extra of [
     {fm:{pumpe:'sensor.fm'}}, {weiche:{temp:'sensor.temp'}},
     {heizkreise:[{vorlauf:'sensor.vl', mischer:'sensor.mix'}]},
+    {heizkreise:[{vorlauf:'sensor.vl', pumpe:'sensor.pump'}]},
     {heizkreise:[{vorlauf:'sensor.a'},{vorlauf:'sensor.b'}]},
     {heizkreise:[], verteiler:{anschluesse:[{typ:'frei'}]}}
   ]) assert.equal(resolve(model(extra)).status, 'unsupported');

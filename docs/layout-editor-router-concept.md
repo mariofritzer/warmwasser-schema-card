@@ -161,14 +161,6 @@ Validierung aus. Speicherung erfolgt ausschließlich in der Kartenkonfiguration,
 nicht in Browser-LocalStorage; die vorhandene Home-Assistant-Speicherung bleibt
 maßgeblich.
 
-Der interne Kandidatentest erkennt eine vorübergehend inaktive WP und bewahrt
-deren gültige Positionsvorgabe; aktive FM-Vorgaben werden weiterhin geprüft und
-geroutet. Beim Wiederaktivieren wird die WP-Vorgabe erneut angewendet und das
-gesamte Routing geprüft. Listen-IDs werden intern als aktiv, inaktiv oder über
-dem Heizkreislimit liegend erkannt; daraus folgt noch keine Freigabe für
-persistierbare Layout-Vorgaben für Listenelemente. Entfernte Listen-IDs bleiben
-unbekannt beziehungsweise verwaist. Portseiten sind derzeit nicht freigegeben.
-
 ### Fehler und gestufte Lieferung
 
 Fehler sind strukturiert und lokalisierbar: unbekannte Version/ID, doppelte ID,
@@ -326,14 +318,6 @@ that operation remain open decisions. Surface orphaned
 layout entries for deliberate removal; never silently attach them to another item.
 Changes to the installation invalidate and revalidate the draft. Store only in the
 card configuration, using Home Assistant's existing persistence, not localStorage.
-
-The internal candidate check recognizes a temporarily inactive heat pump and
-preserves its valid position override while validating and routing active fresh
-water module overrides. On reactivation it reapplies the heat pump position and
-checks the complete routing again. List IDs are classified internally as active,
-inactive, or beyond the heating-circuit limit; this does not yet make list
-elements eligible for persistent layout overrides. Removed list IDs remain
-unknown or orphaned. Port-side overrides are not currently supported.
 
 Use structured, localized errors for unknown version/ID, duplicate ID, invalid
 position or side, missing port, media mismatch, unsupported geometry, blocked

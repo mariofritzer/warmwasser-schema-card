@@ -72,6 +72,7 @@ ha-card{overflow:hidden}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;background:var(--secondary-background-color);color:var(--secondary-text-color)}
 svg{display:block;width:100%;height:auto;max-height:860px;padding:4px 8px 8px;box-sizing:border-box}
 .en{padding:2px 16px 14px;display:grid;gap:6px}
+.layout-note{padding:8px 16px;font-size:13px;color:var(--secondary-text-color)}
 .er{display:grid;grid-template-columns:20px 110px 1fr 76px;align-items:center;gap:8px;font-size:12px;color:var(--secondary-text-color);cursor:pointer}
 .er .b{height:8px;border-radius:4px;background:var(--secondary-background-color);overflow:hidden}
 .er .b i{display:block;height:100%;border-radius:4px}
@@ -638,7 +639,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
-    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && (!c.zirkulationspumpe || c.fm) && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
+    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
 
 }
 
@@ -676,6 +677,73 @@ function diagramStub(model, reference) {
   return [component.origin.x + r.x, component.origin.y + r.y, r.width, r.height];
 }
 
+/* ---------- Experimentelles Layout (versteckte Kartenoption layout_editor_beta) ----------
+ * `layout: { version: 1, <key>: { x, y } }` stores offsets in SVG units. Without
+ * `layout_editor_beta: true` a saved layout is ignored and rendering is unchanged.
+ * First scope: configurations whose fresh-water pipes the router already covers. */
+const LAYOUT_LABELS = {
+  de: { speicher: 'Beide Speicher', tank: 'Speicher', warmwasser: 'Warmwasserspeicher', puffer: 'Pufferspeicher', fm: 'Frischwassermodul' },
+  en: { speicher: 'Both tanks', tank: 'Tank', warmwasser: 'Hot-water tank', puffer: 'Buffer tank', fm: 'Fresh water module' },
+};
+const LAYOUT_LIMIT = 600;
+function layoutKeys(c, model) {
+  if (!model.routingScope?.fm || c.wp) return [];
+  return c.typ === 'getrennt' ? ['warmwasser', 'puffer', 'speicher', 'fm'] : ['speicher', 'fm'];
+}
+function layoutOffset(layout, key) {
+  const value = layout && layout[key], n = (axis) => (isNum(value?.[axis]) ? Math.round(Number(value[axis])) : 0);
+  return { x: n('x'), y: n('y') };
+}
+// Model component that a layout key moves directly.
+function layoutComponentIds(c, key) {
+  const split = c.typ === 'getrennt';
+  return key === 'fm' ? ['fm'] : key === 'warmwasser' ? ['hot-tank'] : key === 'puffer' ? ['buffer-tank']
+    : key === 'speicher' ? (split ? ['hot-tank', 'buffer-tank'] : ['tank']) : [];
+}
+// Painted areas that must not overlap between independently moved groups.
+function layoutCollision(c, model) {
+  const margin = 6, boxes = [];
+  const groupOf = (id) => { let b = model.components[id]; while (b.parent) b = model.components[b.parent]; return b.id; };
+  for (const [id, b] of Object.entries(model.components)) {
+    if (b.boundary) continue;
+    const group = groupOf(id);
+    boxes.push({ group, x: b.origin.x + b.bounds.x, y: b.origin.y + b.bounds.y, width: b.bounds.width, height: b.bounds.height });
+    for (const p of Object.values(b.ports)) if (p.stub) boxes.push({ group, x: b.origin.x + p.stub.x, y: b.origin.y + p.stub.y, width: p.stub.width, height: p.stub.height });
+  }
+  const fm = model.components.fm, boundary = model.components['domestic-boundary'];
+  if (fm && boundary) {
+    const bx = boundary.origin.x, by = boundary.origin.y, bw = boundary.bounds.width;
+    // Domestic labels and the vertical domestic pipes above the module.
+    boxes.push({ group: 'fm', x: bx - 60, y: by - 8, width: bw + 120, height: 22 });
+    boxes.push({ group: 'fm', x: bx - 5, y: by, width: 10, height: fm.origin.y - by });
+    boxes.push({ group: 'fm', x: bx + bw - 5, y: by, width: 10, height: fm.origin.y - by });
+  }
+  if (fm && c.fuehler.length) {
+    const d = model.legendOffset || { x: 0, y: 0 };
+    boxes.push({ group: 'fm', x: 362 + d.x, y: 112 + d.y, width: 88, height: 24 });
+  }
+  return boxes.some((a, i) => boxes.slice(i + 1).some((b) => a.group !== b.group &&
+    a.x < b.x + b.width + margin && b.x < a.x + a.width + margin && a.y < b.y + b.height + margin && b.y < a.y + a.height + margin));
+}
+// Returns { status: 'none' | 'applied' | 'invalid' | 'unsupported', code?, model? }.
+function layoutDiagramModel(c) {
+  const layout = c.layout;
+  if (!layout || typeof layout !== 'object' || Array.isArray(layout)) return { status: 'invalid', code: 'invalid-layout' };
+  if (layout.version !== 1) return { status: 'invalid', code: 'unsupported-version' };
+  const model = diagramModel(c), keys = layoutKeys(c, model);
+  const entries = Object.keys(layout).filter((k) => k !== 'version').map((k) => [k, layoutOffset(layout, k)]).filter(([, d]) => d.x || d.y);
+  if (!entries.length) return { status: 'none' };
+  if (entries.some(([k]) => !keys.includes(k))) return { status: 'unsupported', code: 'unsupported-configuration' };
+  if (entries.some(([, d]) => Math.abs(d.x) > LAYOUT_LIMIT || Math.abs(d.y) > LAYOUT_LIMIT)) return { status: 'invalid', code: 'out-of-range' };
+  for (const [k, d] of entries) for (const id of layoutComponentIds(c, k)) {
+    const origin = model.components[id].origin; origin.x += d.x; origin.y += d.y;
+  }
+  // The temperature legend belongs to the fresh water module.
+  model.legendOffset = layoutOffset(layout, 'fm');
+  if (layoutCollision(c, model)) return { status: 'unsupported', code: 'collision' };
+  return { status: 'applied', model };
+}
+
 // Only sides backed by the existing drawn connector geometry are declared here.
 // Other port directions may describe routing or boundaries, not a symbol side.
 function diagramPortGeometry(model, reference) {
@@ -683,7 +751,7 @@ function diagramPortGeometry(model, reference) {
   const [id, name] = reference.split('.'), component = model.components[id];
   const port = component && component.ports[name];
   if (!port) throw new Error(`Unknown port: ${reference}`);
-  return { anchor, stub: port.stub ? diagramStub(model, reference) : null, side: port.effectiveSide || port.canonicalSide || null };
+  return { anchor, stub: port.stub ? diagramStub(model, reference) : null, side: port.canonicalSide || null };
 }
 
 // clearance is the TOTAL obstacle inflation radius, including any stroke allowance.
@@ -1150,9 +1218,6 @@ function compilePipeRoutes(routes, options = {}) {
   return {status:'routed',routes:result,paintOrder:rs.map(r => r.id)};
 }
 
-// Only models built by the internal routed-layout candidate factory may use
-// its separately validated supply-tee placement. Legacy models stay strict.
-const routedWpHeatingModels=new WeakSet();
 // Extract only incidences proven by the canonical one-circuit WP/HK recipes.
 // This is metadata, not a complete geometry, collision exemption or routing opt-in.
 function resolveLegacyWpHeatingIncidences(model) {
@@ -1160,22 +1225,17 @@ function resolveLegacyWpHeatingIncidences(model) {
   try {
     const { components:c, connections:e, junctions:j } = model;
     const allowed = new Set(['tank','tank-feet','wp','valve','manifolds','heating-circuit-0']);
-    const pump=!!c['heating-pump-0']; if (pump) allowed.add('heating-pump-0');
     if (Object.keys(c).some(id => !allowed.has(id)) || [...allowed].some(id => !c[id])) return unsupported();
     const specs = {
       'wp-lower-supply':['wp.lower-supply','tank.lower-supply',['supply-tee']],
       'wp-lower-return':['tank.lower-return','valve.lower',['return-tee']],
       'hk-supply':['supply-tee','manifold-primary-supply',[]],
       'hk-return':['manifold-primary-return','return-tee',[]],
-      'heating-supply-0':['manifold-supply-0',pump?'heating-pump-0.in':'heating-circuit-0.supply',[]],
+      'heating-supply-0':['manifold-supply-0','heating-circuit-0.supply',[]],
       'heating-return-0':['heating-circuit-0.return','manifold-return-0',[]],
       'manifold-supply':['manifolds.supply-left','manifolds.supply-right',['manifold-supply-0','manifold-primary-supply']],
       'manifold-return':['manifolds.return-left','manifolds.return-right',['manifold-return-0','manifold-primary-return']]
     };
-    if (pump) {
-      specs['heating-pump-through-0']=['heating-pump-0.in','heating-pump-0.out',[]];
-      specs['heating-pump-out-0']=['heating-pump-0.out','heating-circuit-0.supply',[]];
-    }
     const ids = ['supply-tee','return-tee','manifold-primary-supply','manifold-primary-return','manifold-supply-0','manifold-return-0'];
     // diagramPort resolves junctions before ports; extra keys could shadow a
     // port reference and invalidate the directions inferred below.
@@ -1196,14 +1256,8 @@ function resolveLegacyWpHeatingIncidences(model) {
     const ws=port('wp.lower-supply'), ts=port('tank.lower-supply'), tr=port('tank.lower-return'), vr=port('valve.lower');
     const sl=port('manifolds.supply-left'), sr=port('manifolds.supply-right'), rl=port('manifolds.return-left'), rr=port('manifolds.return-right');
     const hs=port('heating-circuit-0.supply'), hr=port('heating-circuit-0.return');
-    if (pump) {
-      const unit=c['heating-pump-0'], pin=port('heating-pump-0.in'), pout=port('heating-pump-0.out');
-      if (unit.parent!=='heating-circuit-0' || unit.bounds.x!==0 || unit.bounds.y!==0 || unit.bounds.width!==20 || unit.bounds.height!==20 ||
-          unit.ports.in.x!==10 || unit.ports.in.y!==0 || unit.ports.out.x!==10 || unit.ports.out.y!==20 ||
-          pin.x!==hs.x || pout.x!==hs.x || pin.y!==hs.y-44 || pout.y!==hs.y-24) return unsupported();
-    }
     // The renderer's fixed bends and bridges place local legs on these axes.
-    if (!(s.x===295 && r.x===240 && ps.x===295 && pr.x===312 && ws.y===s.y && (routedWpHeatingModels.has(model) || ts.y===s.y) && tr.y===r.y &&
+    if (!(s.x===295 && r.x===240 && ps.x===295 && pr.x===312 && ws.y===s.y && ts.y===s.y && tr.y===r.y &&
       ws.x>s.x && ts.x<254 && tr.x<r.x && vr.x===262 && r.y>vr.y && s.y<model.geometry.ym-9 && ps.y>399 && pr.y>381 && r.y<348 &&
       sl.y===bs.y && bs.y===ps.y && ps.y===sr.y && sl.x<bs.x && bs.x<ps.x && ps.x<sr.x &&
       rl.y===br.y && br.y===pr.y && pr.y===rr.y && rl.x<br.x && br.x<pr.x && pr.x<rr.x &&
@@ -1219,2154 +1273,6 @@ function resolveLegacyWpHeatingIncidences(model) {
     };
     return {status:'resolved', junctions:ids.map(id => ({ref:id,x:j[id].x,y:j[id].y,medium:j[id].medium,incidences:entries[id]}))};
   } catch (_) { return unsupported(); }
-}
-
-// Resolve fixed rail geometry only. The ordinary batch compiler assumes a
-// narrower stroke and cannot safely compile these rails with other pipes.
-const heatingRailProvenance = new WeakMap();
-function prepareLegacyWpHeatingRails(model, options = {}) {
-  const incidence = resolveLegacyWpHeatingIncidences(model);
-  if (incidence.status !== 'resolved') return incidence;
-  const fail = (code, reason) => ({status:'failed', code, reason});
-  if (!options || typeof options !== 'object' || Array.isArray(options) ||
-      Object.keys(options).some(k => !['radius','bridgeRadius','halfWidth','obstacles'].includes(k)))
-    return fail('invalid-input', 'Invalid rail compiler options.');
-  const obstacles = options.obstacles === undefined ? [] : options.obstacles;
-  if (!Array.isArray(obstacles) || Array.from(obstacles).some(o => !o ||
-      ![o.x,o.y,o.width,o.height].every(Number.isFinite) || o.width < 0 || o.height < 0 ||
-      (o.owner != null && typeof o.owner !== 'string')))
-    return fail('invalid-input', 'Invalid rail obstacles.');
-  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
-    a.y <= b.y+b.height && a.y+a.height >= b.y;
-  const point = ref => {
-    const j = model.junctions[ref];
-    if (j) return {ref,x:j.x,y:j.y};
-    const dot = ref.lastIndexOf('.'), c = model.components[ref.slice(0,dot)], p = c.ports[ref.slice(dot+1)];
-    return {ref,x:c.origin.x+p.x,y:c.origin.y+p.y};
-  };
-  const geometry = resolveHeatingGeometry(model), rails = [];
-  for (const id of ['manifold-return','manifold-supply']) {
-    const edge = model.connections[id], painted = geometry.rails.find(r => r.id === id);
-    // Rail strokes have half-width 9, and the caps extend beyond the stroke.
-    if (!edge || !painted || painted.areas.some(a => obstacles.some(o => intersects(a,o))))
-      return fail('rail-obstacle', 'A painted rail or end cap intersects an obstacle.');
-    const nodes = [edge.from,...edge.via,edge.to].map(point);
-    const candidate = validateDirectedFixedPolyline({id, role:id === 'manifold-supply' ? 'supply' : 'neutral',
-      points:nodes.map(({x,y}) => ({x,y})), nodes}, options);
-    if (candidate.status !== 'routed') return candidate;
-    // Never expose a compiler candidate: other routes must first be checked
-    // against the wider rail paint, including caps and permitted junctions.
-    const areas=painted.areas.map(a => ({...a}));
-    // These exact horizontal rails are painted by unclassed SVG paths with
-    // default butt linecaps. Their w3 animation stays between interior nodes;
-    // its 1.3px round caps remain inside the 9px stroke and explicit end caps.
-    // Bent rails retain the conservative general-purpose geometry.
-    if (painted.points.length===2 && painted.points[0].y===painted.points[1].y && areas.length===3) {
-      const [a,b]=painted.points;
-      areas[0]={x:Math.min(a.x,b.x),y:a.y-9,width:Math.abs(a.x-b.x),height:18};
-    }
-    rails.push({id, nodes:nodes.map(n => ({...n})), areas});
-  }
-  const result = {status:'unsupported', reason:'rail-batch-validation-required', rails};
-  heatingRailProvenance.set(result, {snapshot:JSON.stringify(rails), policy:directedPolicy(options),
-    heatingSupplyEnd:point(model.connections['heating-supply-0'].to)});
-  return result;
-}
-
-// Local A11 evidence only. Other pipes, animations and global paint order
-// still require one joint batch validation before any rendering is enabled.
-function inspectLegacyHeatingRailBridge(prepared, route, options = {}) {
-  const unsupported = reason => ({status:'unsupported', reason});
-  const provenance = prepared && heatingRailProvenance.get(prepared);
-  if (!provenance || !options || typeof options !== 'object' || Array.isArray(options))
-    return unsupported('invalid-rail-batch');
-  try {
-    if (JSON.stringify(prepared.rails) !== provenance.snapshot || directedPolicy(options) !== provenance.policy)
-      return unsupported('invalid-rail-batch');
-  } catch (_) { return unsupported('invalid-rail-batch'); }
-  const checked = compileDirectedJunctionBatch([route], options);
-  if (checked.status !== 'routed') return checked;
-  const references = new Map();
-  for (const node of [...prepared.rails.flatMap(r => r.nodes), ...route.nodes]) {
-    const prior = references.get(node.ref);
-    if (prior && (prior.x !== node.x || prior.y !== node.y))
-      return unsupported('reference-coordinate-conflict');
-    references.set(node.ref,node);
-  }
-  const ret = prepared.rails.find(r => r.id === 'manifold-return');
-  const supply = prepared.rails.find(r => r.id === 'manifold-supply');
-  const start = supply && supply.nodes.find(n => n.ref === 'manifold-supply-0');
-  const cross = ret && ret.nodes.find(n => n.ref === 'manifold-return-0');
-  if (!start || !cross || route.id !== 'heating-supply-0' || route.role !== 'supply' ||
-      route.points.length !== 2 || route.nodes.length !== 2 || route.nodes[0].ref !== start.ref ||
-      route.nodes[1].ref !== provenance.heatingSupplyEnd.ref ||
-      route.nodes[1].x !== provenance.heatingSupplyEnd.x || route.nodes[1].y !== provenance.heatingSupplyEnd.y ||
-      route.points[0].x !== start.x || route.points[0].y !== start.y ||
-      route.points[1].x !== start.x || cross.y <= start.y || route.points[1].y <= cross.y ||
-      ret.areas.length !== 3 || supply.areas.length !== 3 || (options.halfWidth ?? 5) !== 5)
-    return unsupported('legacy-bridge-geometry');
-  const x = start.x, y = cross.y, extent = 16; // A11 plus the widest 5-unit stroke.
-  const box = {x:x-extent,y:y-extent,width:2*extent,height:2*extent};
-  if (![box.x,box.y,box.x+box.width,box.y+box.height].every(Number.isFinite) ||
-      y-11 <= start.y || y+11 >= route.points[1].y)
-    return unsupported('legacy-bridge-geometry');
-  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
-    a.y <= b.y+b.height && a.y+a.height >= b.y;
-  // The return stroke is intentionally crossed; its caps, the supply rail
-  // and every obstacle must clear this conservative full-circle envelope.
-  if (ret.areas.slice(1).some(a => intersects(a,box)) || supply.areas.some(a => intersects(a,box)) ||
-      (options.obstacles ?? []).some(a => intersects(a,box)))
-    return unsupported('legacy-bridge-clearance');
-  const rail = ret.areas[0];
-  if (!(x > rail.x+9 && x < rail.x+rail.width-9 &&
-      cross.y === ret.nodes[0].y && ret.nodes.every(n => n.y === y)))
-    return unsupported('legacy-bridge-geometry');
-  return {status:'unsupported', reason:'complete-heating-batch-required', localBridge:{
-    owner:route.id, under:ret.id, point:{x,y}, radius:11, sweep:1, envelope:box,
-    requiredPaintOrder:[ret.id,route.id]
-  }};
-}
-
-// Internal primitive only: the caller must supply every visible ordinary line.
-// Only proven local rail junctions are exempted; ordinary bridge envelopes
-// are checked against the full rail paint without an incidence exemption.
-function checkHeatingRailEnvelopes(prepared, routes, options = {}) {
-  const unsupported = reason => ({status:'unsupported', reason});
-  const provenance = prepared && heatingRailProvenance.get(prepared);
-  if (!provenance || !Array.isArray(routes) || !options || typeof options !== 'object' || Array.isArray(options))
-    return unsupported('invalid-rail-batch');
-  try {
-    if (JSON.stringify(prepared.rails) !== provenance.snapshot || directedPolicy(options) !== provenance.policy)
-      return unsupported('invalid-rail-batch');
-  } catch (_) { return unsupported('invalid-rail-batch'); }
-  const references = new Map();
-  for (const nodes of [...prepared.rails.map(r => r.nodes), ...routes.map(r => r && r.nodes)]) {
-    if (!Array.isArray(nodes)) return unsupported('invalid-rail-batch');
-    for (const node of nodes) {
-      if (!node || typeof node.ref !== 'string' || !node.ref || !Number.isFinite(node.x) || !Number.isFinite(node.y))
-        return unsupported('invalid-rail-batch');
-      const prior=references.get(node.ref);
-      if (prior && (prior.x!==node.x || prior.y!==node.y)) return unsupported('reference-coordinate-conflict');
-      references.set(node.ref,node);
-    }
-  }
-  const compiled = compileDirectedJunctionBatch(routes, options);
-  if (compiled.status !== 'routed') return compiled;
-  const half = options.halfWidth ?? 5, radius = options.radius ?? 8;
-  const finiteBox = a => a && [a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite);
-  if (!Number.isFinite(half) || !Number.isFinite(radius) ||
-      prepared.rails.some(r => r.areas.some(a => !finiteBox(a)))) return unsupported('invalid-envelope');
-  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
-    a.y <= b.y+b.height && a.y+a.height >= b.y;
-  const boxes = [];
-  // The ordinary compiler already validates these full envelopes against all
-  // ordinary lines and obstacles; add them here against the wider rail paint.
-  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
-    const extent=(options.bridgeRadius ?? 6)+half, p=crossing.point;
-    boxes.push({x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent});
-  }
-  for (const route of routes) {
-    for (let i=0; i<route.points.length-1; i++) {
-      const a=route.points[i], b=route.points[i+1];
-      boxes.push({x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
-        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half,route,index:i});
-    }
-    // Bounding squares contain the rounded corner and its full stroke.
-    for (let i=1; i<route.points.length-1; i++) {
-      const p=route.points[i], extent=radius+half;
-      boxes.push({x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent});
-    }
-  }
-  if (boxes.some(b => !finiteBox(b))) return unsupported('invalid-envelope');
-  // These are the only branch incidences established by the canonical recipe.
-  const incidences = [
-    ['manifold-supply','manifold-primary-supply','hk-supply',0,'top'],
-    ['manifold-return','manifold-primary-return','hk-return',0,'top'],
-    ['manifold-supply','manifold-supply-0','heating-supply-0',0,'bottom'],
-    ['manifold-return','manifold-return-0','heating-return-0',0,'bottom']
-  ];
-  const allowed = (rail, areaIndex, area, box) => {
-    if (rail.areas.length !== 3 || !box.route || half > 5) return false;
-    return incidences.some(([railId,ref,id,segment,side]) => {
-      const route=box.route, node=rail.nodes.find(n => n.ref===ref);
-      if (rail.id!==railId || route.id!==id || !node || route.nodes.length!==2 || segment!==0) return false;
-      // A primary branch can also touch the right end cap. Only the exact
-      // canonical five-unit spacing and the known cap box establish that case.
-      const end=rail.nodes[rail.nodes.length-1];
-      const primary=ref==='manifold-primary-supply' || ref==='manifold-primary-return';
-      const cap=areaIndex===2 && primary && end.x===node.x+5 && end.y===node.y &&
-        area.x===end.x-0.4 && area.y===end.y-10.4 && area.width===5.8 && area.height===20.8;
-      if (areaIndex!==0 && !cap) return false;
-      const endpoint=route.nodes.findIndex(n => n.ref===ref && n.x===node.x && n.y===node.y);
-      if (endpoint<0 || (endpoint===0 ? box.index!==0 : box.index!==route.points.length-2)) return false;
-      const p=route.points[endpoint===0 ? box.index : box.index+1];
-      const q=route.points[endpoint===0 ? box.index+1 : box.index];
-      if (p.x!==node.x || p.y!==node.y || q.x!==node.x ||
-          (side==='top' ? q.y>=node.y : q.y<=node.y)) return false;
-      // Permit only the intersection with the rail's central stroke, inside a
-      // tight portal. Caps, corners and other route segments remain checked.
-      const left=Math.max(area.x,box.x), right=Math.min(area.x+area.width,box.x+box.width);
-      const top=Math.max(area.y,box.y), bottom=Math.min(area.y+area.height,box.y+box.height);
-      const extent=cap ? 10.4 : 9;
-      return [node.x-half,node.x+half,node.y-extent,node.y+extent].every(Number.isFinite) &&
-        left>=node.x-half && right<=node.x+half && top>=node.y-extent && bottom<=node.y+extent;
-    });
-  };
-  if (prepared.rails.some(r => r.areas.some((a,i) => boxes.some(b => intersects(a,b) && !allowed(r,i,a,b)))))
-    return unsupported('rail-line-contact');
-  if (prepared.rails.some((r,i) => prepared.rails.slice(i+1).some(s =>
-      r.areas.some(a => s.areas.some(b => intersects(a,b)))))) return unsupported('rail-rail-contact');
-  return {status:'clear'};
-}
-
-// Validate the legacy A11 crossing together with all supplied ordinary lines.
-// A caller must establish batch completeness and paint order before rendering.
-function checkLegacyHeatingBridgeBatch(prepared, routes, options = {}) {
-  const unsupported = reason => ({status:'unsupported', reason});
-  if (!Array.isArray(routes)) return unsupported('invalid-rail-batch');
-  const owners = routes.filter(r => r && r.id === 'heating-supply-0');
-  if (owners.length !== 1) return unsupported('legacy-bridge-owner-required');
-  const owner = owners[0], proof = inspectLegacyHeatingRailBridge(prepared, owner, options);
-  if (proof.reason !== 'complete-heating-batch-required' || !proof.localBridge) return proof;
-  const compiled = compileDirectedJunctionBatch(routes, options);
-  if (compiled.status !== 'routed') return compiled;
-  const others = routes.filter(r => r !== owner);
-  const rails = checkHeatingRailEnvelopes(prepared, others, options);
-  if (rails.status !== 'clear') return rails;
-  const {envelope} = proof.localBridge, half = options.halfWidth ?? 5, radius = options.radius ?? 8;
-  const intersects = (a,b) => a.x <= b.x+b.width && a.x+a.width >= b.x &&
-    a.y <= b.y+b.height && a.y+a.height >= b.y;
-  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
-    const extent=(options.bridgeRadius ?? 6)+half, p=crossing.point;
-    const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
-    if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite) || intersects(box,envelope))
-      return unsupported('legacy-bridge-line-clearance');
-    if (prepared.rails.some(rail => rail.areas.some(area => intersects(box,area))))
-      return unsupported('rail-line-contact');
-  }
-  for (const route of others) {
-    for (let i=0; i<route.points.length-1; i++) {
-      const a=route.points[i], b=route.points[i+1];
-      const box={x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
-        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half};
-      if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite) || intersects(box,envelope))
-        return unsupported('legacy-bridge-line-clearance');
-    }
-    for (let i=1; i<route.points.length-1; i++) {
-      const p=route.points[i], extent=radius+half;
-      const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
-      if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite) || intersects(box,envelope))
-        return unsupported('legacy-bridge-line-clearance');
-    }
-  }
-  return {status:'clear', localBridge:proof.localBridge};
-}
-
-// Bound just the named model bodies. Port escapes are limited to the first or
-// last straight segment, whose outward direction the caller has already checked.
-// Text, filters and decorations require separate coverage before rendering.
-function checkLegacyHeatingModelBodies(model, prepared, routes, compiled, localBridge, options = {}) {
-  const unsupported = reason => ({status:'unsupported',reason});
-  const ids=['tank','tank-feet','wp','valve','heating-circuit-0'];
-  const bodies=[];
-  for (const id of ids) {
-    const c=model.components[id], b=c && c.bounds, o=c && c.origin;
-    if (!b || !o || ![o.x,o.y,b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<0 || b.height<0)
-      return unsupported('invalid-model-body');
-    const box={id,x:o.x+b.x,y:o.y+b.y,width:b.width,height:b.height};
-    if (![box.x,box.y,box.x+box.width,box.y+box.height].every(Number.isFinite)) return unsupported('invalid-model-body');
-    bodies.push(box);
-  }
-  if (model.components['heating-pump-0']) {
-    const halo=resolveHeatingGeometry(model).bodies.find(b=>b.owner==='heating-pump-0');
-    if (!halo || ![halo.x,halo.y,halo.width,halo.height,halo.x+halo.width,halo.y+halo.height].every(Number.isFinite))
-      return unsupported('invalid-model-body');
-    bodies.push({id:'heating-pump-0',x:halo.x,y:halo.y,width:halo.width,height:halo.height});
-  }
-  // These are the seven `stub(...)` calls visible in this narrow WP+1HK
-  // configuration. The .wk stroke extends 0.4px on every side.
-  const stubRefs=['wp.upper-supply','wp.lower-supply','wp.return',
-    'tank.wp-supply','tank.wp-return','tank.lower-supply','tank.lower-return'];
-  for (const ref of stubRefs) {
-    const [id,name]=ref.split('.'), c=model.components[id], p=c && c.ports[name], s=p && p.stub;
-    if (!s || ![s.x,s.y,s.width,s.height,p.x,p.y].every(Number.isFinite) || s.width<0 || s.height<0 ||
-        p.x<s.x || p.x>s.x+s.width || p.y<s.y || p.y>s.y+s.height) return unsupported('invalid-model-stub');
-    const shape=p.direction==='top' ? [p.x-6,p.y-4,12,10] : p.direction==='left' ? [p.x-4,p.y-6,10,12]
-      : p.direction==='right' ? [p.x-8,p.y-6,14,12] : null;
-    if (!shape || [s.x,s.y,s.width,s.height].some((v,i)=>v!==shape[i])) return unsupported('invalid-model-stub');
-    const box={id,ref,x:c.origin.x+s.x-0.4,y:c.origin.y+s.y-0.4,width:s.width+0.8,height:s.height+0.8};
-    if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite)) return unsupported('invalid-model-stub');
-    bodies.push(box);
-  }
-  const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-  if (prepared.rails.some(r=>r.areas.some(a=>bodies.some(b=>hit(a,b))))) return unsupported('model-body-rail-contact');
-  if (!localBridge || !localBridge.envelope || bodies.some(b=>hit(localBridge.envelope,b))) return unsupported('model-body-bridge-contact');
-  const half=options.halfWidth ?? 5, radius=options.radius ?? 8, bridge=options.bridgeRadius ?? 6;
-  const finiteBox=b=>[b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite);
-  for (const route of routes) {
-    const edge=model.connections[route.id];
-    const owner=ref=>ref.includes('.') ? ref.slice(0,ref.lastIndexOf('.')) : null;
-    const from=owner(edge.from), to=owner(edge.to);
-    for (let i=0;i<route.points.length-1;i++) {
-      const a=route.points[i], b=route.points[i+1];
-      const box={x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
-        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half};
-      if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
-      const collision=bodies.find(body=>hit(box,body) && !(i===0 && (body.ref ? body.ref===edge.from : body.id===from)) &&
-        !(i===route.points.length-2 && (body.ref ? body.ref===edge.to : body.id===to)));
-      if (collision) return {status:'unsupported',reason:collision.ref?'model-stub-line-contact':'model-body-line-contact',connectionId:route.id,bodyId:collision.id,segment:i};
-    }
-    for (let i=1;i<route.points.length-1;i++) {
-      const p=route.points[i], extent=radius+half;
-      const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
-      if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
-      const collision=bodies.find(body=>hit(box,body));
-      if (collision) return {status:'unsupported',reason:'model-body-corner-contact',connectionId:route.id,bodyId:collision.id,vertex:i};
-    }
-  }
-  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
-    const p=crossing.point, extent=bridge+half;
-    const box={x:p.x-extent,y:p.y-extent,width:2*extent,height:2*extent};
-    if (!finiteBox(box)) return unsupported('invalid-model-body-envelope');
-    if (bodies.some(body=>hit(box,body))) return unsupported('model-body-bridge-contact');
-  }
-  return {status:'clear'};
-}
-
-// `wwShadow` uses SVG's objectBoundingBox filter region x/y=-30%,
-// width/height=160%. This inventories its clipped region, not a claim that
-// the entire region is opaque or that intersecting it is visually safe.
-// Text bounds depend on rendered strings and fonts and are intentionally not
-// estimated from character count or these component bounds.
-// Conservative transformed bounds for a measured SVG text box. A finite,
-// nonsingular matrix maps text-local coordinates into root SVG coordinates.
-function transformMeasuredTextBox(box, matrix, strokeWidth) {
-  if (!box || !matrix || ![box.x,box.y,box.width,box.height,matrix.a,matrix.b,matrix.c,matrix.d,matrix.e,matrix.f,strokeWidth].every(Number.isFinite) ||
-      box.width<0 || box.height<0 || strokeWidth<0) return null;
-  const determinant=matrix.a*matrix.d-matrix.b*matrix.c;
-  if (!Number.isFinite(determinant) || determinant===0) return null;
-  const p=strokeWidth/2, xs=[box.x-p,box.x+box.width+p], ys=[box.y-p,box.y+box.height+p], points=[];
-  for (const x of xs) for (const y of ys) points.push({x:matrix.a*x+matrix.c*y+matrix.e,y:matrix.b*x+matrix.d*y+matrix.f});
-  if (points.some(q=>!Number.isFinite(q.x)||!Number.isFinite(q.y))) return null;
-  const x=Math.min(...points.map(q=>q.x)), y=Math.min(...points.map(q=>q.y));
-  const width=Math.max(...points.map(q=>q.x))-x, height=Math.max(...points.map(q=>q.y))-y;
-  return [x,y,width,height,x+width,y+height].every(Number.isFinite) ? {x,y,width,height} : null;
-}
-
-// A current measurement fits only the same ordered text inventory and the
-// exact font/style/transform fingerprint captured with the reservation.
-function checkMeasuredTextReserve(reserved, current, liveContextKey) {
-  const unsupported = reason => ({status:'unsupported',reason});
-  if (!reserved || !current || !Array.isArray(reserved.entries) || !Array.isArray(current.entries) ||
-      reserved.fontEpoch!==current.fontEpoch || typeof reserved.contextKey!=='string' || !reserved.contextKey ||
-      reserved.contextKey!==current.contextKey || current.contextKey!==liveContextKey || reserved.entries.length!==current.entries.length)
-    return unsupported('text-reserve-invalidated');
-  const first=textMeasurementProvenance.get(reserved), latest=textMeasurementProvenance.get(current);
-  if (!first || !latest || first.svg!==latest.svg || first.fonts!==latest.fonts ||
-      latest.svg.ownerDocument.fonts!==latest.fonts || latest.fonts.status!=='loaded' || latest.epoch.value!==current.fontEpoch)
-    return unsupported('text-reserve-invalidated');
-  // Re-measure synchronously. This is only a point-in-time diagnostic, never a
-  // durable authorization to commit or use a later animation frame.
-  const live=captureLegacyHeatingSvgText(latest.svg,current.contextKey,latest.fonts,latest.epoch);
-  if (!live.entries || live.fontEpoch!==current.fontEpoch || live.entries.length!==current.entries.length)
-    return unsupported('text-reserve-invalidated');
-  for (let i=0;i<reserved.entries.length;i++) {
-    const a=reserved.entries[i],b=current.entries[i],c=live.entries[i],r=a && a.box,q=b && b.box,t=c && c.box;
-    if (!a || !b || a.node!==b.node || !r || !q ||
-        !c || c.node!==b.node || c.fingerprint!==b.fingerprint || c.text!==b.text || !t ||
-        t.x!==q.x || t.y!==q.y || t.width!==q.width || t.height!==q.height ||
-        ![r.x,r.y,r.width,r.height,q.x,q.y,q.width,q.height].every(Number.isFinite) ||
-        r.width<0 || r.height<0 || q.width<0 || q.height<0 ||
-        ![r.x+r.width,r.y+r.height,q.x+q.width,q.y+q.height].every(Number.isFinite))
-      return unsupported('text-reserve-invalidated');
-  }
-  for (let i=0;i<reserved.entries.length;i++) {
-    const r=reserved.entries[i].box,q=current.entries[i].box;
-    if (q.x<r.x || q.y<r.y || q.x+q.width>r.x+r.width || q.y+q.height>r.y+r.height)
-      return unsupported('text-reserve-overflow');
-  }
-  for (let i=0;i<reserved.entries.length;i++)
-    if (reserved.entries[i].fingerprint!==current.entries[i].fingerprint) return unsupported('text-reserve-invalidated');
-  // Even a fitting text reservation says nothing about non-text paint.
-  return {status:'unsupported',reason:'non-text-paint-validation-required',textReserve:'fits'};
-}
-
-const heatingFontEpochs = new WeakMap();
-const textMeasurementProvenance = new WeakMap();
-async function measureLegacyHeatingSvgText(svg, contextKey) {
-  const unsupported = reason => ({status:'unsupported',reason});
-  try {
-    const doc=svg && svg.ownerDocument, fonts=doc && doc.fonts, view=doc && doc.defaultView;
-    if (typeof contextKey!=='string' || !contextKey || !svg || !svg.isConnected || !fonts || !fonts.ready || !view || typeof view.getComputedStyle!=='function' ||
-        typeof fonts.addEventListener!=='function' || typeof svg.querySelectorAll!=='function') return unsupported('text-measurement-unavailable');
-    let epoch=heatingFontEpochs.get(fonts);
-    if (!epoch) {
-      epoch={value:0};
-      fonts.addEventListener('loading',()=>epoch.value++);
-      fonts.addEventListener('loadingdone',()=>epoch.value++);
-      fonts.addEventListener('loadingerror',()=>epoch.value++);
-      heatingFontEpochs.set(fonts,epoch);
-    }
-    await fonts.ready;
-    return captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch);
-  } catch (_) { return unsupported('text-measurement-unavailable'); }
-}
-
-function captureLegacyHeatingSvgText(svg,contextKey,fonts,epoch) {
-  const unsupported = reason => ({status:'unsupported',reason});
-  try {
-    const doc=svg && svg.ownerDocument, view=doc && doc.defaultView;
-    if (!doc || doc.fonts!==fonts || !view || typeof view.getComputedStyle!=='function') return unsupported('text-measurement-unavailable');
-    if (!svg.isConnected || fonts.status!=='loaded') return unsupported('text-measurement-unavailable');
-    const fontEpoch=epoch.value, root=svg.getScreenCTM(), det=root && root.a*root.d-root.b*root.c;
-    if (!root || root.is2D===false || ![root.a,root.b,root.c,root.d,root.e,root.f,det].every(Number.isFinite) || !det)
-      return unsupported('text-measurement-unavailable');
-    const inv={a:root.d/det,b:-root.b/det,c:-root.c/det,d:root.a/det,
-      e:(root.c*root.f-root.d*root.e)/det,f:(root.b*root.e-root.a*root.f)/det};
-    const entries=[];
-    for (const node of svg.querySelectorAll('text')) {
-      if (!node.isConnected || node.ownerDocument!==doc || !svg.contains(node)) return unsupported('text-measurement-unavailable');
-      if (node.children && node.children.length) return unsupported('text-effect-unproven');
-      const seen=new Set(); let ancestor=node, sawSvg=false;
-      while (ancestor) {
-        if (seen.has(ancestor)) return unsupported('text-measurement-unavailable');
-        seen.add(ancestor);
-        const effect=view.getComputedStyle(ancestor);
-        if (!effect || effect.display==='none' || effect.visibility==='hidden' || effect.visibility==='collapse' ||
-            effect.filter!=='none' || effect.clipPath!=='none' || effect.mask!=='none' ||
-            (effect.perspective && effect.perspective!=='none') ||
-            (effect.textShadow && effect.textShadow!=='none') ||
-            (effect.textDecorationLine && effect.textDecorationLine!=='none')) return unsupported('text-effect-unproven');
-        if (ancestor===svg) sawSvg=true;
-        const parent=ancestor.parentElement;
-        if (parent) ancestor=parent;
-        else {
-          const tree=typeof ancestor.getRootNode==='function' ? ancestor.getRootNode() : null;
-          ancestor=tree && tree.host || null;
-        }
-      }
-      if (!sawSvg) return unsupported('text-measurement-unavailable');
-      const style=view.getComputedStyle(node), m=node.getScreenCTM(), box=node.getBBox();
-      if (!style || !m || m.is2D===false || style.filter!=='none' || style.clipPath!=='none' || style.mask!=='none' ||
-          (style.vectorEffect && style.vectorEffect!=='none')) return unsupported('text-effect-unproven');
-      const length=typeof style.strokeWidth==='string' && style.strokeWidth.trim();
-      if (style.stroke!=='none' && (!length || !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(length))) return unsupported('text-effect-unproven');
-      const stroke=style.stroke==='none' ? 0 : Number.parseFloat(length);
-      if (!Number.isFinite(stroke) || stroke<0 || (stroke && style.strokeLinejoin!=='round')) return unsupported('text-effect-unproven');
-      if (typeof node.textContent!=='string' || (node.textContent.length && (!box || box.width===0 || box.height===0)))
-        return unsupported('text-measurement-unavailable');
-      const matrix={a:inv.a*m.a+inv.c*m.b,b:inv.b*m.a+inv.d*m.b,c:inv.a*m.c+inv.c*m.d,d:inv.b*m.c+inv.d*m.d,
-        e:inv.a*m.e+inv.c*m.f+inv.e,f:inv.b*m.e+inv.d*m.f+inv.f};
-      const transformed=transformMeasuredTextBox(box,matrix,stroke);
-      if (!transformed) return unsupported('text-measurement-unavailable');
-      if (!Number.isInteger(style.length) || typeof style.getPropertyValue!=='function') return unsupported('text-measurement-unavailable');
-      const computed=[];
-      for (let i=0;i<style.length;i++) {
-        const name=style[i];
-        if (typeof name!=='string') return unsupported('text-measurement-unavailable');
-        computed.push([name,style.getPropertyValue(name)]);
-      }
-      computed.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
-      const fingerprint=JSON.stringify([computed,style.font,style.fontFamily,style.fontSize,style.fontWeight,style.fontStyle,
-        style.fontStretch,style.letterSpacing,style.wordSpacing,style.stroke,style.strokeWidth,style.strokeLinejoin,
-        style.direction,style.writingMode,style.textAnchor,style.textRendering,style.vectorEffect,
-        style.fontKerning,style.fontFeatureSettings,style.fontVariationSettings,style.fontVariant,
-        style.fontSynthesis,style.textTransform,style.textDecorationLine,matrix]);
-      entries.push(Object.freeze({node,text:node.textContent,fingerprint,box:Object.freeze(transformed)}));
-    }
-    if (!svg.isConnected || fonts.status!=='loaded' || epoch.value!==fontEpoch) return unsupported('text-measurement-invalidated');
-    const result=Object.freeze({status:'unsupported',reason:'text-inventory-validation-required',contextKey,fontEpoch,entries:Object.freeze(entries)});
-    textMeasurementProvenance.set(result,{svg,fonts,epoch});
-    return result;
-  } catch (_) { return unsupported('text-measurement-unavailable'); }
-}
-
-let heatingTextStageSequence=0;
-// The symbol AABBs below assume an unstroked droplet and bounded strokes on
-// the fan, LED and water arrows. Inherited host SVG styles can violate those
-// assumptions even when the card stylesheet itself is unchanged.
-function inspectStagedLayoutSymbolStrokes(svg) {
-  const fail=()=>({status:'unsupported',reason:'layout-symbol-stroke-unproven'});
-  try {
-    const view=svg?.ownerDocument?.defaultView;
-    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
-    const all=Array.from(svg.querySelectorAll('path,circle'));
-    const droplets=all.filter(el=>el.localName==='path' && [
-      'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z',
-      'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z'].includes(el.getAttribute('d')));
-    const circles=radius=>all.filter(el=>el.localName==='circle' && el.getAttribute('cx')===(radius===42?'390':'434') &&
-      el.getAttribute('cy')===(radius===42?'226':'353') && el.getAttribute('r')===String(radius));
-    const arrows=all.filter(el=>el.localName==='path' && el.getAttribute('class')==='wa');
-    const fan=circles(42),led=circles(5);
-    if (!((droplets.length===1 && arrows.length===2) || (droplets.length===0 && arrows.length===0 && fan.length===1)) || fan.length!==led.length || fan.length>1) return fail();
-    const rects=Array.from(svg.querySelectorAll('rect'));
-    const displays=(x,y,width,height)=>rects.filter(el=>el.localName==='rect' && el.getAttribute('x')===String(x) &&
-      el.getAttribute('y')===String(y) && el.getAttribute('width')===String(width) && el.getAttribute('height')===String(height));
-    const fmDisplay=displays(392,62,52,34),wpDisplay=displays(342,282,96,46);
-    const hasFmDisplay=!!droplets[0] && droplets[0].getAttribute('d').startsWith('M430 22');
-    if (fmDisplay.length!==(hasFmDisplay?1:0) || wpDisplay.length!==fan.length) return fail();
-    const baffles=rects.filter(el=>el.localName==='rect' && el.getAttribute('x')==='73' &&
-      el.getAttribute('width')==='128' && el.getAttribute('height')==='4');
-    const baffleLines=all.filter(el=>el.localName==='path' && /^M73 [-\d.]+H201M73 [-\d.]+H201$/.test(el.getAttribute('d')||''));
-    if (baffles.length!==baffleLines.length || baffles.length>1) return fail();
-    const bounded=(el,max,required)=>{
-      const s=view.getComputedStyle(el),v=s?.strokeWidth;
-      if (!s || (s.vectorEffect && s.vectorEffect!=='none') || typeof v!=='string' ||
-          !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(v.trim())) return false;
-      const width=Number.parseFloat(v);
-      return Number.isFinite(width) && width>=0 && width<=max && (!required || s.stroke!=='none');
-    };
-    const droplet=droplets[0] && view.getComputedStyle(droplets[0]);
-    if ((droplets[0] && (!droplet || droplet.stroke!=='none' || (droplet.vectorEffect && droplet.vectorEffect!=='none'))) ||
-        arrows.some(el=>!bounded(el,1.6,true)) || fan.some(el=>!bounded(el,3,true)) || led.some(el=>!bounded(el,1,true)) ||
-        [...fmDisplay,...wpDisplay].some(el=>!bounded(el,1,true)) ||
-        baffles.some(el=>view.getComputedStyle(el).stroke!=='none') || baffleLines.some(el=>!bounded(el,.7,true))) return fail();
-    return {status:'unsupported',reason:'layout-symbol-strokes-bound-only'};
-  } catch (_) { return fail(); }
-}
-function inspectStagedLayoutPipeStrokes(svg) {
-  const fail=()=>({status:'unsupported',reason:'layout-pipe-stroke-unproven'});
-  try {
-    const view=svg?.ownerDocument?.defaultView;
-    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
-    const paths=Array.from(svg.querySelectorAll('path'));
-    const controlled=new Set(['w0','w1','w2','w3','wk']);
-    for (const el of svg.querySelectorAll('[class]')) {
-      const raw=el.getAttribute('class') || '',tokens=raw.trim().split(/\s+/),used=tokens.filter(token=>controlled.has(token));
-      if (used.length && (used.length!==1 || raw!==used[0] || el.localName!==(used[0]==='wk'?'rect':'path'))) return fail();
-    }
-    const byClass=name=>paths.filter(el=>el.getAttribute('class')===name);
-    const layers=['w0','w1','w2'].map(byClass),stubs=Array.from(svg.querySelectorAll('rect')).filter(el=>el.getAttribute('class')==='wk');
-    if (![4,5,9,10].includes(layers[0].length) || layers.some(group=>group.length!==layers[0].length) ||
-        !((layers[0].length===4 && stubs.length===6) || (layers[0].length===5 && [6,7].includes(stubs.length)) || (layers[0].length>=9 && stubs.length===13))) return fail();
-    const rootMatrix=svg.getScreenCTM(),keys=['a','b','c','d','e','f'];
-    if (!rootMatrix || rootMatrix.is2D===false || !keys.every(k=>Number.isFinite(rootMatrix[k]))) return fail();
-    const bounded=(el,max,round)=>{
-      const s=view.getComputedStyle(el),v=s?.strokeWidth;
-      const matrix=el.getScreenCTM();
-      if (!s || s.stroke==='none' || (s.vectorEffect && s.vectorEffect!=='none') || typeof v!=='string' ||
-          !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(v.trim()) ||
-          !matrix || matrix.is2D===false || !keys.every(k=>Number.isFinite(matrix[k]) && Math.abs(matrix[k]-rootMatrix[k])<=1e-9) ||
-          (round && (s.strokeLinecap!=='round' || s.strokeLinejoin!=='round'))) return false;
-      const width=Number.parseFloat(v);return Number.isFinite(width) && width>=0 && width<=max;
-    };
-    if (layers.some((group,i)=>group.some(el=>!bounded(el,[10,7,2][i],true))) ||
-        stubs.some(el=>!bounded(el,.8,false)) || byClass('w3').some(el=>!bounded(el,10,false))) return fail();
-    return {status:'unsupported',reason:'layout-pipe-strokes-bound-only'};
-  } catch (_) { return fail(); }
-}
-// A shape with no own stroke can inherit one from the HA host. Such a stroke
-// is outside its model hull. Explicit/default widths are also checked against
-// the actual computed value, not assumed from the renderer's markup.
-function inspectStagedLayoutAmbientPaint(svg,allowTargetId=false) {
-  const fail=()=>({status:'unsupported',reason:'layout-ambient-paint-unproven'});
-  try {
-    const view=svg?.ownerDocument?.defaultView;
-    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
-    const cssWidths={w0:10,w1:7,w2:2,w3:2.6,wa:1.6,wk:.8,wn:.8,wm:1.2};
-    const length=value=>typeof value==='string' && /^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(value.trim())
-      ? Number.parseFloat(value) : NaN;
-    for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
-      if (el.closest('defs')) continue;
-      const seen=new Set();let ancestor=el,reached=false;
-      while(ancestor) {
-        if (seen.has(ancestor)) return fail();seen.add(ancestor);
-        const effect=view.getComputedStyle(ancestor);
-        if (!effect || effect.markerStart!=='none' || effect.markerMid!=='none' || effect.markerEnd!=='none' ||
-            effect.clipPath!=='none' || effect.mask!=='none' || effect.mixBlendMode!=='normal' ||
-            (effect.backdropFilter && effect.backdropFilter!=='none')) return fail();
-        if (effect.filter!=='none') {
-          const attr=ancestor.getAttribute?.('filter') || '',m=attr.match(allowTargetId?/^url\(#(wwShadow)\)$/:/^url\(#(ww-text-stage-\d+)\)$/),
-            actual=typeof effect.filter==='string' && effect.filter.match(/^url\(\s*["']?#([^"')\s]+)["']?\s*\)$/);
-          if (ancestor!==el || ancestor.localName!=='rect' || !m || !actual || actual[1]!==m[1] ||
-              svg.querySelector(`#${m[1]}`)?.localName!=='filter') return fail();
-        }
-        if (ancestor===svg) reached=true;
-        // External compositing is not inherited: inspect every ancestor,
-        // including Shadow hosts, instead of stopping at the SVG root.
-        if (reached && (Number(effect.opacity)!==1 || (effect.isolation && effect.isolation!=='auto'))) return fail();
-        const parent=ancestor.parentElement;
-        if (parent) ancestor=parent;
-        else {const tree=typeof ancestor.getRootNode==='function' ? ancestor.getRootNode() : null;ancestor=tree?.host || null;}
-      }
-      if (!reached) return fail();
-      const computed=view.getComputedStyle(el);
-      if (!computed || typeof computed.stroke!=='string' || (computed.vectorEffect && computed.vectorEffect!=='none')) return fail();
-      if (computed.stroke==='none') continue;
-      const tokens=(el.getAttribute('class')||'').trim().split(/\s+/),controlled=tokens.filter(name=>Object.hasOwn(cssWidths,name));
-      if (controlled.length>1) return fail();
-      const inline=el.style?.getPropertyValue?.('stroke') || '',attribute=el.getAttribute('stroke');
-      if (!controlled.length && !inline && attribute===null) return fail();
-      const widthAttr=el.getAttribute('stroke-width'),inlineWidth=el.style?.getPropertyValue?.('stroke-width') || '';
-      const allowed=controlled.length ? cssWidths[controlled[0]] : (inlineWidth ? length(inlineWidth) : widthAttr!==null ? length(widthAttr) : 1);
-      const actual=length(computed.strokeWidth);
-      if (!Number.isFinite(allowed) || !Number.isFinite(actual) || allowed<0 || actual<0 || actual>allowed) return fail();
-    }
-    return {status:'unsupported',reason:'layout-ambient-paint-bound-only'};
-  } catch (_) { return fail(); }
-}
-function namespaceLegacyHeatingSvgIds(svg,root) {
-  const fail=reason=>({status:'unsupported',reason});
-  if (!svg || svg.isConnected || !root || typeof root.querySelectorAll!=='function') return fail('text-stage-invalid-candidate');
-  const all=[svg,...svg.querySelectorAll('*')], existing=new Set(Array.from(root.querySelectorAll('[id]'),el=>el.id));
-  const elements=new Set(['svg','g','defs','linearGradient','radialGradient','stop','pattern','filter','feDropShadow','rect','path','circle','ellipse','line','text','title']);
-  const attributes=new Set(['id','class','cx','cy','d','dx','dy','fill','fill-opacity','filter','flood-color','flood-opacity',
-    'font-size','font-weight','textLength','lengthAdjust','gradientUnits','height','letter-spacing','offset','opacity','patternUnits','r','rx','ry',
-    'stdDeviation','stop-color','stop-opacity','stroke','stroke-linecap','stroke-linejoin','stroke-opacity','stroke-width','style','transform',
-    'viewBox','width','x','x1','x2','y','y1','y2','data-act','data-more','data-preview-route','data-preview-rail','href','xlink:href','xmlns','aria-label']);
-  const ids=new Map();
-  for (const el of all) {
-    if (!elements.has(el.localName) || el.namespaceURI!=='http://www.w3.org/2000/svg') return fail('text-stage-invalid-candidate');
-    if (!el.id) continue;
-    if (ids.has(el.id)) return fail('text-stage-duplicate-id');
-    let replacement;
-    do { replacement=`ww-text-stage-${++heatingTextStageSequence}`; } while (existing.has(replacement));
-    existing.add(replacement); ids.set(el.id,replacement);
-  }
-  const changes=[];
-  const urlPattern=/url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi;
-  for (const el of all) for (const attr of Array.from(el.attributes)) {
-    const name=attr.name,value=attr.value;
-    // CSS escapes and comments can disguise URL tokens in any paint-bearing
-    // attribute, not just style. Reject them before inspecting references.
-    if (!attributes.has(name) || (name==='xmlns' && value!=='http://www.w3.org/2000/svg') || /@import/i.test(value) || /\\|\/\*/.test(value))
-      return fail('text-stage-invalid-candidate');
-    if ((name==='textLength' || name==='lengthAdjust') && (el.localName!=='text' ||
-        el.getAttribute('textLength')!=='50' || el.getAttribute('lengthAdjust')!=='spacingAndGlyphs'))
-      return fail('text-stage-invalid-candidate');
-    if (name==='id') continue;
-    // Atomic heating preview adds inert identifiers to pipe groups only.
-    if (name==='data-preview-route' || name==='data-preview-rail') {
-      const routes=['wp-upper-supply','wp-upper-return','wp-valve-return','wp-lower-supply','wp-lower-return','hk-supply','hk-return','heating-supply-0','heating-return-0','heating-pump-through-0','heating-pump-out-0'];
-      const rails=['manifold-supply','manifold-return'];
-      if (el.localName!=='g' || !(name==='data-preview-route'?routes:rails).includes(value)) return fail('text-stage-invalid-candidate');
-      continue;
-    }
-    if (name==='style') {
-      const declaration=el.style;
-      if (!declaration || !Number.isInteger(declaration.length) || typeof declaration.getPropertyValue!=='function' ||
-          typeof declaration.getPropertyPriority!=='function') return fail('text-stage-invalid-candidate');
-      for (let i=0;i<declaration.length;i++) {
-        const property=declaration[i], v=declaration.getPropertyValue(property).trim();
-        if (declaration.getPropertyPriority(property)) return fail('text-stage-invalid-candidate');
-        if (property==='fill' || property==='stroke') {
-          const sensorFill=property==='fill' && v.replace(/\s+/g,'')==='var(--secondary-background-color,#2a2d33)';
-          if (sensorFill) {
-            // Resolve only a literal color before inserting any staged SVG; a
-            // custom property containing a URL or another var is not safe.
-            const view=root.host?.ownerDocument?.defaultView;
-            if (!view || typeof view.getComputedStyle!=='function') return fail('text-stage-invalid-candidate');
-            const resolved=view.getComputedStyle(root.host)?.getPropertyValue('--secondary-background-color').trim() || '#2a2d33';
-            if (!/^(?:[a-z]+|#[0-9a-f]{3,8}|rgba?\([\d\s.,%+-]+\)|hsla?\([\d\s.,%+-]+\))$/i.test(resolved)) return fail('text-stage-invalid-candidate');
-          } else if (!/^(?:none|[a-z]+|#[0-9a-f]{3,8}|rgba?\([\d\s.,%+-]+\)|hsla?\([\d\s.,%+-]+\)|url\(\s*["']?#[^\s"')]+["']?\s*\))$/i.test(v))
-            return fail('text-stage-invalid-candidate');
-        } else if (property==='stroke-width') {
-          if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/i.test(v)) return fail('text-stage-invalid-candidate');
-        } else if (property==='animation-duration') {
-          if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:ms|s)$/i.test(v)) return fail('text-stage-invalid-candidate');
-        } else return fail('text-stage-invalid-candidate');
-      }
-    }
-    if (/^(?:href|xlink:href)$/i.test(name)) {
-      if (!value.startsWith('#') || !ids.has(value.slice(1))) return fail('text-stage-unresolved-reference');
-      changes.push([el,name,`#${ids.get(value.slice(1))}`,attr.namespaceURI,value]); continue;
-    }
-    let invalid=false;
-    const replaced=value.replace(urlPattern,(_match,a,b,c)=>{
-      const ref=(a ?? b ?? c ?? '').trim();
-      if (!ref.startsWith('#') || !ids.has(ref.slice(1))) { invalid=true; return ''; }
-      return `url(#${ids.get(ref.slice(1))})`;
-    });
-    if (invalid || /url\s*\(/i.test(value.replace(urlPattern,''))) return fail('text-stage-unresolved-reference');
-    if (replaced!==value) changes.push([el,name,replaced,attr.namespaceURI,value]);
-  }
-  // All references are validated before mutating the detached clone.
-  const attrKey=(name,namespace)=>`${namespace || ''}\u0000${name}`;
-  const expected=all.map(el=>({el,text:el.textContent,children:Array.from(el.childNodes || []),
-    attrs:new Map(Array.from(el.attributes,attr=>[attrKey(attr.name,attr.namespaceURI),attr.value]))}));
-  const states=new Map(expected.map(state=>[state.el,state]));
-  const renamed=all.filter(el=>el.id).map(el=>[el,el.id,ids.get(el.id)]);
-  for (const [el,,replacement] of renamed) states.get(el).attrs.set(attrKey('id',null),replacement);
-  for (const [el,name,replacement,namespace] of changes) states.get(el).attrs.set(attrKey(name,namespace),replacement);
-  for (const [el,,replacement] of renamed) el.setAttribute('id',replacement);
-  for (const [el,name,value,namespace] of changes) namespace ? el.setAttributeNS(namespace,name,value) : el.setAttribute(name,value);
-  const verify=(rootStyle)=>{
-    try {
-      const now=[svg,...svg.querySelectorAll('*')];
-      if (now.length!==all.length || now.some((el,i)=>el!==all[i])) return false;
-      for (const state of expected) {
-        const el=state.el,children=Array.from(el.childNodes || []),attrs=new Map(Array.from(el.attributes,attr=>[attrKey(attr.name,attr.namespaceURI),attr.value]));
-        if (el.textContent!==state.text || children.length!==state.children.length || children.some((node,i)=>node!==state.children[i])) return false;
-        const expectedAttrs=new Map(state.attrs);
-        if (el===svg && rootStyle!==undefined) {
-          if (el.style?.cssText!==rootStyle) return false;
-          attrs.delete(attrKey('style',null));expectedAttrs.delete(attrKey('style',null));
-        }
-        if (attrs.size!==expectedAttrs.size || [...expectedAttrs].some(([key,value])=>attrs.get(key)!==value)) return false;
-      }
-      return true;
-    } catch (_) {return false;}
-  };
-  let restored=false;
-  const read=(el,name)=>Array.from(el.attributes).find(attr=>attr.name===name)?.value;
-  const write=(el,name,value,namespace)=>namespace ? el.setAttributeNS(namespace,name,value) : el.setAttribute(name,value);
-  const restore=(targetRoot,discard)=>{
-    try {
-      if (restored || svg.isConnected) return fail('text-stage-restore-unavailable');
-      if (!discard && (!targetRoot || typeof targetRoot.querySelectorAll!=='function' ||
-          Array.from(targetRoot.querySelectorAll('[id]')).some(el=>renamed.some(([,original])=>el.id===original))))
-        return fail('text-stage-restore-id-conflict');
-      const now=[svg,...svg.querySelectorAll('*')];
-      if (now.length!==all.length || now.some((el,i)=>el!==all[i]) ||
-          renamed.some(([el,,replacement])=>el.id!==replacement) ||
-          changes.some(([el,name,replacement])=>read(el,name)!==replacement)) return fail('text-stage-restore-invalidated');
-      try {
-        for (const [el,name,,namespace,original] of changes) write(el,name,original,namespace);
-        for (const [el,original] of renamed) el.setAttribute('id',original);
-      } catch (_) {
-        try {for (const [el,,replacement] of renamed) el.setAttribute('id',replacement);
-          for (const [el,name,replacement,namespace] of changes) write(el,name,replacement,namespace);} catch (_) {}
-        return fail('text-stage-restore-unavailable');
-      }
-      restored=true;return {status:'restored'};
-    } catch (_) {return fail('text-stage-restore-unavailable');}
-  };
-  return {status:'prepared',verify,restore:targetRoot=>restore(targetRoot,false),discard:()=>restore(null,true)};
-}
-
-// Internal staging only. It provides a real connected measurement of the
-// supplied candidate in the caller's Shadow Root; it never authorizes a paint
-// or a later commit, because staging style parity and paint order remain open.
-async function stageLegacyHeatingTextCandidate(parent,candidateHtml,contextKey,generation,isCurrent,referenceSvg,signal,includeTextRecords=false,parityMode='identical',fixedViewport=false,holdForFinalCheck=false,isOwner=isCurrent,invalidateTarget=()=>{},paintMode='fm') {
-  const unsupported=reason=>({status:'unsupported',reason});
-  // The diagnostic heating mode permits reversible probes only; the internal
-  // editor mode requires the complete target verifier before receipt issuance.
-  if (!['fm','heating-probe','heating-internal'].includes(paintMode)) return unsupported('text-stage-invalidated');
-  const symbolStrokes=node=>paintMode.startsWith('heating-')
-    ? (inspectStagedLayoutAmbientPaint(node,node.isConnected && !node.closest('[aria-hidden="true"]')).reason==='layout-ambient-paint-bound-only'
-      ? {reason:'layout-symbol-strokes-bound-only'} : {reason:'layout-symbol-stroke-unproven'})
-    : inspectStagedLayoutSymbolStrokes(node);
-  const pipeStrokes=node=>paintMode.startsWith('heating-')
-    ? (inspectInternalHeatingComputedStrokes(node).reason==='heating-computed-strokes-bound-only'
-      ? {reason:'layout-pipe-strokes-bound-only'} : {reason:'layout-pipe-stroke-unproven'})
-    : inspectStagedLayoutPipeStrokes(node);
-  const wait=promise=>{
-    if (!signal) return promise;
-    if (signal.aborted) return Promise.resolve(null);
-    return new Promise(resolve=>{
-      let done=false;
-      const finish=value=>{if(done)return;done=true;signal.removeEventListener('abort',abort);resolve(value);};
-      const abort=()=>finish(null);
-      signal.addEventListener('abort',abort,{once:true});
-      promise.then(finish,()=>finish(null));
-    });
-  };
-  let stage,svg,transferred=false,held,structureObserver;
-  try {
-    if (!['identical','translated','independent'].includes(parityMode) || (parityMode!=='identical' && !referenceSvg) ||
-        (parityMode==='independent' && !fixedViewport) ||
-        !parent || !parent.isConnected || typeof candidateHtml!=='string' || !candidateHtml ||
-        typeof contextKey!=='string' || !contextKey || typeof isCurrent!=='function' || !isCurrent(generation))
-      return unsupported('text-stage-invalidated');
-    const doc=parent.ownerDocument, root=parent.getRootNode();
-    if (!doc || !root || !root.host || !root.host.isConnected || typeof root.querySelectorAll!=='function')
-      return unsupported('text-stage-unavailable');
-    if (referenceSvg && (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root))
-      return unsupported('text-stage-reference-invalid');
-    const screen=node=>{
-      const m=node?.getScreenCTM(), keys=['a','b','c','d','e','f'];
-      if (!m || m.is2D===false || !keys.every(k=>Number.isFinite(m[k]))) return null;
-      const det=m.a*m.d-m.b*m.c;
-      if (!Number.isFinite(det) || !det) return null;
-      return Object.fromEntries(keys.map(k=>[k,m[k]]));
-    };
-    const sameScreen=(a,b,keys)=>!!a && !!b && keys.every(k=>Math.abs(a[k]-b[k])<=1e-9);
-    const allMatrix=['a','b','c','d','e','f'],linearMatrix=['a','b','c','d'];
-    const referenceInitial=referenceSvg?screen(referenceSvg):null;
-    if (referenceSvg && !referenceInitial) return unsupported('text-stage-viewport-unproven');
-    const template=doc.createElement('template');
-    template.innerHTML=candidateHtml;
-    const children=Array.from(template.content.children);
-    if (children.length!==1 || template.content.childNodes.length!==1 || children[0].localName!=='svg' ||
-        children[0].namespaceURI!=='http://www.w3.org/2000/svg') return unsupported('text-stage-invalid-candidate');
-    svg=children[0]; let namespaced=namespaceLegacyHeatingSvgIds(svg,root);
-    if (namespaced.status!=='prepared') return namespaced;
-    if (fixedViewport && svg.hasAttribute?.('style')) return unsupported('text-stage-invalid-candidate');
-    stage=doc.createElement('div');
-    stage.setAttribute('aria-hidden','true'); stage.setAttribute('inert','');
-    stage.style.cssText='position:fixed;left:-100000px;top:0;pointer-events:none;z-index:-1;';
-    if (parityMode==='translated' || parityMode==='independent') {
-      // The SVG is width:100% in the real card. A fixed-position wrapper with
-      // auto width otherwise shrink-wraps to ~300px and changes font metrics.
-      // Reproduce the actual containing block's content width, not the old
-      // SVG height: a changed candidate viewBox may have a different height.
-      const container=parent.nodeType===11?root.host:parent,style=doc.defaultView.getComputedStyle(container);
-      const px=value=>typeof value==='string' && /^(?:\d+(?:\.\d*)?|\.\d+)px$/.test(value) ? Number.parseFloat(value) : NaN;
-      let width=px(style.width);
-      if (style.boxSizing==='border-box') width-=px(style.paddingLeft)+px(style.paddingRight)+px(style.borderLeftWidth)+px(style.borderRightWidth);
-      if (!Number.isFinite(width) || width<=0) return unsupported('text-stage-viewport-unproven');
-      stage.style.cssText+=`width:${width}px;box-sizing:content-box;margin:0;padding:0;border:0;`;
-      if (fixedViewport) {
-        const height=px(style.height);
-        if (!Number.isFinite(height) || height<=0) return unsupported('text-stage-viewport-unproven');
-        stage.style.cssText+=`height:${height}px;`;
-        svg.style.cssText='position:absolute;inset:0;width:100%;height:100%;';
-      }
-    }
-    stage.append(svg); parent.append(stage);
-    const intact=()=>stage.isConnected && stage.parentNode===parent && svg.parentNode===stage && svg.getRootNode()===root &&
-      !Array.from(root.querySelectorAll('[id]')).some(el=>!svg.contains(el) && el!==svg &&
-        [svg,...svg.querySelectorAll('[id]')].some(inside=>inside.id && inside.id===el.id));
-    if (!intact() || !isCurrent(generation)) return unsupported('text-stage-invalidated');
-    const stageInitial=referenceSvg?screen(svg):null;
-    if (referenceSvg && (!sameScreen(referenceInitial,screen(referenceSvg),allMatrix) ||
-        !sameScreen(referenceInitial,stageInitial,linearMatrix))) return unsupported('text-stage-viewport-unproven');
-    const snapshot=node=>({markup:node.outerHTML,nodes:[node,...node.querySelectorAll('*')]});
-    const unchanged=(node,saved)=>{
-      if (typeof saved?.markup!=='string' || node.outerHTML!==saved.markup) return false;
-      const nodes=[node,...node.querySelectorAll('*')];
-      return nodes.length===saved.nodes.length && nodes.every((element,i)=>element===saved.nodes[i]) && node.outerHTML===saved.markup;
-    };
-    let candidateSnapshot,referenceSnapshot,structureMutated=false;
-    const structureValid=()=>{
-      if (!holdForFinalCheck) return true;
-      if (structureObserver?.takeRecords().length) structureMutated=true;
-      return !structureMutated && unchanged(svg,candidateSnapshot) && unchanged(referenceSvg,referenceSnapshot);
-    };
-    if (holdForFinalCheck) {
-      if (!referenceSvg || typeof doc.defaultView.MutationObserver!=='function') return unsupported('text-stage-unavailable');
-      candidateSnapshot=snapshot(svg);referenceSnapshot=snapshot(referenceSvg);
-      if (typeof candidateSnapshot.markup!=='string' || typeof referenceSnapshot.markup!=='string') return unsupported('text-stage-unavailable');
-      structureObserver=new doc.defaultView.MutationObserver(()=>{structureMutated=true;});
-      const options={attributes:true,childList:true,characterData:true,subtree:true};
-      structureObserver.observe(svg,options);structureObserver.observe(referenceSvg,options);
-    }
-    const reserve=await wait(measureLegacyHeatingSvgText(svg,contextKey));
-    if (!isCurrent(generation) || !parent.isConnected || !intact() || !structureValid()) return unsupported('text-stage-invalidated');
-    if (!reserve) return unsupported('text-stage-invalidated');
-    if (!reserve.entries) return reserve;
-    if (!reserve.entries.length) return unsupported('text-stage-empty-inventory');
-    const current=await wait(measureLegacyHeatingSvgText(svg,contextKey));
-    if (!isCurrent(generation) || !parent.isConnected || !intact() || !structureValid()) return unsupported('text-stage-invalidated');
-    if (!current) return unsupported('text-stage-invalidated');
-    const checked=checkMeasuredTextReserve(reserve,current,contextKey);
-    if (checked.textReserve!=='fits') return checked;
-    let textStyleParity,referenceEntries,symbolStrokeProof,pipeStrokeProof,ambientPaintProof;
-    if (referenceSvg) {
-      if (!referenceSvg.isConnected || referenceSvg.parentNode!==parent || referenceSvg.getRootNode()!==root)
-        return unsupported('text-stage-reference-invalid');
-      const active=await wait(measureLegacyHeatingSvgText(referenceSvg,contextKey));
-      if (!isCurrent(generation) || !parent.isConnected || !intact() || !structureValid() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
-        return unsupported('text-stage-invalidated');
-      if (!active) return unsupported('text-stage-invalidated');
-      if (!active.entries || checkMeasuredTextReserve(active,active,contextKey).textReserve!=='fits' ||
-          checkMeasuredTextReserve(current,current,contextKey).textReserve!=='fits') return unsupported('text-stage-parity-unavailable');
-      const parityFingerprint=(value,independent=false)=>{
-        const parts=JSON.parse(value);
-        // The staging container deliberately disables pointer interaction and
-        // is inert; these inherited properties do not change text painting.
-        // Perspective has already been rejected on every ancestor. Its
-        // computed origin then has no effect and may track moved text boxes.
-        parts[0]=parts[0].filter(([name])=>name!=='pointer-events' && name!=='interactivity' && name!=='perspective-origin' && !(independent && name==='transform'));
-        parts.pop(); // Compare the numeric matrix separately with bounded tolerance.
-        return JSON.stringify(parts);
-      };
-      const tolerance=1e-9, close=(x,y)=>Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
-      // Only the valve's renderer-authored counter-rotation may differ from
-      // the reference. The model-bound inventory validates its combined CTM.
-      const counterRotated=entry=>{
-        const node=entry?.node,x=node?.getAttribute?.('x'),y=node?.getAttribute?.('y');
-        if (entry?.text!=='M' || x===null || y===null || !Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return false;
-        return [90,180,270].some(angle=>node.getAttribute('transform')===`rotate(${-angle} ${x} ${Number(y)-3})`);
-      };
-      const same=(a,b,translated=false,independent=false)=>a.length===b.length && a.every((entry,i)=>{
-        const other=b[i],x=entry.box,y=other && other.box;
-        const ma=JSON.parse(entry.fingerprint).at(-1),mb=other && JSON.parse(other.fingerprint).at(-1);
-        const allowCounterRotation=independent && (counterRotated(entry) || counterRotated(other));
-        return other && entry.text===other.text && parityFingerprint(entry.fingerprint,allowCounterRotation)===parityFingerprint(other.fingerprint,allowCounterRotation) && y &&
-          ['a','b','c','d'].every(k=>close(ma[k],mb[k])) &&
-          (translated || (close(ma.e,mb.e) && close(ma.f,mb.f))) &&
-          (independent || (close(x.x+(translated?mb.e-ma.e:0),y.x) && close(x.y+(translated?mb.f-ma.f:0),y.y) &&
-          close(x.width,y.width) && close(x.height,y.height)));
-      });
-      const translated=parityMode!=='identical',independent=parityMode==='independent';
-      if (!same(active.entries,current.entries,translated,independent)) {
-        const index=active.entries.findIndex((entry,i)=>!current.entries[i] || !same([entry],[current.entries[i]],translated,independent));
-        const a=active.entries[index], b=current.entries[index];
-        const allowCounterRotation=independent && (counterRotated(a) || counterRotated(b));
-        const aStyles=a && new Map(JSON.parse(parityFingerprint(a.fingerprint,allowCounterRotation))[0]);
-        const bStyles=b && new Map(JSON.parse(parityFingerprint(b.fingerprint,allowCounterRotation))[0]);
-        const properties=aStyles && bStyles ? [...new Set([...aStyles.keys(),...bStyles.keys()])].filter(k=>aStyles.get(k)!==bStyles.get(k)) : [];
-        const viewport=node=>{const r=node.getBoundingClientRect(),m=node.getScreenCTM();return {width:r.width,height:r.height,
-          matrix:m && {a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}};};
-        return {status:'unsupported',reason:'text-stage-style-mismatch',mismatch:{index,properties,
-          activeBox:a && a.box,stageBox:b && b.box,
-          activeMatrix:a && JSON.parse(a.fingerprint).at(-1),stageMatrix:b && JSON.parse(b.fingerprint).at(-1),
-          activeViewport:viewport(referenceSvg),stageViewport:viewport(svg)}};
-      }
-      const referenceBeforeCleanup=screen(referenceSvg),stageBeforeCleanup=screen(svg);
-      if (!sameScreen(referenceInitial,referenceBeforeCleanup,allMatrix) ||
-          !sameScreen(stageInitial,stageBeforeCleanup,allMatrix) ||
-          !sameScreen(referenceBeforeCleanup,stageBeforeCleanup,linearMatrix))
-        return unsupported('text-stage-viewport-unproven');
-      if (independent) {symbolStrokeProof=symbolStrokes(svg);pipeStrokeProof=pipeStrokes(svg);
-        ambientPaintProof=inspectStagedLayoutAmbientPaint(svg);}
-      // Recheck the visible SVG after removing the staged sibling: structural
-      // selectors such as :last-child must not alter the on-screen styles.
-      const detachedStage=stage;stage.remove(); stage=null;
-      if (!isCurrent(generation) || !structureValid() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent) return unsupported('text-stage-invalidated');
-      if (!sameScreen(referenceBeforeCleanup,screen(referenceSvg),allMatrix)) return unsupported('text-stage-viewport-unproven');
-      const provenance=textMeasurementProvenance.get(active);
-      const after=provenance && captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
-      if (!after || !after.entries || !same(active.entries,after.entries) || !same(current.entries,after.entries,translated,independent) || active.fontEpoch!==after.fontEpoch)
-        return unsupported('text-stage-style-mismatch');
-      referenceEntries=after.entries;
-      textStyleParity=independent?'independent-text-measurements-only':translated?'translated-text-only':'identical-baseline-only';
-      if (holdForFinalCheck) {
-        if (!independent) return unsupported('text-stage-invalidated');
-        stage=detachedStage;parent.append(stage);
-        let alive=true,lastReason='',lastDetail=null;
-        const candidateProvenance=textMeasurementProvenance.get(current);
-        const validate=()=>{
-          try {
-            const reject=reason=>{lastReason=reason;return false;};
-            if (!alive || !isCurrent(generation) || !intact() || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)
-              return reject('connection-or-generation');
-            const referenceScreen=screen(referenceSvg),candidateScreen=screen(svg);
-            if (!sameScreen(referenceInitial,referenceScreen,allMatrix) || !sameScreen(stageInitial,candidateScreen,allMatrix)) {
-              lastDetail={referenceInitial,referenceScreen,stageInitial,candidateScreen};return reject('viewport');
-            }
-            if (!candidateProvenance || !provenance) return reject('provenance');
-            if (!structureValid()) return reject('svg-mutated');
-            const candidateNow=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
-            const referenceNow=captureLegacyHeatingSvgText(referenceSvg,contextKey,provenance.fonts,provenance.epoch);
-            if (!candidateNow.entries || !referenceNow.entries) return reject('measurement');
-            if (!same(current.entries,candidateNow.entries)) return reject('candidate-changed');
-            if (!same(active.entries,referenceNow.entries)) return reject('reference-changed');
-            if (checkMeasuredTextReserve(current,candidateNow,contextKey).textReserve!=='fits') return reject('candidate-reserve');
-            if (checkMeasuredTextReserve(active,referenceNow,contextKey).textReserve!=='fits') return reject('reference-reserve');
-            if (symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only') return reject('symbol-stroke');
-            if (pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only') return reject('pipe-stroke');
-            if (inspectStagedLayoutAmbientPaint(svg).reason!=='layout-ambient-paint-bound-only') return reject('ambient-paint');
-            if (!structureValid()) return reject('svg-mutated');
-            lastReason='';lastDetail=null;return true;
-          } catch (_) {lastReason='exception';return false;}
-        };
-        const release=()=>{
-          if(!alive)return {status:'unsupported',reason:'text-stage-restore-unavailable'};
-          alive=false;structureObserver?.disconnect();
-          if(svg && svg.parentNode!==stage) svg.remove();
-          stage?.remove();stage=null;
-          return namespaced.discard();
-        };
-        if (!validate()) {const detail=lastReason;release();return {status:'unsupported',reason:'text-stage-invalidated',detail};}
-        // A synchronous target probe uses the same measured node and always
-        // rolls back before returning. It is not a commit or an Apply ticket.
-        let probed=false,consumed=false;
-        const transition=(verify,commit)=>{
-          if (commit && paintMode==='heating-probe') return {status:'unsupported',reason:'heating-commit-unproven'};
-          if ((commit?(!probed || consumed):probed) || typeof verify!=='function' || !validate())
-            return {status:'unsupported',reason:'target-probe-invalidated'};
-          if(commit)consumed=true;else probed=true;
-          let backup;
-          try {backup=referenceSvg.cloneNode(true);if(backup.outerHTML!==referenceSnapshot.markup)return {status:'unsupported',reason:'target-probe-unproven'};}
-          catch (_) {return {status:'unsupported',reason:'target-probe-unproven'};}
-          // cloneNode and markup access can reenter user code. Recheck both
-          // ownership and the complete live evidence before touching the DOM.
-          if (typeof isOwner!=='function' || !isOwner(generation) || !validate() || !isOwner(generation))
-            return {status:'unsupported',reason:'target-probe-invalidated'};
-          alive=false;structureObserver?.disconnect();
-          const next=referenceSvg.nextSibling;let referenceRemoved=false,targetSnapshot,result={status:'unsupported',reason:'target-probe-unproven'};
-          try {
-            parent.removeChild(referenceSvg);referenceRemoved=true;stage.removeChild(svg);
-            if (namespaced.restore(root).status!=='restored') return result;
-            parent.insertBefore(svg,next?.parentNode===parent?next:null);
-            targetSnapshot=snapshot(svg);
-            const actual=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
-            if (!isCurrent(generation) || !sameScreen(referenceInitial,screen(svg),allMatrix) || !actual.entries ||
-                !unchanged(svg,targetSnapshot) ||
-                !same(current.entries,actual.entries,true,true) ||
-                symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
-                pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
-                inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
-                verify(svg,records(actual.entries))!==true || !isCurrent(generation) ||
-                !sameScreen(referenceInitial,screen(svg),allMatrix) || !unchanged(svg,targetSnapshot)) return result;
-            const afterVerify=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
-            if (!afterVerify.entries || !same(actual.entries,afterVerify.entries) ||
-                symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
-                pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
-                inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
-                inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
-                !isCurrent(generation) || !sameScreen(referenceInitial,screen(svg),allMatrix) || !unchanged(svg,targetSnapshot) ||
-                inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
-                !unchanged(svg,targetSnapshot)) return result;
-            if (commit) {
-              let rollbackAvailable=true,consumedReceipt=false,targetMutated=false;
-              const scrollAtCommit={x:doc.defaultView.scrollX??0,y:doc.defaultView.scrollY??0};
-              const targetScreenValid=node=>{
-                const x=doc.defaultView.scrollX??0,y=doc.defaultView.scrollY??0;
-                if (![x,y,scrollAtCommit.x,scrollAtCommit.y].every(Number.isFinite)) return false;
-                return sameScreen({...referenceInitial,e:referenceInitial.e-(x-scrollAtCommit.x),
-                  f:referenceInitial.f-(y-scrollAtCommit.y)},screen(node),allMatrix);
-              };
-              const targetObserver=new doc.defaultView.MutationObserver(()=>{targetMutated=true;invalidateTarget();});
-              targetObserver.observe(svg,{attributes:true,childList:true,characterData:true,subtree:true});
-              const targetClean=()=>{if(targetObserver.takeRecords().length)targetMutated=true;return !targetMutated;};
-              const targetCurrent=()=>{
-                try {
-                  if (!targetClean() || !isOwner(generation) || !isCurrent(generation) || !svg.isConnected || svg.parentNode!==parent ||
-                      !unchanged(svg,targetSnapshot) || !targetScreenValid(svg)) return false;
-                  const live=captureLegacyHeatingSvgText(svg,contextKey,candidateProvenance.fonts,candidateProvenance.epoch);
-                  if (!live.entries || live.fontEpoch!==afterVerify.fontEpoch || !same(afterVerify.entries,live.entries) ||
-                      symbolStrokes(svg).reason!=='layout-symbol-strokes-bound-only' ||
-                      pipeStrokes(svg).reason!=='layout-pipe-strokes-bound-only' ||
-                      inspectStagedLayoutAmbientPaint(svg,true).reason!=='layout-ambient-paint-bound-only' ||
-                      inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
-                      verify(svg,records(live.entries))!==true || !isCurrent(generation) || !isOwner(generation) ||
-                      !targetClean() || !unchanged(svg,targetSnapshot) ||
-                      !targetScreenValid(svg) ||
-                      inspectLayoutTargetReferences(parent.parentNode,candidateHtml).reason!=='layout-target-references-bound-only' ||
-                      !isCurrent(generation) || !isOwner(generation) || !targetClean() || !unchanged(svg,targetSnapshot)) return false;
-                  return true;
-                } catch (_) {return false;}
-              };
-              const rollback=()=>{
-                if (!rollbackAvailable) return false;rollbackAvailable=false;targetObserver.disconnect();
-                try {
-                  // The candidate remains ours even if reparented. Remove it
-                  // first; never overwrite a newer owner while restoring.
-                  if (svg.parentNode || svg.isConnected) svg.remove();
-                  if (!isOwner(generation) || !parent.isConnected || parent.getRootNode()!==root) return false;
-                  const restore=unchanged(referenceSvg,referenceSnapshot)?referenceSvg:backup;
-                  if (restore.outerHTML!==referenceSnapshot.markup) return false;
-                  if (restore.parentNode || restore.isConnected) restore.remove();
-                  const ids=[restore,...restore.querySelectorAll('[id]')].map(el=>el.id).filter(Boolean);
-                  if (Array.from(root.querySelectorAll('[id]')).some(el=>ids.includes(el.id)) || !isOwner(generation)) return false;
-                  parent.insertBefore(restore,next?.parentNode===parent?next:null);
-                  return restore.isConnected && restore.outerHTML===referenceSnapshot.markup && targetScreenValid(restore);
-                } catch (_) {return false;}
-              };
-              const consume=()=>{
-                if (consumedReceipt || !targetCurrent()) return false;
-                consumedReceipt=true;targetObserver.disconnect();return true;
-              };
-              const seal=()=>{rollbackAvailable=false;targetObserver.disconnect();};
-              if (!targetCurrent()) {targetObserver.disconnect();return result;}
-              // Stage removal can reenter and can change selector matching.
-              // It must happen before the final target/owner proof.
-              stage?.remove();stage=null;
-              if (!targetCurrent()) {targetObserver.disconnect();return result;}
-              result={status:'committed-target',rollback,validate:targetCurrent,consume,seal};
-            } else result={status:'validated-target-probe'};
-            return result;
-          } catch (_) {return result;}
-          finally {
-            try {
-              if (commit && result.status==='committed-target') {stage?.remove();stage=null;}
-              else {
-              if (svg.parentNode || svg.isConnected) svg.remove();
-              const owns=typeof isOwner==='function' && isOwner(generation);
-              let restoredReference=referenceSvg;
-              if (referenceRemoved && owns) {
-                if (!unchanged(referenceSvg,referenceSnapshot)) {
-                  if (referenceSvg.parentNode || referenceSvg.isConnected) referenceSvg.remove();
-                  restoredReference=backup;result.status='unsupported';
-                }
-                if (restoredReference.parentNode!==parent) {
-                  if (restoredReference.parentNode || restoredReference.isConnected) restoredReference.remove();
-                  parent.insertBefore(restoredReference,next?.parentNode===parent?next:null);
-                }
-              } else if (referenceRemoved) {
-                result.status='unsupported';restoredReference=null;
-              }
-              if (!restoredReference?.isConnected || restoredReference.parentNode!==parent || restoredReference.outerHTML!==referenceSnapshot.markup ||
-                  !sameScreen(referenceInitial,screen(restoredReference),allMatrix)) result.status='unsupported';
-              if (result.status==='validated-target-probe' && restoredReference===referenceSvg && isCurrent(generation) && isOwner(generation)) {
-                // Restore isolation on the same detached SVG, then start a new
-                // observation window and remeasure before retaining evidence.
-                // Only the root style and the explicit ID/reference rewrite
-                // may differ from the last validated target snapshot.
-                if (!unchanged(svg,targetSnapshot) || !unchanged(referenceSvg,referenceSnapshot)) throw Error('target changed');
-                const style=svg.style.cssText,styleFree=svg.cloneNode(true);
-                if (!unchanged(svg,targetSnapshot)) throw Error('target changed');
-                styleFree.removeAttribute('style');
-                if (!unchanged(svg,targetSnapshot)) throw Error('target changed');
-                svg.removeAttribute('style');
-                const withoutStyle=snapshot(svg);
-                if (withoutStyle.markup!==styleFree.outerHTML || withoutStyle.nodes.length!==targetSnapshot.nodes.length ||
-                    withoutStyle.nodes.some((node,i)=>node!==targetSnapshot.nodes[i])) throw Error('unexpected style removal');
-                namespaced=namespaceLegacyHeatingSvgIds(svg,root);
-                if (namespaced.status!=='prepared' || !namespaced.verify()) result.status='unsupported';
-                else {
-                  svg.style.cssText=style;
-                  if (!namespaced.verify(style)) throw Error('unexpected style change');
-                  const isolated=snapshot(svg);stage.append(svg);
-                  if (!unchanged(svg,isolated) || !namespaced.verify(style) || !unchanged(referenceSvg,referenceSnapshot) ||
-                      !isCurrent(generation) || !isOwner(generation)) throw Error('unexpected staging change');
-                  candidateSnapshot=isolated;structureMutated=false;
-                  structureObserver=new doc.defaultView.MutationObserver(()=>{structureMutated=true;});
-                  const options={attributes:true,childList:true,characterData:true,subtree:true};
-                  structureObserver.observe(svg,options);structureObserver.observe(referenceSvg,options);
-                  alive=true;
-                  if (!validate()) {alive=false;structureObserver.disconnect();result.status='unsupported';}
-                }
-              }
-              if (result.status!=='validated-target-probe') {stage?.remove();stage=null;}
-              }
-            } catch (_) {
-              if (commit) result.rollback?.();
-              result.status='unsupported';alive=false;structureObserver?.disconnect();
-              try {if(svg && svg.parentNode!==stage)svg.remove();stage?.remove();} catch (_) {}
-              stage=null;
-            }
-          }
-        };
-        const probe=verify=>transition(verify,false),consume=verify=>transition(verify,true);
-        held={validate,release,probe,consume,get reason(){return lastReason;},get detail(){return lastDetail;}};
-      }
-    }
-    // Position and dimension can each differ by the parity tolerance.
-    const pad=textStyleParity ? 4e-9 : 0;
-    const boxes=current.entries.map(e=>({x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}));
-    const records=entries=>entries.map(e=>({text:e.text,x:e.node.getAttribute('x'),y:e.node.getAttribute('y'),
-      className:e.node.getAttribute('class'),matrix:JSON.parse(e.fingerprint).at(-1),
-      box:{x:e.box.x-pad,y:e.box.y-pad,width:e.box.width+2*pad,height:e.box.height+2*pad}}));
-    const textRecords=includeTextRecords ? records(current.entries) : undefined;
-    const referenceTextRecords=includeTextRecords && referenceEntries ? records(referenceEntries) : undefined;
-    transferred=!!held;
-    return {status:'unsupported',reason:'text-stage-style-and-paint-validation-required',
-      textCount:current.entries.length,boxes,...(textStyleParity?{textStyleParity}:{}),...(textRecords?{textRecords}:{}),
-      ...(referenceTextRecords?{referenceTextRecords}:{}),...(symbolStrokeProof?{symbolStrokeProof}:{}),...(pipeStrokeProof?{pipeStrokeProof}:{}),
-      ...(ambientPaintProof?{ambientPaintProof}:{}),...(held?{held}:{})};
-  } catch (_) { return unsupported('text-stage-unavailable'); }
-  finally { if (!transferred) {structureObserver?.disconnect();if (svg && stage && svg.parentNode!==stage && svg.isConnected) svg.remove(); if (stage) stage.remove();} }
-}
-
-function inventoryLegacyHeatingDecorations(model, prepared, routes, compiled, localBridge, options = {}) {
-  const unsupported = reason => ({status:'unsupported',reason});
-  const shadows=[];
-  for (const id of ['tank','wp']) {
-    const c=model.components[id], b=c && c.bounds, o=c && c.origin;
-    if (!b || !o || ![o.x,o.y,b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<=0 || b.height<=0)
-      return unsupported('invalid-decoration-inventory');
-    // Both rendered shadowed rectangles use origin x/y and bounds width/height.
-    const box={id,x:o.x-0.3*b.width,y:o.y-0.3*b.height,width:1.6*b.width,height:1.6*b.height};
-    if (![box.x,box.y,box.width,box.height,box.x+box.width,box.y+box.height].every(Number.isFinite))
-      return unsupported('invalid-decoration-inventory');
-    shadows.push(box);
-  }
-  const half=options.halfWidth ?? 5, corner=(options.radius ?? 8)+half, bridge=(options.bridgeRadius ?? 6)+half;
-  const boxes=[];
-  for (const route of routes) {
-    for (let i=0;i<route.points.length-1;i++) {
-      const a=route.points[i],b=route.points[i+1];
-      boxes.push({id:route.id,x:Math.min(a.x,b.x)-half,y:Math.min(a.y,b.y)-half,
-        width:Math.abs(a.x-b.x)+2*half,height:Math.abs(a.y-b.y)+2*half});
-    }
-    for (const p of route.points.slice(1,-1)) boxes.push({id:route.id,x:p.x-corner,y:p.y-corner,width:2*corner,height:2*corner});
-  }
-  for (const r of prepared.rails) for (const area of r.areas) boxes.push({id:r.id,...area});
-  for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings) if (crossing.bridge) {
-    const p=crossing.point; boxes.push({id:route.id,x:p.x-bridge,y:p.y-bridge,width:2*bridge,height:2*bridge});
-  }
-  boxes.push({id:localBridge.owner,...localBridge.envelope});
-  if (boxes.some(b=>![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite)))
-    return unsupported('invalid-decoration-inventory');
-  const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-  const shadowContacts=shadows.map(shadow=>({shadow:shadow.id,connections:[...new Set(boxes.filter(b=>hit(b,shadow)).map(b=>b.id))].sort()}));
-  return {status:'unsupported',reason:'heating-decorations-and-paint-validation-required',shadows,shadowContacts,
-    unmeasuredText:['tank-volume','wp-manufacturer','wp-name','wp-status-and-readings','heating-circuit-labels'],
-    unresolved:['text-bounds','shadow-paint-policy','other-decorations','paint-order-and-animation']};
-}
-
-// Bind the complete canonical WP/one-circuit inventory to one model before
-// invoking the shared geometry checker. A clear geometry result alone is not
-// permission to render: paint order and animated paths still need validation.
-function inspectCompleteLegacyWpHeatingBatch(model, routes, options = {}) {
-  const unsupported = reason => ({status:'unsupported', reason});
-  const ordinary = ['wp-upper-supply','wp-upper-return','wp-valve-return',
-    'wp-lower-supply','wp-lower-return','hk-supply','hk-return',
-    'heating-supply-0','heating-return-0'];
-  if (model && model.components && model.components['heating-pump-0']) ordinary.push('heating-pump-through-0','heating-pump-out-0');
-  const rails = ['manifold-return','manifold-supply'];
-  const incidence = resolveLegacyWpHeatingIncidences(model);
-  if (incidence.status !== 'resolved') return unsupported('unproven-geometry');
-  try {
-    const keys = Object.keys(model.connections);
-    if (keys.length !== ordinary.length + rails.length || keys.some(id => !ordinary.includes(id) && !rails.includes(id)))
-      return unsupported('unproven-connection-inventory');
-    if (keys.some(id => model.connections[id].routingPolicy !== (rails.includes(id) ? 'manifold-rail'
-      : id==='heating-pump-through-0' ? 'pump-through'
-      : id.startsWith('wp-') ? 'external' : 'fixed'))) return unsupported('unproven-connection-inventory');
-    const upper = {
-      'wp-upper-supply':['wp.upper-supply','tank.wp-supply'],
-      'wp-upper-return':['tank.wp-return','valve.upper'],
-      'wp-valve-return':['valve.wp','wp.return']
-    };
-    if (Object.entries(upper).some(([id,[from,to]]) => {
-      const edge = model.connections[id];
-      return !edge || edge.id !== id || edge.from !== from || edge.to !== to || !Array.isArray(edge.via) || edge.via.length;
-    })) return unsupported('unproven-connection-inventory');
-    const upperPorts = {
-      'wp.upper-supply':['top','supply'], 'tank.wp-supply':['right','supply'],
-      'tank.wp-return':['right','return'], 'valve.upper':['top','return'],
-      'valve.wp':['right','return'], 'wp.return':['left','return'],
-      'wp.lower-supply':['left','supply'], 'tank.lower-supply':['right','supply'],
-      'tank.lower-return':['right','return'], 'valve.lower':['bottom','return'],
-      'heating-circuit-0.supply':['top','supply'], 'heating-circuit-0.return':['top','return']
-    };
-    if (model.components['heating-pump-0']) {
-      upperPorts['heating-pump-0.in']=['top','supply'];
-      upperPorts['heating-pump-0.out']=['bottom','supply'];
-    }
-    if (Object.entries(upperPorts).some(([ref,[direction,role]]) => {
-      const [id,name] = ref.split('.'), c = model.components[id], p = c && c.ports[name];
-      const b=c && c.bounds;
-      if (!p || !b || p.id !== name || p.medium !== 'heating-water' || p.direction !== direction || p.role !== role ||
-          ![p.x,p.y,b.x,b.y,b.width,b.height,c.origin.x,c.origin.y].every(Number.isFinite)) return true;
-      // An owner exception is allowed only at a port close to its declared
-      // boundary, with the tangential coordinate inside that boundary.
-      const tangent=direction==='left'||direction==='right' ? p.y>=b.y && p.y<=b.y+b.height : p.x>=b.x && p.x<=b.x+b.width;
-      const edge=direction==='left'?b.x:direction==='right'?b.x+b.width:direction==='top'?b.y:b.y+b.height;
-      const normal=direction==='left'||direction==='right'?p.x:p.y;
-      return !tangent || Math.abs(normal-edge)>10;
-    })) return unsupported('unproven-port-geometry');
-    if (!Array.isArray(routes) || routes.length !== ordinary.length ||
-        ordinary.some(id => routes.filter(r => r && r.id === id).length !== 1))
-      return unsupported('incomplete-heating-batch');
-    const point = ref => {
-      const j = model.junctions[ref];
-      if (j) return j;
-      const dot = ref.lastIndexOf('.'), c = model.components[ref.slice(0,dot)], p = c.ports[ref.slice(dot+1)];
-      return {x:c.origin.x+p.x,y:c.origin.y+p.y};
-    };
-    for (const route of routes) {
-      const edge = model.connections[route.id];
-      if (!edge || edge.id !== route.id || !Array.isArray(edge.via) || !Array.isArray(route.nodes))
-        return unsupported('unproven-connection-inventory');
-      const refs = [edge.from,...edge.via,edge.to];
-      if (route.nodes.length !== refs.length || refs.some((ref,i) => {
-        const p = point(ref), n = route.nodes[i];
-        return !p || !n || n.ref !== ref || !Number.isFinite(p.x) || !Number.isFinite(p.y) || n.x !== p.x || n.y !== p.y;
-      })) return unsupported('route-model-mismatch');
-    }
-    const prepared = prepareLegacyWpHeatingRails(model, options);
-    if (prepared.reason !== 'rail-batch-validation-required') return prepared;
-    const checked = checkLegacyHeatingBridgeBatch(prepared, routes, options);
-    if (checked.status !== 'clear') return checked;
-    const outward = (p,q,side) => side === 'left' ? q.y===p.y && q.x<p.x
-      : side === 'right' ? q.y===p.y && q.x>p.x
-      : side === 'top' ? q.x===p.x && q.y<p.y : q.x===p.x && q.y>p.y;
-    for (const id of ordinary) {
-      const {from,to}=model.connections[id];
-      const route=routes.find(r => r.id===id), points=route.points;
-      if (id==='heating-pump-through-0') {
-        if (points.length!==2 || points[0].x!==points[1].x || points[0].y>=points[1].y)
-          return unsupported('unproven-pump-through');
-        continue;
-      }
-      if (points.length<2 || (upperPorts[from] && !outward(points[0],points[1],upperPorts[from][0])) ||
-          (upperPorts[to] && !outward(points.at(-1),points.at(-2),upperPorts[to][0])))
-        return unsupported('unproven-port-escape');
-    }
-    for (const junction of incidence.junctions) for (const leg of junction.incidences) {
-      if (rails.includes(leg.connectionId)) continue;
-      const route=routes.find(r => r.id===leg.connectionId), nodeIndex=route.nodes.findIndex(n => n.ref===junction.ref);
-      const vertex=route.points.findIndex(p => p.x===junction.x && p.y===junction.y);
-      const adjacent=leg.segmentIndex===nodeIndex ? route.points[vertex+1] : route.points[vertex-1];
-      if (vertex<0 || !adjacent || !outward(route.points[vertex],adjacent,leg.side))
-        return unsupported('unproven-junction-incidence');
-    }
-    const compiled=compileDirectedJunctionBatch(routes,options);
-    if (compiled.status!=='routed') return compiled;
-    const bodyCheck=checkLegacyHeatingModelBodies(model,prepared,routes,compiled,checked.localBridge,options);
-    if (bodyCheck.status!=='clear') return bodyCheck;
-    const decorations=inventoryLegacyHeatingDecorations(model,prepared,routes,compiled,checked.localBridge,options);
-    if (decorations.reason!=='heating-decorations-and-paint-validation-required') return decorations;
-    return {...decorations,inventory:{ordinary:[...ordinary],rails:[...rails]},localBridge:checked.localBridge};
-  } catch (_) { return unsupported('unproven-connection-inventory'); }
-}
-
-const heatingAnimationStateProvenance=new WeakMap();
-// Reuse the same state derivation as the card; this is not a parallel
-// interpretation of HA sensor strings, valve inversion or pump thresholds.
-function deriveLegacyWpHeatingAnimationState(card) {
-  const unsupported=reason=>({status:'unsupported',reason});
-  try {
-    const c=card && card._cfg,h=card && card._hass,model=card && card._model;
-    if (!c || !h || !model || !c.wp || !Array.isArray(c.heizkreise) || c.heizkreise.length!==1 ||
-        c.heizkreise[0].mischer || c.verteiler || c.weiche ||
-        !!c.heizkreise[0].pumpe!==!!model.components['heating-pump-0'] ||
-        resolveLegacyWpHeatingIncidences(model).status!=='resolved')
-      return unsupported('animation-state-unsupported');
-    const configSnapshot=JSON.stringify(c),stateSnapshot=JSON.stringify([h.language,h.states]), F=c.farben,L=T[sprache(c,h)];
-    const {S,U,ON,NUM}=sensorReader(h),pump=heatPumpState(c,L,F,S,ON,NUM);
-    const position=model.components['heating-circuit-0'].origin.x+22;
-    const heating=heatingCircuitState(c,[position],L,S,U,ON,NUM,pump.CW,pump.CK);
-    const value=Object.freeze({wpOn:!!pump.wp_on,wpUpper:!!pump.wpO,wpLower:!!pump.wpU,
-      circuitOn:!!heating.hks[0].on,hkFlow:heating.hk_fl,upperDuration:pump.tO,lowerDuration:pump.tU,
-      supplyColour:pump.CW,returnColour:pump.CK,activeColour:F.aktiv});
-    heatingAnimationStateProvenance.set(value,{card,model,configSnapshot,stateSnapshot});
-    return value;
-  } catch (_) { return unsupported('animation-state-unsupported'); }
-}
-
-// Reverse only the compiler's explicit M/L/Q/A grammar, retaining the same
-// quadratic control point and reversing the sweep of every circular bridge.
-function reverseCompiledAnimationPath(path) {
-  if (typeof path!=='string' || !path) return null;
-  const pieces=[...path.matchAll(/([MLQA])([^MLQA]*)/g)];
-  if (!pieces.length || pieces.map(p=>p[0]).join('')!==path || pieces[0][1]!=='M') return null;
-  const segments=[]; let current=null;
-  for (let i=0;i<pieces.length;i++) {
-    const command=pieces[i][1], raw=pieces[i][2].trim();
-    if (!raw) return null;
-    const values=raw.split(/\s+/).map(Number), expected={M:2,L:2,Q:4,A:7}[command];
-    if (values.length!==expected || !values.every(Number.isFinite) || (command==='M' && i!==0)) return null;
-    if (command==='M') {current={x:values[0],y:values[1]};continue;}
-    if (!current) return null;
-    if (command==='A' && (values[0]<=0 || values[0]!==values[1] || values[2]!==0 || values[3]!==0 || ![0,1].includes(values[4]))) return null;
-    const next={x:values.at(-2),y:values.at(-1)};
-    segments.push({command,values,from:current});current=next;
-  }
-  if (!current || !segments.length) return null;
-  let reversed=`M${current.x} ${current.y}`;
-  for (const s of segments.reverse()) {
-    if (s.command==='L') reversed+=`L${s.from.x} ${s.from.y}`;
-    else if (s.command==='Q') reversed+=`Q${s.values[0]} ${s.values[1]} ${s.from.x} ${s.from.y}`;
-    else reversed+=`A${s.values[0]} ${s.values[1]} 0 0 ${1-s.values[4]} ${s.from.x} ${s.from.y}`;
-  }
-  return reversed;
-}
-
-// Internal state-to-animation prototype for the validated one-circuit model.
-function planLegacyWpHeatingAnimations(model,routes,options,state) {
-  const unsupported=reason=>({status:'unsupported',reason});
-  try {
-    const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options);
-    if (proof.reason!=='heating-decorations-and-paint-validation-required') return proof;
-    const provenance=state && heatingAnimationStateProvenance.get(state);
-    if (!provenance || provenance.model!==model || provenance.card._model!==model ||
-        JSON.stringify(provenance.card._cfg)!==provenance.configSnapshot ||
-        JSON.stringify([provenance.card._hass.language,provenance.card._hass.states])!==provenance.stateSnapshot)
-      return unsupported('animation-state-unsupported');
-    const compiled=compileDirectedJunctionBatch(routes,options);
-    if (compiled.status!=='routed') return compiled;
-    const owner=compiled.routes[proof.localBridge.owner], source=routes.find(r=>r.id===proof.localBridge.owner);
-    if (!owner || owner.crossings.length || !source || source.points.length!==2) return unsupported('preview-bridge-composition-required');
-    const {point:p,radius}=proof.localBridge,first=source.points[0],last=source.points[1];
-    let ownerPath=`M${first.x} ${first.y}L${p.x} ${p.y-radius}A${radius} ${radius} 0 0 1 ${p.x} ${p.y+radius}L${last.x} ${last.y}`;
-    if (model.components['heating-pump-0']) {
-      const through=routes.find(r=>r.id==='heating-pump-through-0'),out=routes.find(r=>r.id==='heating-pump-out-0');
-      if (!through || !out || through.points.length!==2 || out.points.length!==2 ||
-          compiled.routes[through.id].crossings.length || compiled.routes[out.id].crossings.length ||
-          through.points[0].x!==last.x || through.points[0].y!==last.y ||
-          through.points[1].x!==last.x || out.points[0].x!==last.x || out.points[1].x!==last.x ||
-          through.points[1].y!==out.points[0].y || through.points[0].y>=through.points[1].y || out.points[0].y>=out.points[1].y)
-        return unsupported('pump-animation-phase-unproven');
-      // One w3 path preserves dash phase from rail, across A11 and through the
-      // pump, to the circuit symbol; the symbol paints later as in the card.
-      ownerPath+=`L${out.points[1].x} ${out.points[1].y}`;
-    }
-    const split=(id,ref,part)=>{
-      const route=routes.find(r=>r.id===id),node=route.nodes.find(n=>n.ref===ref),path=compiled.routes[id].path;
-      if (!node) return null;
-      const marker=`L${node.x} ${node.y}`,i=path.indexOf(marker);
-      if (i<0 || path.indexOf(marker,i+1)>=0 || (path[i+marker.length] && !/[LQA]/.test(path[i+marker.length]))) return null;
-      return part==='before' ? path.slice(0,i+marker.length) : `M${node.x} ${node.y}${path.slice(i+marker.length)}`;
-    };
-    const partialSupply=reverseCompiledAnimationPath(split('wp-lower-supply','supply-tee','after'));
-    const partialReturn=reverseCompiledAnimationPath(split('wp-lower-return','return-tee','before'));
-    if (!partialSupply || !partialReturn) return unsupported('animation-partial-path-unavailable');
-    const {wpUpper,wpLower,upperDuration,lowerDuration,hkFlow}=state,
-      hkDuration=1/Math.max(hkFlow,0.04), plan={};
-    if (![hkFlow,upperDuration,lowerDuration,hkDuration].every(Number.isFinite) || hkFlow!==(state.circuitOn?1:0) ||
-        upperDuration<1 || upperDuration>25 || lowerDuration<1 || lowerDuration>25)
-      return unsupported('animation-state-unsupported');
-    const set=(id,active,duration,path=compiled.routes[id].path)=>{plan[id]=active?{path,duration}:null;};
-    set('wp-upper-supply',wpUpper,upperDuration);
-    set('wp-upper-return',wpUpper,upperDuration);
-    set('wp-lower-supply',wpLower || state.circuitOn,wpLower?lowerDuration:hkDuration,wpLower?compiled.routes['wp-lower-supply'].path:partialSupply);
-    set('wp-lower-return',wpLower || state.circuitOn,wpLower?lowerDuration:hkDuration,wpLower?compiled.routes['wp-lower-return'].path:partialReturn);
-    set('wp-valve-return',state.wpOn,1);
-    set('hk-supply',hkFlow>0.04,hkDuration);
-    set('hk-return',hkFlow>0.04,hkDuration);
-    set('heating-supply-0',state.circuitOn,1,ownerPath);
-    set('heating-return-0',state.circuitOn,1);
-    if (model.components['heating-pump-0']) {plan['heating-pump-through-0']=null;plan['heating-pump-out-0']=null;}
-    for (const [id,from,to] of [['manifold-return','manifold-return-0','manifold-primary-return'],['manifold-supply','manifold-primary-supply','manifold-supply-0']]) {
-      const a=model.junctions[from],b=model.junctions[to];
-      plan[id]=state.circuitOn?{path:`M${a.x} ${a.y}H${b.x}`,duration:hkDuration}:null;
-    }
-    return {status:'unsupported',reason:'animation-plan-paint-validation-required',plan};
-  } catch (_) { return unsupported('animation-plan-unavailable'); }
-}
-
-// Internal synthetic preview only: each requested animation covers the whole
-// path with a fixed duration. Real state must not use these synthetic flags.
-function renderLegacyWpHeatingBatchPreview(model,routes,options,syntheticFlow,colours,mode) {
-  const unsupported=reason=>({status:'unsupported',reason});
-  try {
-    if (!['synthetic-full-route','operational-preview'].includes(mode)) return unsupported('synthetic-preview-opt-in-required');
-    const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options);
-    if (proof.reason!=='heating-decorations-and-paint-validation-required') return proof;
-    if (model.components['heating-pump-0'] && mode!=='operational-preview') return unsupported('pump-animation-phase-unproven');
-    const ids=proof.inventory.ordinary, railIds=proof.inventory.rails;
-    if (mode==='synthetic-full-route' && (!syntheticFlow || typeof syntheticFlow!=='object' || Array.isArray(syntheticFlow) || Object.keys(syntheticFlow).length!==ids.length+railIds.length ||
-        [...ids,...railIds].some(id=>!Object.hasOwn(syntheticFlow,id) || typeof syntheticFlow[id]!=='boolean')))
-      return unsupported('invalid-preview-flow');
-    if (!colours || typeof colours!=='object' || Array.isArray(colours) ||
-        Object.keys(colours).some(k=>!['supply','return'].includes(k)) ||
-        ![colours.supply,colours.return].every(c=>typeof c==='string' && /^#[0-9a-f]{6}$/i.test(c)))
-      return unsupported('invalid-preview-colour');
-    const prepared=prepareLegacyWpHeatingRails(model,options), compiled=compileDirectedJunctionBatch(routes,options);
-    if (compiled.status!=='routed') return compiled;
-    const operational=mode==='operational-preview'?planLegacyWpHeatingAnimations(model,routes,options,syntheticFlow):null;
-    if (operational && operational.reason!=='animation-plan-paint-validation-required') return operational;
-    if (operational && (colours.supply!==syntheticFlow.supplyColour || colours.return!==syntheticFlow.returnColour ||
-        typeof syntheticFlow.activeColour!=='string' || !/^#[0-9a-f]{6}$/i.test(syntheticFlow.activeColour)))
-      return unsupported('invalid-preview-colour');
-    if (routes.some(route=>route.role!==(route.id.includes('supply') || route.id.startsWith('heating-pump-')?'supply':'neutral')))
-      return unsupported('invalid-preview-role');
-    const owner=compiled.routes[proof.localBridge.owner], source=routes.find(r=>r.id===proof.localBridge.owner);
-    // This construction replaces the owner's straight segment with A11.
-    // A second ordinary crossing on it would require a joint path compiler.
-    if (!owner || !source || owner.crossings.length || source.points.length!==2)
-      return unsupported('preview-bridge-composition-required');
-    const {point:p,radius}=proof.localBridge, start=source.points[0],end=source.points[1];
-    const a11=`M${start.x} ${start.y}L${p.x} ${p.y-radius}A${radius} ${radius} 0 0 1 ${p.x} ${p.y+radius}L${end.x} ${end.y}`;
-    const animation=(id,defaultPath)=>{
-      const part=operational?operational.plan[id]:(syntheticFlow[id]?{path:defaultPath,duration:1}:null);
-      if (!part) return '';
-      const duration=Math.round(part.duration*100)/100;
-      return `<path d="${part.path}" class="w3"${duration!==1?` style="animation-duration:${duration}s"`:''}/>`;
-    };
-    const layers=(id,d,colour)=>`<g data-preview-route="${id}"><path d="${d}" class="w0"/><path d="${d}" class="w1" style="stroke:${colour}"/><path d="${d}" class="w2"/>`+
-      animation(id,d)+'</g>';
-    const railFragment=id=>{
-      const rail=prepared.rails.find(r=>r.id===id), a=rail.nodes[0],b=rail.nodes.at(-1);
-      const d=`M${a.x} ${a.y}H${b.x}`, colour=id==='manifold-supply'?colours.supply:colours.return;
-      const startNode=rail.nodes.find(n=>n.ref===(id==='manifold-supply'?'manifold-supply-0':'manifold-return-0'));
-      const primary=rail.nodes.find(n=>n.ref===(id==='manifold-supply'?'manifold-primary-supply':'manifold-primary-return'));
-      const from=id==='manifold-supply'?primary:startNode, to=id==='manifold-supply'?startNode:primary;
-      return `<g data-preview-rail="${id}"><path d="${d}" stroke="#000" stroke-opacity=".35" stroke-width="18"/><path d="${d}" stroke="${colour}" stroke-width="14"/>`+
-        `<path d="M${a.x} ${a.y-3}H${b.x}" stroke="#fff" stroke-opacity=".25" stroke-width="3"/>`+
-        `<rect x="${a.x-5}" y="${a.y-10}" width="5" height="20" rx="1.5" class="wk"/><rect x="${b.x}" y="${b.y-10}" width="5" height="20" rx="1.5" class="wk"/>`+
-        animation(id,`M${from.x} ${from.y}H${to.x}`)+'</g>';
-    };
-    let fragment=''; const paintOrder=[];
-    for (const id of compiled.paintOrder) {
-      // The legacy return rail paints after its return branches and before
-      // the A11 owner; the supply rail paints after the supply branch.
-      if (id===proof.localBridge.owner) { fragment+=railFragment('manifold-return'); paintOrder.push('manifold-return'); }
-      const sourceRoute=routes.find(r=>r.id===id), d=id===proof.localBridge.owner?a11:compiled.routes[id].path;
-      fragment+=layers(id,d,sourceRoute.role==='supply'?colours.supply:colours.return);
-      paintOrder.push(id);
-    }
-    fragment+=railFragment('manifold-supply'); paintOrder.push('manifold-supply');
-    const pipeFragment=fragment;
-    if (model.components['heating-pump-0']) {
-      const unit=model.components['heating-pump-0'];
-      fragment+=`<g data-preview-pump="heating-pump-0">${renderPumpe(unit.origin.x+10,unit.origin.y+10,'d',syntheticFlow.circuitOn,syntheticFlow.activeColour)}</g>`;
-      paintOrder.push('heating-pump-0');
-    }
-    return {status:'unsupported',reason:operational?'operational-preview-paint-and-decoration-unvalidated':'synthetic-preview-not-operational-animation',fragment,pipeFragment,
-      paintOrder};
-  } catch (_) { return unsupported('invalid-preview-batch'); }
-}
-
-// Conservative paint bounds for the private atomic heating render. Call only
-// after complete-batch validation. Route corners and bridge arcs cannot leave
-// their waypoint bounds inflated by their radius and the actual 5px stroke.
-function internalHeatingPaintBounds(routes, rails, bridge, options) {
-  if (!Array.isArray(routes) || !Array.isArray(rails) || !bridge?.envelope || !options || typeof options !== 'object') return null;
-  const radius = options.radius ?? 8, bridgeRadius = options.bridgeRadius ?? 6, requestedHalf = options.halfWidth ?? 5;
-  if (![radius, bridgeRadius, requestedHalf, bridge.radius].every(n => Number.isFinite(n) && n >= 0)) return null;
-  const half = Math.max(5, requestedHalf);
-  const margin = half + Math.max(radius, bridgeRadius, bridge.radius);
-  if (!Number.isFinite(margin)) return null;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const include = box => {
-    if (!box || ![box.x, box.y, box.width, box.height, box.x + box.width, box.y + box.height].every(Number.isFinite) || box.width < 0 || box.height < 0) return false;
-    minX = Math.min(minX, box.x); minY = Math.min(minY, box.y);
-    maxX = Math.max(maxX, box.x + box.width); maxY = Math.max(maxY, box.y + box.height); return true;
-  };
-  if (!include(bridge.envelope) || !rails.length || !routes.length) return null;
-  for (const rail of rails) {
-    if (!Array.isArray(rail.areas) || !rail.areas.length || !rail.areas.every(include)) return null;
-  }
-  for (const route of routes) {
-    if (!Array.isArray(route.points) || route.points.length < 2) return null;
-    for (const point of route.points) {
-      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) ||
-          !include({ x: point.x - margin, y: point.y - margin, width: 2 * margin, height: 2 * margin })) return null;
-    }
-  }
-  const width = maxX - minX, height = maxY - minY;
-  return [minX, minY, width, height].every(Number.isFinite) ? { x: minX, y: minY, width, height } : null;
-}
-
-// Private test/preflight path. It runs the real full card renderer with one
-// atomic heating pipe phase; unsupported paint/text evidence never opens an
-// editor gate or installs this HTML in the live card.
-const internalHeatingRenderContexts=new WeakMap();
-function renderInternalWpHeatingCandidate(card,routes,options) {
-  const unsupported=reason=>({status:'unsupported',reason});
-  if (!card || internalHeatingRenderContexts.has(card)) return unsupported('heating-render-unavailable');
-  try {
-    const model=card._model;
-    if (!model || !model.components['heating-pump-0']) return unsupported('heating-render-scope');
-    const state=deriveLegacyWpHeatingAnimationState(card);
-    if (!heatingAnimationStateProvenance.has(state)) return state;
-    const colours={supply:state.supplyColour,return:state.returnColour};
-    const batch=renderLegacyWpHeatingBatchPreview(model,routes,options,state,colours,'operational-preview');
-    if (batch.reason!=='operational-preview-paint-and-decoration-unvalidated' || typeof batch.pipeFragment!=='string') return batch;
-    const proof=inspectCompleteLegacyWpHeatingBatch(model,routes,options), prepared=prepareLegacyWpHeatingRails(model,options);
-    if (proof.reason!=='heating-decorations-and-paint-validation-required' || prepared.reason!=='rail-batch-validation-required')
-      return unsupported('heating-bounds-unavailable');
-    const paintBounds=internalHeatingPaintBounds(routes,prepared.rails,proof.localBridge,options);
-    if (!paintBounds) return unsupported('heating-bounds-unavailable');
-    internalHeatingRenderContexts.set(card,{pipeFragment:batch.pipeFragment,paintBounds});
-    const html=card._render();
-    if (typeof html!=='string' || !html.includes(batch.pipeFragment) || html.includes('data-preview-pump="heating-pump-0"'))
-      return unsupported('heating-render-incomplete');
-    return {status:'unsupported',reason:'complete-card-text-shadow-paint-validation-required',html};
-  } catch (_) { return unsupported('heating-render-failed'); }
-  finally { internalHeatingRenderContexts.delete(card); }
-}
-
-// Bound the two decorative filter regions in the narrow WP/HK experiment.
-// Filter overlaps are deliberately decorative, not collision-free evidence.
-function inspectInternalHeatingShadows(card,candidate,html) {
-  const fail=()=>({status:'unsupported',reason:'heating-shadow-policy-unproven'});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m || card._model!==m || typeof html!=='string' || !['schicht','trennblech'].includes(c.typ) ||
-        inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required') return fail();
-    const filter='<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter>';
-    if (html.split(filter).length!==2 || (html.match(/<filter\b/g)||[]).length!==1 ||
-        (html.match(/\bfilter\s*=/g)||[]).length!==2 || (html.match(/filter="url\(#wwShadow\)"/g)||[]).length!==2) return fail();
-    const shadows=[];
-    for (const [id,width,height,rx,fill] of [['tank',130,m.components.tank?.bounds?.height,'65" ry="22','wwTemp'],['wp',120,222,'14','wwRed']]) {
-      const b=m.components[id],o=b?.origin,box=b?.bounds;
-      if (!o || !box || box.x!==0 || box.y!==0 || box.width!==width || box.height!==height ||
-          ![o.x,o.y,width,height].every(Number.isFinite) || height<44) return fail();
-      const mark=`<rect x="${o.x}" y="${o.y}" width="${width}" height="${height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`;
-      if (html.split(mark).length!==2) return fail();
-      const shadow={owner:id,x:o.x-.3*width,y:o.y-.3*height,width:1.6*width,height:1.6*height};
-      if (![shadow.x,shadow.y,shadow.width,shadow.height,shadow.x+shadow.width,shadow.y+shadow.height].every(Number.isFinite)) return fail();
-      shadows.push(shadow);
-    }
-    return {status:'unsupported',reason:'heating-shadow-policy-bound-only',shadows,
-      unresolved:['remaining-global-paint','connected-style-and-commit-freshness']};
-  } catch (_) { return fail(); }
-}
-
-// Inventory the actual private atomic pipe phase against fresh operational
-// state and the full renderer. This evidence never authorizes a live commit.
-function inspectInternalHeatingPipePaint(card,candidate,html) {
-  const fail=()=>({status:'unsupported',reason:'heating-pipe-paint-unproven'});
-  try {
-    if (!card || !candidate || card._model!==candidate.model || typeof html!=='string') return fail();
-    const m=candidate.model,routes=candidate.routes,policy=candidate.policy;
-    const state=deriveLegacyWpHeatingAnimationState(card);
-    if (!heatingAnimationStateProvenance.has(state)) return fail();
-    const batch=renderLegacyWpHeatingBatchPreview(m,routes,policy,state,
-      {supply:state.supplyColour,return:state.returnColour},'operational-preview');
-    if (batch.reason!=='operational-preview-paint-and-decoration-unvalidated' || !batch.pipeFragment ||
-        html.split(batch.pipeFragment).length!==2) return fail();
-    const rendered=renderInternalWpHeatingCandidate(card,routes,policy);
-    if (rendered.reason!=='complete-card-text-shadow-paint-validation-required' || rendered.html!==html) return fail();
-    for (const layer of ['w0','w1','w2','w3']) {
-      const count=value=>(value.match(new RegExp(`class="${layer}"`,'g')) || []).length;
-      if (count(html)!==count(batch.pipeFragment)) return fail();
-    }
-    const refs=['wp.upper-supply','wp.lower-supply','wp.return','tank.wp-supply','tank.wp-return','tank.lower-supply','tank.lower-return'];
-    if ((html.match(/class="wk"/g)||[]).length!==(batch.pipeFragment.match(/class="wk"/g)||[]).length+refs.length ||
-        refs.some(ref=>html.split(stub(...diagramStub(m,ref))).length!==2)) return fail();
-    const unit=m.components['heating-pump-0'],entity=card._cfg.heizkreise[0].pumpe;
-    const pump=`<g data-more="${esc(entity)}" class="wx">${renderPumpe(unit.origin.x+10,unit.origin.y+10,'d',state.circuitOn,state.activeColour)}</g>`;
-    const pipeAt=html.indexOf(batch.pipeFragment),pumpAt=html.indexOf(pump);
-    if (pumpAt<pipeAt+batch.pipeFragment.length || html.split(pump).length!==2) return fail();
-    return {status:'unsupported',reason:'heating-pipe-paint-bound-only',
-      unresolved:['other-symbols-and-text','connected-style-and-commit-freshness']};
-  } catch (_) { return fail(); }
-}
-
-// Partial, fail-closed evidence for the single unmixed HK text inventory. The
-// records must come from the connected SVG measurement stage; this does not
-// validate the other card text, global paint, or authorize a layout commit.
-function inspectInternalHeatingTexts(card, candidate, records) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const c=card?._cfg,m=candidate?.model,routes=candidate?.routes,policy=candidate?.policy;
-    if (!c || !m || card._model!==m || !Array.isArray(records) || !Array.isArray(routes) || c.heizkreise.length!==1 ||
-        !c.heizkreise[0].pumpe || c.heizkreise[0].mischer || c.weiche || c.verteiler ||
-        inspectCompleteLegacyWpHeatingBatch(m,routes,policy).reason!=='heating-decorations-and-paint-validation-required')
-      return fail('heating-text-inventory-unproven');
-    const branch=m.components['heating-circuit-0'],pump=m.components['heating-pump-0'];
-    if (!branch || !pump) return fail('heating-text-inventory-unproven');
-    const dx=branch.origin.x-branch.baseOrigin.x,dy=branch.origin.y-branch.baseOrigin.y;
-    const {S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],F=c.farben;
-    const heat=heatPumpState(c,L,F,S,ON,NUM);
-    const x=branch.baseOrigin.x+22;
-    const hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
-    const items=[{x:String(x),y:'564',className:`wc wt${hk.on?'':' wv'}`,text:String(hk.name)},
-      ...hk.zeilen.map((z,i)=>({x:String(x),y:String(576+12*i),className:'wc ws wx',text:String(z.t)}))];
-    const boxes=[], selected=new Set();
-    for (const item of items) {
-      const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.className && r.text===item.text);
-      if (matches.length!==1 || selected.has(matches[0])) return fail('heating-text-inventory-unproven');
-      const r=matches[0], b=r.box,t=r.matrix; selected.add(r);
-      if (!b || !t || ![b.x,b.y,b.width,b.height,t.a,t.b,t.c,t.d,t.e,t.f,dx,dy].every(Number.isFinite) ||
-          b.width<0 || b.height<0 || Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 ||
-          Math.abs(t.d-1)>1e-8 || Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8)
-        return fail('heating-text-inventory-unproven');
-      boxes.push({x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2});
-    }
-    const rendered=renderInternalWpHeatingCandidate(card,routes,policy);
-    if (rendered.reason!=='complete-card-text-shadow-paint-validation-required') return fail('heating-text-inventory-unproven');
-    const match=rendered.html.match(/<svg viewBox="([^"]+)"/);
-    const viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});
-    if (!viewport) return fail('heating-text-inventory-unproven');
-    if (boxes.some(b=>b.x<viewport.x || b.y<viewport.y || b.x+b.width>viewport.x+viewport.width || b.y+b.height>viewport.y+viewport.height))
-      return fail('heating-text-viewport-overflow');
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    const obstacles=[];
-    const rect=(x,y,width,height)=>{if (![x,y,width,height,x+width,y+height].every(Number.isFinite) || width<0 || height<0) throw Error('invalid bounds');obstacles.push({x,y,width,height});};
-    for (const [id,b] of Object.entries(m.components)) {
-      if (id==='heating-circuit-0' || id==='manifolds' || id==='heating-pump-0') continue;
-      rect(b.origin.x+b.bounds.x-1,b.origin.y+b.bounds.y-1,b.bounds.width+2,b.bounds.height+2);
-    }
-    const halo=resolveHeatingGeometry(m).bodies.find(b=>b.owner==='heating-pump-0');
-    if (!halo) return fail('heating-text-inventory-unproven');
-    rect(halo.x,halo.y,halo.width,halo.height);
-    const rails=prepareLegacyWpHeatingRails(m,policy);
-    if (rails.reason!=='rail-batch-validation-required') return fail('heating-text-inventory-unproven');
-    for (const rail of rails.rails) for (const b of rail.areas) rect(b.x,b.y,b.width,b.height);
-    const half=5,corner=half+Math.max(policy.radius??8,policy.bridgeRadius??6);
-    for (const route of routes) {
-      for (let i=1;i<route.points.length;i++) {const a=route.points[i-1],b=route.points[i];
-        rect(Math.min(a.x,b.x)-half,Math.min(a.y,b.y)-half,Math.abs(a.x-b.x)+2*half,Math.abs(a.y-b.y)+2*half);}
-      for (const p of route.points.slice(1,-1)) rect(p.x-corner,p.y-corner,2*corner,2*corner);
-    }
-    const compiled=compileDirectedJunctionBatch(routes,policy);
-    if (compiled.status!=='routed') return fail('heating-text-inventory-unproven');
-    for (const route of Object.values(compiled.routes)) for (const crossing of route.crossings || []) if (crossing.bridge) {
-      const p=crossing.point,extent=half+(policy.bridgeRadius??6);
-      if (!p) return fail('heating-text-inventory-unproven');
-      rect(p.x-extent,p.y-extent,2*extent,2*extent);
-    }
-    const bridge=inspectCompleteLegacyWpHeatingBatch(m,routes,policy).localBridge?.envelope;
-    if (!bridge) return fail('heating-text-inventory-unproven');
-    rect(bridge.x,bridge.y,bridge.width,bridge.height);
-    const y=576+12*hk.zeilen.length;
-    // The arrows and optional circuit icon are painted in the branch's group.
-    rect(x-21+dx,538+dy,43,12);
-    if (['fussboden','fussbodenheizung','floor','heizkoerper','radiator'].includes(hk.typ)) rect(x-23+dx,y-3+dy,46,23);
-    for (let i=0;i<boxes.length;i++) {
-      if (obstacles.some(b=>hit(boxes[i],b))) return fail('heating-text-obstacle-contact',{index:i});
-      // One SVG unit of separation between text boxes, as in the shared inspector.
-      const textBox=b=>({x:b.x+.5,y:b.y+.5,width:b.width-1,height:b.height-1});
-      for (let j=i+1;j<boxes.length;j++) if (hit(textBox(boxes[i]),textBox(boxes[j]))) return fail('heating-text-overlap',{first:i,second:j,boxes:[boxes[i],boxes[j]]});
-      for (const r of records) if (!selected.has(r)) {
-        const b=r?.box;if (!b || ![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite) || b.width<0 || b.height<0)
-          return fail('heating-text-inventory-unproven');
-        if (hit(boxes[i],b)) return fail('heating-text-overlap',{index:i});
-      }
-    }
-    return {status:'unsupported',reason:'heating-text-bound-only',count:boxes.length,
-      unresolved:['remaining-text-and-paint','connected-style-and-commit-freshness']};
-  } catch (_) { return fail('heating-text-inventory-unproven'); }
-}
-
-// Inventory remaining text for the narrow single-pump card. These measured
-// slots do not by themselves prove all symbol/pipe interactions or target style.
-function inspectInternalHeatingRemainingTexts(card,candidate,records) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m || card._model!==m || !Array.isArray(records) || !c.wp || c.fm || c.weiche || c.verteiler ||
-        c.fuehler.length || c.energie.length || c.heizkreise.length!==1 || c.heizkreise[0].mischer ||
-        inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required') return fail('heating-remaining-text-unproven');
-    const {S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],F=c.farben,W=c.wp;
-    const heat=heatPumpState(c,L,F,S,ON,NUM),display=heatPumpDisplay(c,heat,L,F,S,NUM);
-    const items=[];
-    const add=(owner,x,y,css,text,slot)=>items.push({owner,x:String(x),y:String(y),className:css,text:String(text),slot});
-    add('wp',342,168,'wt',c.hersteller,{x:336,y:154,width:74,height:20});
-    if (W.cop) add('wp',438,168,'we wt wx',display.wpCopText,{x:390,y:154,width:54,height:20});
-    if (W.leistung) add('wp',390,305,'wc wt',display.wpPowerText,{x:343,y:283,width:94,height:27});
-    add('wp',390,W.leistung?320:309,'wc',display.wpStatus[0],{x:343,y:W.leistung?308:283,width:94,height:W.leistung?17:43});
-    if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
-    add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
-    if (W.sg_ready) add('wp',424,356,'we wt wx',`SG ${S(W.sg_ready)}`,{x:336,y:343,width:91,height:20});
-    if (W.quelle_ein || W.quelle_aus) add('wp',390,382,'wc wv wx',`${L.luft} ${[W.quelle_ein?fmt(S(W.quelle_ein)):'',W.quelle_aus?fmt(S(W.quelle_aus)):''].filter(Boolean).join(' → ')}`,
-      {x:300,y:372,width:180,height:18});
-    const v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
-    add(null,vx-26,vy+3,'wc wt','M',{x:vx-33,y:vy-8,width:14,height:16});
-    const manifold=m.components.manifolds,bx=manifold.origin.x;
-    const supply=diagramPort(m,m.connections['manifold-supply'].from),ret=diagramPort(m,m.connections['manifold-return'].from);
-    add(null,bx-8,supply.y+3,'we ws','VL',{x:bx-40,y:supply.y-10,width:34,height:20});
-    add(null,bx-8,ret.y+3,'we ws','RL',{x:bx-40,y:ret.y-10,width:34,height:20});
-    if (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') {
-      const tank=m.components.tank;add('tank',137,338,'wc wt wo',`${c.volumen} l`,{x:tank.baseOrigin.x+27,y:tank.baseOrigin.y+6,width:76,height:tank.bounds.height-12});
-    }
-    const branch=m.components['heating-circuit-0'],hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
-    const hx=branch.baseOrigin.x+22;
-    add('heating-circuit-0',hx,564,`wc wt${hk.on?'':' wv'}`,hk.name,null);
-    hk.zeilen.forEach((z,i)=>add('heating-circuit-0',hx,576+12*i,'wc ws wx',z.t,null));
-    if (records.length!==items.length) return fail('heating-remaining-text-unproven',{expected:items.length,actual:records.length});
-    const used=new Set(),boxes=[];
-    for (const item of items) {
-      const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.className && r.text===item.text);
-      if (matches.length!==1 || used.has(matches[0])) return fail('heating-remaining-text-unproven',{item});
-      const r=matches[0],b=r.box,t=r.matrix,owner=item.owner && m.components[item.owner];used.add(r);
-      const dx=owner?owner.origin.x-owner.baseOrigin.x:0,dy=owner?owner.origin.y-owner.baseOrigin.y:0;
-      if (!b || !t || ![b.x,b.y,b.width,b.height,t.a,t.b,t.c,t.d,t.e,t.f,dx,dy].every(Number.isFinite) || b.width<0 || b.height<0 ||
-          Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 || Math.abs(t.d-1)>1e-8 ||
-          Math.abs(t.e-dx)>1e-8 || Math.abs(t.f-dy)>1e-8) return fail('heating-remaining-text-unproven',{item});
-      const q={x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2};
-      if (item.slot) {const slot={...item.slot,x:item.slot.x+dx,y:item.slot.y+dy};
-        if(q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
-          return fail('heating-remaining-text-overflow',{item,box:q,slot});}
-      boxes.push({item,...q});
-    }
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    const half=b=>({x:b.x+.5,y:b.y+.5,width:b.width-1,height:b.height-1});
-    for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++)if(hit(half(boxes[i]),half(boxes[j])))
-      return fail('heating-remaining-text-overlap',{first:boxes[i],second:boxes[j]});
-    return {status:'unsupported',reason:'heating-all-text-inventory-only',count:items.length,
-      unresolved:['remaining-symbol-and-pipe-clearance','connected-style-and-commit-freshness']};
-  } catch (_) { return fail('heating-remaining-text-unproven'); }
-}
-
-// Bind the connected WP/HK SVG to a fresh complete render, including all
-// pump, rail, tank, WP, valve and decorative elements in their paint order.
-// This exact inventory is not a substitute for geometric clearance or style.
-function inspectInternalHeatingSvgInventory(card,candidate,svg,allowTargetStyle=false,viewport=null) {
-  const fail=()=>({status:'unsupported',reason:'heating-svg-inventory-unproven'});
-  try {
-    if (!card || card._model!==candidate?.model || !svg?.isConnected || !svg.ownerDocument || svg.localName!=='svg') return fail();
-    if (inspectCompleteLegacyWpHeatingBatch(candidate.model,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required') return fail();
-    const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
-    if (rendered.reason!=='complete-card-text-shadow-paint-validation-required') return fail();
-    const boundedHtml=viewport ? renderLayoutViewport(rendered.html,viewport) : rendered.html;
-    if (!boundedHtml) return fail();
-    const template=svg.ownerDocument.createElement('template');template.innerHTML=boundedHtml;
-    const expected=template.content.querySelectorAll('svg');
-    if (viewport && expected.length===1) expected[0].removeAttribute('style');
-    if (expected.length!==1 || typeof svg.isEqualNode!=='function') return fail();
-    let actual=svg;
-    if (allowTargetStyle) {
-      const style=svg.ownerDocument.createElementNS('http://www.w3.org/2000/svg','svg');
-      style.style.cssText='position:absolute;inset:0;width:100%;height:100%;';
-      if (svg.style.cssText!==style.style.cssText) return fail();
-      actual=svg.cloneNode(true);actual.removeAttribute('style');
-    }
-    if (!actual.isEqualNode(expected[0])) return fail();
-    return {status:'unsupported',reason:'heating-svg-inventory-bound-only',
-      unresolved:['symbol-clearance','ambient-and-stage-target-parity','commit-freshness']};
-  } catch (_) {return fail();}
-}
-
-// Bound connected non-pipe contours by their modeled component hull, the
-// maximal animated pump halo, or the two named tee decorations. The caller
-// must separately bind the SVG inventory, ambient paint and pipe/stub checks.
-function inspectInternalHeatingContourContainment(card,candidate,svg) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const m=candidate?.model,c=card?._cfg,view=svg?.ownerDocument?.defaultView;
-    if(!m || card._model!==m || !c || !svg?.isConnected || !view?.getComputedStyle ||
-       inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required')return fail('heating-contour-unproven');
-    const boxes=[];
-    for(const [id,b] of Object.entries(m.components))if(id!=='manifolds'){
-      if(!b?.origin || !b.bounds)return fail('heating-contour-unproven');
-      let q={id,x:b.origin.x+b.bounds.x-2,y:b.origin.y+b.bounds.y-2,width:b.bounds.width+4,height:b.bounds.height+4};
-      if(id==='heating-pump-0'){const h=resolveHeatingGeometry(m).bodies.find(h=>h.owner===id);if(!h)return fail('heating-contour-unproven');q={id,x:h.x,y:h.y,width:h.width,height:h.height};}
-      boxes.push(q);
-    }
-    const branch=m.components['heating-circuit-0'],{S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=heatPumpState(c,L,c.farben,S,ON,NUM);
-    const hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
-    if(['floor','fussboden','fussbodenheizung','radiator','heizkoerper'].includes(hk.typ))boxes.push({id:'heating-icon',x:branch.origin.x-1,y:576+12*hk.zeilen.length+(branch.origin.y-branch.baseOrigin.y)-3,width:46,height:23});
-    const tees=['supply-tee','return-tee'].map(id=>m.junctions[id]);
-    if(tees.some(p=>!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)))return fail('heating-contour-unproven');
-    const teeCounts=tees.map(()=>({outer:0,inner:0}));
-    const viewport=layoutCandidateViewport(svg);if(!viewport)return fail('heating-contour-unproven');
-    const matrix=svg.getScreenCTM();if(!matrix || matrix.is2D===false)return fail('heating-contour-unproven');
-    const inv=matrix.inverse(),contains=(a,b)=>b.x>=a.x-1e-7 && b.y>=a.y-1e-7 && b.x+b.width<=a.x+a.width+1e-7 && b.y+b.height<=a.y+a.height+1e-7;
-    // An animation can escape any measured single-frame hull later. The
-    // separately proven pump and fan animations are the only exceptions;
-    // other element/ancestor animations may change opacity only.
-    const checkedAnimations=new Set();
-    for(const shape of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
-      if(shape.closest('defs,[data-preview-route],[data-preview-rail]') || shape.getAttribute('class')==='wk')continue;
-      for(let node=shape;node && node!==svg;node=node.parentElement) {
-        if(checkedAnimations.has(node))continue;checkedAnimations.add(node);
-        if(node.matches?.('circle.wp,g.wr'))continue;
-        const animations=node.getAnimations?.();if(!animations)return fail('heating-contour-unproven');
-        for(const animation of animations) {
-          const effect=animation.effect,frames=effect?.getKeyframes?.();
-          if(effect?.target!==node || !Array.isArray(frames) || !frames.length)return fail('heating-contour-unproven');
-          const allowed=new Set(['offset','computedOffset','easing','composite','opacity']);
-          if(frames.some(frame=>Object.keys(frame).some(key=>!allowed.has(key)) ||
-              (frame.opacity!==undefined && (!Number.isFinite(Number(frame.opacity)) || Number(frame.opacity)<0 || Number(frame.opacity)>1))))
-            return fail('heating-contour-animation-unproven');
-        }
-      }
-    }
-    let count=0;
-    for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
-      if(el.closest('defs,[data-preview-route],[data-preview-rail]') || el.getAttribute('class')==='wk')continue;
-      const b=el.getBBox(),t=inv.multiply(el.getScreenCTM()),style=view.getComputedStyle(el),sw=style.stroke==='none'?0:Number.parseFloat(style.strokeWidth);
-      if(!b || !t || ![b.x,b.y,b.width,b.height,t.a,t.b,t.c,t.d,t.e,t.f,sw].every(Number.isFinite) || sw<0)return fail('heating-contour-unproven');
-      const points=[[b.x,b.y],[b.x+b.width,b.y],[b.x,b.y+b.height],[b.x+b.width,b.y+b.height]].map(([x,y])=>({x:t.a*x+t.c*y+t.e,y:t.b*x+t.d*y+t.f}));
-      const minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y));
-      const pad=sw*Math.max(Math.abs(t.a)+Math.abs(t.c),Math.abs(t.b)+Math.abs(t.d))/2,q={x:minX-pad,y:minY-pad,width:maxX-minX+2*pad,height:maxY-minY+2*pad};
-      if(q.x<viewport.x || q.y<viewport.y || q.x+q.width>viewport.x+viewport.width || q.y+q.height>viewport.y+viewport.height)
-        return fail('heating-contour-viewport-overflow');
-      let tee=false;
-      if(el.localName==='circle') for(let i=0;i<tees.length;i++) {const p=tees[i],cx=el.getAttribute('cx'),cy=el.getAttribute('cy'),r=el.getAttribute('r');
-        if(cx===String(p.x) && cy===String(p.y) && r==='5.5' && el.getAttribute('class')==='wn'){teeCounts[i].outer++;tee=true;}
-        if(cx===String(p.x-1.5) && cy===String(p.y-1.5) && r==='1.6' && !el.getAttribute('class')){teeCounts[i].inner++;tee=true;}}
-      if(!tee && !boxes.some(box=>contains(box,q)))return fail('heating-contour-outside-hull',{tag:el.localName,cls:el.getAttribute('class'),d:el.getAttribute('d'),box:q});
-      count++;
-    }
-    if(!count || teeCounts.some(x=>x.outer!==1 || x.inner!==1))return fail('heating-contour-unproven');
-    // Bind each non-animated element to its own authored transform chain.
-    // The target inventory guarantees that this chain is the expected SVG;
-    // comparing CTMs catches CSS moving a shape into a different body hull.
-    if(typeof view.DOMMatrix!=='function')return fail('heating-contour-unproven');
-    for(const el of svg.querySelectorAll('path,rect,circle,line,ellipse')) {
-      if(el.closest('defs,[data-preview-route],[data-preview-rail]') || el.getAttribute('class')==='wk' ||
-         el.matches('circle.wp') || el.closest('g.wr'))continue;
-      let authored=new view.DOMMatrix(),node=el;
-      while(node && node!==svg){let local=new view.DOMMatrix(),list=node.transform?.baseVal;
-        if(list)for(let i=0;i<list.numberOfItems;i++)local=local.multiply(list.getItem(i).matrix);
-        authored=local.multiply(authored);node=node.parentElement;}
-      if(node!==svg)return fail('heating-contour-unproven');
-      const actual=inv.multiply(el.getScreenCTM());
-      if(!['a','b','c','d','e','f'].every(k=>Number.isFinite(actual[k]) && Number.isFinite(authored[k]) && Math.abs(actual[k]-authored[k])<=1e-7))
-        return fail('heating-contour-transform-mismatch',{tag:el.localName,cls:el.getAttribute('class'),d:el.getAttribute('d')});
-    }
-    return {status:'unsupported',reason:'heating-contours-contained-only',count,unresolved:['tee-foreign-clearance','stage-target-parity','commit-freshness']};
-  }catch(_){return fail('heating-contour-unproven');}
-}
-
-// Bound the entire CSS animation, rather than only its current frame. The
-// pump ring is centered and scales at most 1.8; the five fan blades rotate
-// around the center of a WP housing that encloses their full swept radius.
-function inspectInternalHeatingAnimations(card,candidate,svg) {
-  const fail=detail=>({status:'unsupported',reason:'heating-animation-unproven',...(detail?{detail}:{})});
-  try {
-    const m=candidate?.model,c=card?._cfg,view=svg?.ownerDocument?.defaultView,root=svg?.getScreenCTM();
-    if(!m || card._model!==m || !c || !svg?.isConnected || !view || !root)return fail('check-1');
-    const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=heatPumpState(c,L,c.farben,S,ON,NUM);
-    if(heat.QT!=='luft')return fail('check-2');
-    const hk=heatingCircuitState(c,[m.components['heating-circuit-0'].origin.x+22],L,S,()=>'',ON,NUM,heat.CW,heat.CK).hks[0];
-    const rings=Array.from(svg.querySelectorAll('circle.wp'));
-    if(rings.length!==(hk.on?1:0))return fail('check-3');
-    if(hk.on) {
-      const ring=rings[0],pump=m.components['heating-pump-0'],style=view.getComputedStyle(ring),animations=ring.getAnimations?.(),animation=animations?.[0],effect=animation?.effect,
-        timing=effect?.getTiming?.(),frames=effect?.getKeyframes?.(),a=ring.getScreenCTM(),det=root.a*root.d-root.b*root.c,x=pump.origin.x+10,y=pump.origin.y+10;
-      if(!Number.isFinite(det) || !det || !style || style.animationName!=='wp' || style.animationDuration!=='1.6s' || style.animationIterationCount!=='infinite' ||
-         style.transformBox!=='fill-box' || style.transformOrigin!=='10px 10px' || !animations || animations.length!==1 || animation.animationName!=='wp' || animation.playbackRate!==1 ||
-         effect?.target!==ring || !timing || timing.duration!==1600 || timing.iterations!==Infinity || timing.delay!==0 || timing.direction!=='normal' || timing.easing!=='linear' ||
-         !frames || frames.length!==2 || frames[0].computedOffset!==0 || frames[1].computedOffset!==1 || frames[0].easing!=='ease' ||
-         ![undefined,'none'].includes(frames[0].transform) || frames[0].opacity!=='0.8' || frames[1].opacity!=='0' || frames[1].transform!=='scale(1.8)' || !a)return fail('check-4');
-      const allowed=new Set(['offset','computedOffset','easing','composite','opacity','transform']);
-      if(frames.some(f=>Object.keys(f).some(k=>!allowed.has(k)) || ![undefined,'auto'].includes(f.composite)))return fail('check-5');
-      const rel={a:(root.d*a.a-root.c*a.b)/det,b:(-root.b*a.a+root.a*a.b)/det,c:(root.d*a.c-root.c*a.d)/det,d:(-root.b*a.c+root.a*a.d)/det,
-        e:(root.d*(a.e-root.e)-root.c*(a.f-root.f))/det,f:(-root.b*(a.e-root.e)+root.a*(a.f-root.f))/det};
-      if(!Object.values(rel).every(Number.isFinite) || rel.a<1-1e-7 || rel.a>1.8+1e-7 || Math.abs(rel.a-rel.d)>1e-7 || Math.abs(rel.b)>1e-7 || Math.abs(rel.c)>1e-7 ||
-         Math.abs(rel.e-x*(1-rel.a))>1e-6 || Math.abs(rel.f-y*(1-rel.a))>1e-6)return fail('check-6');
-    }
-    const blades=Array.from(svg.querySelectorAll('path')).filter(el=>el.getAttribute('d')==='M390 226Q405 213 397 192Q383 203 390 226Z');
-    if(blades.length!==5 || [0,72,144,216,288].some(a=>blades.filter(el=>el.getAttribute('transform')===`rotate(${a} 390 226)`).length!==1))return fail('check-7');
-    const group=blades[0].parentElement,active=heat.wp_on || heat.wp_abtau;
-    if(!group || blades.some(el=>el.parentElement!==group) || (group.getAttribute('class')||null)!==(active?'wr':null) ||
-       (group.getAttribute('style')||null)!==(heat.wp_abtau?'animation-duration:4s':null))return fail('check-8');
-    if(blades.some(blade=>{const own=blade.getAnimations?.();return !own || own.length!==0;}))return fail('blade-animation');
-    const animations=group.getAnimations?.() || [];
-    if(active) {
-      const style=view.getComputedStyle(group),animation=animations[0],effect=animation?.effect,timing=effect?.getTiming?.(),frames=effect?.getKeyframes?.();
-      const duration=heat.wp_abtau?4000:1200;
-      if(animations.length!==1 || animation.animationName!=='wr' || animation.playbackRate!==1 || effect?.target!==group ||
-         style.animationName!=='wr' || style.animationIterationCount!=='infinite' || style.animationTimingFunction!=='linear' ||
-         style.transformOrigin!=='390px 226px' || !timing || timing.duration!==duration || timing.iterations!==Infinity || timing.delay!==0 ||
-         timing.direction!=='normal' || timing.easing!=='linear' || !frames || frames.length!==2 || frames[0].computedOffset!==0 || frames[1].computedOffset!==1 ||
-         ![undefined,'none'].includes(frames[0].transform) || frames[1].transform!=='rotate(360deg)')return fail('check-9');
-      const allowed=new Set(['offset','computedOffset','easing','composite','transform']);
-      if(frames.some(f=>Object.keys(f).some(k=>!allowed.has(k)) || ![undefined,'auto','replace'].includes(f.composite) || f.easing!=='linear'))return fail('check-10');
-      // The current matrix must also rotate around the authored fan center in
-      // the moved WP's own coordinate system, never around a foreign body.
-      const det=root.a*root.d-root.b*root.c,a=group.getScreenCTM(),wp=m.components.wp;
-      if(!Number.isFinite(det) || !det || !a)return fail('check-11');
-      const rel={a:(root.d*a.a-root.c*a.b)/det,b:(-root.b*a.a+root.a*a.b)/det,c:(root.d*a.c-root.c*a.d)/det,d:(-root.b*a.c+root.a*a.d)/det,
-        e:(root.d*(a.e-root.e)-root.c*(a.f-root.f))/det,f:(-root.b*(a.e-root.e)+root.a*(a.f-root.f))/det};
-      const dx=wp.origin.x-wp.baseOrigin.x,dy=wp.origin.y-wp.baseOrigin.y;
-      if(!Object.values(rel).every(Number.isFinite) || Math.abs(rel.a*rel.a+rel.b*rel.b-1)>1e-6 ||
-         Math.abs(rel.c+rel.b)>1e-6 || Math.abs(rel.d-rel.a)>1e-6 ||
-         Math.abs(rel.e-(dx+390-rel.a*390-rel.c*226))>1e-5 || Math.abs(rel.f-(dy+226-rel.b*390-rel.d*226))>1e-5)return fail('check-12');
-      const inverse=a.inverse();
-      for(const blade of blades) {
-        const angle=Number(blade.getAttribute('transform').match(/^rotate\((\d+) 390 226\)$/)?.[1]);
-        if(!Number.isFinite(angle))return fail('check-13');
-        const angleRad=angle*Math.PI/180,cos=Math.cos(angleRad),sin=Math.sin(angleRad),actual=inverse.multiply(blade.getScreenCTM());
-        const expected={a:cos,b:sin,c:-sin,d:cos,e:390-cos*390+sin*226,f:226-sin*390-cos*226};
-        if(!['a','b','c','d','e','f'].every(k=>Number.isFinite(actual[k]) && Math.abs(actual[k]-expected[k])<=1e-6))return fail('check-14');
-      }
-    } else if(animations.length)return fail('check-15');
-    const wp=m.components.wp;
-    // The exact five paths lie within a 38-unit radius of (390,226); even a
-    // full turn stays inside the 120x222 housing with ample stroke clearance.
-    if(wp.bounds.width!==120 || wp.bounds.height!==222 || wp.baseOrigin.x!==330 || wp.baseOrigin.y!==150)return fail('check-16');
-    return {status:'unsupported',reason:'heating-animations-bound-only'};
-  } catch (_) {return fail('check-17');}
-}
-
-// Computed-stroke evidence on a connected WP/HK SVG. This checks neither
-// staged/target parity nor ambient paint and cannot authorize commit.
-function inspectInternalHeatingComputedStrokes(svg) {
-  const fail=()=>({status:'unsupported',reason:'heating-computed-strokes-unproven'});
-  try {
-    const view=svg?.ownerDocument?.defaultView;
-    if (!svg?.isConnected || !view?.getComputedStyle) return fail();
-    const controlled=new Set(['w0','w1','w2','w3','wk']);
-    for(const el of svg.querySelectorAll('[class]')) {
-      const raw=el.getAttribute('class')||'',used=raw.trim().split(/\s+/).filter(t=>controlled.has(t));
-      if(used.length && (used.length!==1 || raw!==used[0] || el.localName!==(used[0]==='wk'?'rect':'path')))return fail();
-    }
-    const paths=Array.from(svg.querySelectorAll('path')),byClass=name=>paths.filter(el=>el.getAttribute('class')===name);
-    const layers=['w0','w1','w2'].map(byClass),stubs=Array.from(svg.querySelectorAll('rect')).filter(el=>el.getAttribute('class')==='wk');
-    if(layers.some(g=>g.length!==11) || stubs.length!==11) return fail();
-    const root=svg.getScreenCTM(),keys=['a','b','c','d','e','f'];
-    if (!root || root.is2D===false || !keys.every(k=>Number.isFinite(root[k])))return fail();
-    const bounded=(el,max,round)=>{
-      const style=view.getComputedStyle(el),v=style?.strokeWidth,m=el.getScreenCTM();
-      if(!style || style.stroke==='none' || (style.vectorEffect && style.vectorEffect!=='none') || typeof v!=='string' ||
-          !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(v.trim()) || !m || m.is2D===false ||
-          !keys.every(k=>Number.isFinite(m[k]) && Math.abs(m[k]-root[k])<=1e-9) ||
-          (round && (style.strokeLinecap!=='round' || style.strokeLinejoin!=='round'))) return false;
-      const width=Number.parseFloat(v);return Number.isFinite(width) && width>=0 && width<=max;
-    };
-    if(layers.some((g,i)=>g.some(el=>!bounded(el,[10,7,2][i],true))) || stubs.some(el=>!bounded(el,.8,false)) ||
-       byClass('w3').some(el=>!bounded(el,10,false))) return fail();
-    return {status:'unsupported',reason:'heating-computed-strokes-bound-only',unresolved:['ambient-paint','stage-target-parity','commit-freshness']};
-  } catch (_) {return fail();}
-}
-
-// Partial global text/symbol clearance: bound the WP fan/LED, tank contour
-// and baffle, and the heating pump's maximum animated halo. The remaining
-// symbol inventory and computed target styles still require separate proof.
-function inspectInternalHeatingSymbolText(card,candidate,records,html) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const m=candidate?.model,c=card?._cfg;
-    if (!m || card._model!==m || !c || !Array.isArray(records) || typeof html!=='string' ||
-        inspectInternalHeatingRemainingTexts(card,candidate,records).reason!=='heating-all-text-inventory-only') return fail('heating-symbol-text-unproven');
-    const wp=m.components.wp,tank=m.components.tank,dx=wp.origin.x-wp.baseOrigin.x,dy=wp.origin.y-wp.baseOrigin.y;
-    const icons=[{id:'wp-fan',x:346.5+dx,y:182.5+dy,width:87,height:87},
-      {id:'wp-led',x:428.5+dx,y:347.5+dy,width:11,height:11},
-      {id:'tank-top',x:tank.origin.x-.6,y:tank.origin.y+25.4,width:131.2,height:21.2},
-      {id:'tank-bottom',x:tank.origin.x-.6,y:tank.origin.y+tank.bounds.height-26.6,width:131.2,height:21.2}];
-    if (html.split('<circle cx="390" cy="226" r="42"').length!==2 || html.split('<circle cx="434" cy="353" r="5"').length!==2 ||
-        html.split(`M${tank.origin.x} ${tank.origin.y+26}Q${tank.origin.x+65} ${tank.origin.y+46} ${tank.origin.x+130} ${tank.origin.y+26}`).length!==2 ||
-        html.split(`M${tank.origin.x} ${tank.origin.y+tank.bounds.height-26}Q${tank.origin.x+65} ${tank.origin.y+tank.bounds.height-6} ${tank.origin.x+130} ${tank.origin.y+tank.bounds.height-26}`).length!==2) return fail('heating-symbol-text-unproven');
-    if (c.typ==='trennblech') {const y=m.geometry.yt;
-      if (!Number.isFinite(y) || html.split(`M73 ${y-2}H201M73 ${y+2}H201`).length!==2) return fail('heating-symbol-text-unproven');
-      icons.push({id:'tank-baffle',x:72.65,y:y-2.35,width:128.7,height:4.7});}
-    const halo=resolveHeatingGeometry(m).bodies.find(b=>b.owner==='heating-pump-0');
-    if (!halo) return fail('heating-symbol-text-unproven');
-    icons.push({id:'heating-pump',x:halo.x,y:halo.y,width:halo.width,height:halo.height});
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    if (icons.some(b=>![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite))) return fail('heating-symbol-text-unproven');
-    for (const r of records) {const b=r?.box;if(!b || ![b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite))return fail('heating-symbol-text-unproven');
-      const q={x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2};
-      for(const icon of icons)if(hit(q,icon))return fail('heating-symbol-text-contact',{text:r.text,icon:icon.id});}
-    return {status:'unsupported',reason:'heating-symbol-text-bound-only',unresolved:['remaining-symbol-inventory','connected-style-and-commit-freshness']};
-  } catch (_) {return fail('heating-symbol-text-unproven');}
-}
-
-// Conservative text clearance from every heating pipe and rail. No endpoint
-// exemptions are inferred for labels; uncertain contacts remain unsupported.
-function inspectInternalHeatingAllTextPipes(card,candidate,records) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    if(inspectInternalHeatingRemainingTexts(card,candidate,records).reason!=='heating-all-text-inventory-only') return fail('heating-text-pipes-unproven');
-    const {model:m,routes,policy}=candidate,prepared=prepareLegacyWpHeatingRails(m,policy),proof=inspectCompleteLegacyWpHeatingBatch(m,routes,policy);
-    if(prepared.reason!=='rail-batch-validation-required' || proof.reason!=='heating-decorations-and-paint-validation-required')return fail('heating-text-pipes-unproven');
-    const obstacles=[];const rect=(x,y,width,height)=>{if(![x,y,width,height,x+width,y+height].every(Number.isFinite)||width<0||height<0)throw Error('bounds');obstacles.push({x,y,width,height});};
-    for(const rail of prepared.rails)for(const b of rail.areas)rect(b.x,b.y,b.width,b.height);
-    const half=5,corner=half+Math.max(policy.radius??8,policy.bridgeRadius??6);
-    for(const route of routes){for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i];rect(Math.min(a.x,b.x)-half,Math.min(a.y,b.y)-half,Math.abs(a.x-b.x)+2*half,Math.abs(a.y-b.y)+2*half);}
-      for(const p of route.points.slice(1,-1))rect(p.x-corner,p.y-corner,2*corner,2*corner);}
-    const compiled=compileDirectedJunctionBatch(routes,policy);
-    if(compiled.status!=='routed')return fail('heating-text-pipes-unproven');
-    for(const route of Object.values(compiled.routes))for(const crossing of route.crossings||[])if(crossing.bridge){const p=crossing.point,e=half+(policy.bridgeRadius??6);if(!p)return fail('heating-text-pipes-unproven');rect(p.x-e,p.y-e,2*e,2*e);}
-    const bridge=proof.localBridge?.envelope;if(!bridge)return fail('heating-text-pipes-unproven');rect(bridge.x,bridge.y,bridge.width,bridge.height);
-    for(const id of ['supply-tee','return-tee']){const p=m.junctions[id];if(!p)return fail('heating-text-pipes-unproven');rect(p.x-6,p.y-6,12,12);}
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    for(const record of records){const b=record.box,q={x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2};
-      const obstacle=obstacles.find(o=>hit(q,o));if(obstacle)return fail('heating-text-pipe-contact',{text:record.text,box:q,obstacle});}
-    return {status:'unsupported',reason:'heating-all-text-pipes-bound-only',unresolved:['remaining-symbol-clearance','stage-target-parity','commit-freshness']};
-  }catch(_){return fail('heating-text-pipes-unproven');}
-}
-
-// Bound optional radiator/floor symbols outside the nominal branch hull.
-// This is separate from text and full SVG style/commit validation.
-function inspectInternalHeatingCircuitIcon(card,candidate,records,html) {
-  const fail=reason=>({status:'unsupported',reason});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if(!c || !m || card._model!==m || inspectInternalHeatingRemainingTexts(card,candidate,records).reason!=='heating-all-text-inventory-only')return fail('heating-icon-unproven');
-    const branch=m.components['heating-circuit-0'],{S,U,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)];
-    const heat=heatPumpState(c,L,c.farben,S,ON,NUM),hk=heatingCircuitState(c,[branch.origin.x+22],L,S,U,ON,NUM,heat.CW,heat.CK).hks[0];
-    const floor=['fussboden','fussbodenheizung','floor'].includes(hk.typ),radiator=['heizkoerper','radiator'].includes(hk.typ);
-    if(!floor && !radiator)return {status:'unsupported',reason:'heating-icon-bound-only'};
-    const x=branch.baseOrigin.x+22,y=576+12*hk.zeilen.length,dx=branch.origin.x-branch.baseOrigin.x,dy=branch.origin.y-branch.baseOrigin.y;
-    const marker=floor?`M${x-22} ${y}h40a3 3 0 0 1 0 6h-40a3 3 0 0 0 0 6h40a3 3 0 0 1 0 6h-40`:
-      `<rect x="${x-20}" y="${y-2}" width="40" height="20" rx="3"`;
-    if(typeof html!=='string' || html.split(marker).length!==2)return fail('heating-icon-unproven');
-    const icon={x:x-23+dx,y:y-3+dy,width:46,height:23};
-    const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy),match=rendered.html?.match(/<svg viewBox="([^"]+)"/);
-    const viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});
-    if(!viewport || icon.x<viewport.x || icon.y<viewport.y || icon.x+icon.width>viewport.x+viewport.width || icon.y+icon.height>viewport.y+viewport.height)return fail('heating-icon-viewport-overflow');
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    for(const [id,b] of Object.entries(m.components))if(id!=='heating-circuit-0' && id!=='manifolds'){
-      const q={x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2};
-      if(![q.x,q.y,q.width,q.height].every(Number.isFinite) || hit(icon,q))return fail('heating-icon-obstacle-contact');}
-    for(const r of records){const b=r.box;if(!b || hit(icon,{x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2}))return fail('heating-icon-text-contact');}
-    for(const route of candidate.routes)for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i],e=5+Math.max(candidate.policy.radius??8,candidate.policy.bridgeRadius??6,11);
-      if(hit(icon,{x:Math.min(a.x,b.x)-e,y:Math.min(a.y,b.y)-e,width:Math.abs(a.x-b.x)+2*e,height:Math.abs(a.y-b.y)+2*e}))return fail('heating-icon-pipe-contact');}
-    const prepared=prepareLegacyWpHeatingRails(m,candidate.policy);if(prepared.reason!=='rail-batch-validation-required' || prepared.rails.some(r=>r.areas.some(b=>hit(icon,b))))return fail('heating-icon-pipe-contact');
-    return {status:'unsupported',reason:'heating-icon-bound-only',unresolved:['remaining-svg-paint','stage-target-parity','commit-freshness']};
-  }catch(_){return fail('heating-icon-unproven');}
-}
-
-// Pairwise bounds for foreign component bodies. Tank feet deliberately share
-// their tank; connected port stubs and pipes are checked by the batch proof.
-function inspectInternalHeatingBodyClearance(card,candidate) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const m=candidate?.model;
-    if(!m || card?._model!==m || inspectCompleteLegacyWpHeatingBatch(m,candidate.routes,candidate.policy).reason!=='heating-decorations-and-paint-validation-required')return fail('heating-body-clearance-unproven');
-    const ids=['tank','tank-feet','wp','valve','heating-circuit-0','heating-pump-0'],boxes=[];
-    for(const id of ids){const b=m.components[id];if(!b?.origin || !b.bounds)return fail('heating-body-clearance-unproven');
-      let q={id,x:b.origin.x+b.bounds.x-1.5,y:b.origin.y+b.bounds.y-1.5,width:b.bounds.width+3,height:b.bounds.height+3};
-      if(id==='heating-pump-0'){const halo=resolveHeatingGeometry(m).bodies.find(x=>x.owner===id);if(!halo)return fail('heating-body-clearance-unproven');q={id,x:halo.x,y:halo.y,width:halo.width,height:halo.height};}
-      if(![q.x,q.y,q.width,q.height,q.x+q.width,q.y+q.height].every(Number.isFinite)||q.width<0||q.height<0)return fail('heating-body-clearance-unproven');boxes.push(q);}
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++){
-      const a=boxes[i],b=boxes[j];if(a.id==='tank' && b.id==='tank-feet')continue;
-      if(hit(a,b))return fail('heating-body-contact',{first:a.id,second:b.id});}
-    return {status:'unsupported',reason:'heating-body-clearance-bound-only',unresolved:['symbol-containment','stage-target-parity','commit-freshness']};
-  }catch(_){return fail('heating-body-clearance-unproven');}
-}
-
-// Tee discs may touch their named incident pipes only; keep their painted
-// extent clear of all other component bodies, rails and routed segments.
-function inspectInternalHeatingTeeClearance(card,candidate) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const m=candidate?.model,policy=candidate?.policy,routes=candidate?.routes;
-    if(!m || card?._model!==m || inspectInternalHeatingBodyClearance(card,candidate).reason!=='heating-body-clearance-bound-only')return fail('heating-tee-clearance-unproven');
-    const prepared=prepareLegacyWpHeatingRails(m,policy),incidence=resolveLegacyWpHeatingIncidences(m);
-    if(prepared.reason!=='rail-batch-validation-required' || incidence.status!=='resolved')return fail('heating-tee-clearance-unproven');
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    for(const id of ['supply-tee','return-tee']){
-      const p=m.junctions[id],q={x:p.x-6,y:p.y-6,width:12,height:12},allowed=new Set(incidence.junctions.find(j=>j.ref===id)?.incidences.map(i=>i.connectionId));
-      if(!allowed.size)return fail('heating-tee-clearance-unproven');
-      for(const [name,b] of Object.entries(m.components))if(name!=='manifolds'){
-        let area={x:b.origin.x+b.bounds.x-1.5,y:b.origin.y+b.bounds.y-1.5,width:b.bounds.width+3,height:b.bounds.height+3};
-        if(name==='heating-pump-0'){const h=resolveHeatingGeometry(m).bodies.find(x=>x.owner===name);if(!h)return fail('heating-tee-clearance-unproven');area=h;}
-        if(hit(q,area))return fail('heating-tee-body-contact',{tee:id,body:name});}
-      if(prepared.rails.some(r=>r.areas.some(a=>hit(q,a))))return fail('heating-tee-rail-contact',{tee:id});
-      for(const route of routes)if(!allowed.has(route.id)){
-        for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i],e=5+Math.max(policy.radius??8,policy.bridgeRadius??6);
-          const box={x:Math.min(a.x,b.x)-e,y:Math.min(a.y,b.y)-e,width:Math.abs(a.x-b.x)+2*e,height:Math.abs(a.y-b.y)+2*e};
-          if(hit(q,box))return fail('heating-tee-pipe-contact',{tee:id,route:route.id});}}
-    }
-    return {status:'unsupported',reason:'heating-tee-clearance-bound-only',unresolved:['stage-target-parity','commit-freshness']};
-  }catch(_){return fail('heating-tee-clearance-unproven');}
-}
-
-// Aggregate only private evidence. The caller must provide independently
-// measured records; the result is never a commit receipt or a public gate.
-function inspectInternalHeatingEvidence(card,candidate,html,records) {
-  const fail=reason=>({status:'unsupported',reason});
-  try {
-    const before=layoutCandidateIntegrity(candidate),state=layoutRelevantHassKey(card,card?._hass);
-    if (before===null || state===null) return fail('heating-evidence-stale');
-    const bodies=inspectInternalHeatingBodyClearance(card,candidate);
-    if (bodies.reason!=='heating-body-clearance-bound-only') return bodies;
-    const tees=inspectInternalHeatingTeeClearance(card,candidate);
-    if (tees.reason!=='heating-tee-clearance-bound-only') return tees;
-    const text=inspectInternalHeatingTexts(card,candidate,records);
-    if (text.reason!=='heating-text-bound-only') return text;
-    const remaining=inspectInternalHeatingRemainingTexts(card,candidate,records);
-    if (remaining.reason!=='heating-all-text-inventory-only') return remaining;
-    const textPipes=inspectInternalHeatingAllTextPipes(card,candidate,records);
-    if (textPipes.reason!=='heating-all-text-pipes-bound-only') return textPipes;
-    const icon=inspectInternalHeatingCircuitIcon(card,candidate,records,html);
-    if (icon.reason!=='heating-icon-bound-only') return icon;
-    const symbols=inspectInternalHeatingSymbolText(card,candidate,records,html);
-    if (symbols.reason!=='heating-symbol-text-bound-only') return symbols;
-    const pipe=inspectInternalHeatingPipePaint(card,candidate,html);
-    if (pipe.reason!=='heating-pipe-paint-bound-only') return pipe;
-    const shadow=inspectInternalHeatingShadows(card,candidate,html);
-    if (shadow.reason!=='heating-shadow-policy-bound-only') return shadow;
-    if (before!==layoutCandidateIntegrity(candidate) || state!==layoutRelevantHassKey(card,card._hass)) return fail('heating-evidence-stale');
-    return {status:'unsupported',reason:'heating-partial-evidence-only',
-      unresolved:['remaining-text-and-symbols','connected-style-and-commit-freshness']};
-  } catch (_) { return fail('heating-evidence-unproven'); }
-}
-
-// Private end-to-end diagnostic: measure an isolated stage, synchronously
-// probe the same SVG in the real target, then always roll it back. This does
-// not install a layout or produce a commit receipt.
-async function probeInternalHeatingTarget(card,candidate,rawConfig,layout,referenceSvg,signal,canonicalReference=false) {
-  const fail=reason=>({status:'unsupported',reason});
-  let held;
-  try {
-    if (!card || card._model!==candidate?.model || !referenceSvg?.isConnected || !referenceSvg.parentNode) return fail('heating-probe-unavailable');
-    const viewport=layoutCandidateViewport(referenceSvg);
-    if (!viewport) return fail('heating-probe-unavailable');
-    if (canonicalReference) {
-      const previous=card._model;let baseline;
-      try {card._model=diagramModel(card._cfg);baseline=card._render();} finally {card._model=previous;}
-      const bounded=renderLayoutViewport(baseline,viewport);if(!bounded)return fail('heating-probe-unavailable');
-      const template=referenceSvg.ownerDocument.createElement('template');template.innerHTML=bounded;
-      const expected=template.content.querySelectorAll('svg');
-      if(expected.length!==1 || !referenceSvg.isEqualNode(expected[0]))return fail('heating-probe-unavailable');
-    } else if (inspectInternalHeatingSvgInventory(card,candidate,referenceSvg,true).reason!=='heating-svg-inventory-bound-only') return fail('heating-probe-unavailable');
-    const parent=referenceSvg.parentNode,integrity=layoutCandidateIntegrity(candidate),hass=layoutRelevantHassKey(card,card._hass),
-      geometry=layoutGeometryKey(rawConfig,card._cfg,layout),token={};
-    if(integrity===null || hass===null || geometry===null)return fail('heating-probe-unavailable');
-    const current=t=>t===token && !signal?.aborted && parent.isConnected && card._model===candidate.model &&
-      layoutCandidateIntegrity(candidate)===integrity &&
-      layoutRelevantHassKey(card,card._hass)===hass && layoutGeometryKey(rawConfig,card._cfg,layout)===geometry;
-    const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
-    if(rendered.reason!=='complete-card-text-shadow-paint-validation-required')return fail('heating-probe-unavailable');
-    const bounded=renderLayoutViewport(rendered.html,viewport);if(!bounded)return fail('heating-probe-unavailable');
-    const template=referenceSvg.ownerDocument.createElement('template');template.innerHTML=bounded;
-    const svgs=template.content.querySelectorAll('svg');if(svgs.length!==1)return fail('heating-probe-unavailable');
-    svgs[0].removeAttribute('style');
-    const result=await stageLegacyHeatingTextCandidate(parent,svgs[0].outerHTML,'heating-target-probe',token,current,
-      referenceSvg,signal,true,'independent',true,true,current,()=>{},'heating-probe');
-    held=result.held;
-    if(result.textStyleParity!=='independent-text-measurements-only' || !held?.validate() || !current(token))return fail(result.reason||'heating-probe-unavailable');
-    const staged=inspectInternalHeatingEvidence(card,candidate,rendered.html,result.textRecords);
-    if(staged.reason!=='heating-partial-evidence-only')return staged;
-    const probe=held.probe((target,records)=>current(token) &&
-      inspectInternalHeatingSvgInventory(card,candidate,target,true,viewport).reason==='heating-svg-inventory-bound-only' &&
-      inspectInternalHeatingContourContainment(card,candidate,target).reason==='heating-contours-contained-only' &&
-      inspectInternalHeatingComputedStrokes(target).reason==='heating-computed-strokes-bound-only' &&
-      inspectInternalHeatingAnimations(card,candidate,target).reason==='heating-animations-bound-only' &&
-      inspectInternalHeatingEvidence(card,candidate,rendered.html,records).reason==='heating-partial-evidence-only' && current(token));
-    if(probe.status!=='validated-target-probe' || !current(token) || !referenceSvg.isConnected || referenceSvg.parentNode!==parent)return fail('heating-target-probe-unproven');
-    return {status:'unsupported',reason:'heating-target-probe-only',unresolved:['commit-freshness','editor-apply-reload-lifecycle']};
-  } catch (_) {return fail('heating-probe-unavailable');}
-  finally {held?.release();}
 }
 
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
@@ -3397,7 +1303,8 @@ function routeDiagramConnections(model, ids, options = {}) {
     }
     const boundary = model.components['domestic-boundary'];
     if (boundary) obstacles.push({ id:'domestic-labels', x: boundary.origin.x - 120, y: boundary.origin.y - 8, width: 350, height: 22 });
-    if (Object.keys(model.components).some(id => id.startsWith('sensor-'))) obstacles.push({ id:'legend', x: 370, y: 110, width: 90, height: 28 });
+    const legend = model.legendOffset || { x: 0, y: 0 };
+    if (Object.keys(model.components).some(id => id.startsWith('sensor-'))) obstacles.push({ id:'legend', x: 370 + legend.x, y: 110 + legend.y, width: 90, height: 28 });
   }
   for (const id of ids) {
     const edge = model.connections[id];
@@ -3415,13 +1322,7 @@ function routeDiagramConnections(model, ids, options = {}) {
     candidates.push({ id, role, points:routed.points, nodes:resolved.map(p => ({ ref:p.ref, x:p.x, y:p.y })) });
   }
   if (candidates.length) {
-    const policy = { radius:8, bridgeRadius:6, halfWidth:5, obstacles };
-    let compiled = compilePipeRoutes(candidates, policy);
-    if (compiled.status !== 'routed' && model.layoutSeparatedPreview === true) {
-      const normalized = candidates.map(c => ({ ...c, points: c.points.map(p => ({ ...p })) }));
-      for (const c of normalized) normalizeDirectedPolyline(c.points, c.nodes);
-      compiled = compilePipeRoutes(normalized, policy);
-    }
+    const compiled = compilePipeRoutes(candidates, { radius:8, bridgeRadius:6, halfWidth:5, obstacles });
     if (compiled.status === 'routed') for (const [id, route] of Object.entries(compiled.routes)) result[id] = { status:'routed', ...route, paintOrder:compiled.paintOrder.indexOf(id) };
     else for (const c of candidates) result[c.id] = { status:'failed', code:compiled.code, reason:compiled.reason };
   }
@@ -3429,11 +1330,10 @@ function routeDiagramConnections(model, ids, options = {}) {
 }
 
 // Select and validate the complete routed batch before drawing any pipe.
-function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L, prepared }) {
-  const routingIds = [...(FM ? ['fm-supply', 'fm-return'] : []), ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
-  const movedRouting = (FM || (WP && prepared?.model===model)) && (model.layoutSeparatedPreview === true || [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), ...(FM ? ['fm'] : []), ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; }));
-  const reusable = prepared?.model === model && Object.keys(prepared.routes).length === routingIds.length && routingIds.every(id => prepared.routes[id]?.status === 'routed');
-  const routes = movedRouting ? (reusable ? prepared.routes : routeDiagramConnections(model, routingIds)) : null;
+function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
+  const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  const movedRouting = FM && [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; });
+  const routes = movedRouting ? routeDiagramConnections(model, routingIds) : null;
   if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
     const error = new Error(`Pipe routing ${route.status}: ${id}: ${route.code || route.reason}`);
     error.code = route.code || route.reason; throw error;
@@ -3519,19 +1419,13 @@ function tankState(c, S, y_t) {
   return { fl, stops, avg, col };
 }
 
-// Approximate width only selects when to compress; measured SVG bounds remain
-// authoritative and still reject any overflow under the actual font/theme.
-function sensorLabelNeedsFit(name) {
-  const chars=Array.from(String(name));
-  return chars.reduce((width,ch)=>width+(/[ilI1.,'|! :;]/.test(ch)?2.8:/[MWmw@%&]/.test(ch) || ch.codePointAt(0)>127?7.2:5.2)+.8,0)>50;
-}
-function renderTankSensors({ fl, col, more, openComponent, closeComponent, layout }) {
+function renderTankSensors({ fl, col, more, openComponent, closeComponent }) {
   const pille = (f) => {
     const y = r1(f.y), cl = col(f.wert);
     return `<g${more(f.entity)}><line x1="60" y1="${y}" x2="72" y2="${y}" stroke="${cl}" stroke-width="1.5"/>` +
       `<rect x="2" y="${r1(y - 15)}" width="58" height="30" rx="10" style="fill:var(--secondary-background-color,#2a2d33)" stroke="${cl}" stroke-width="1.5"/>` +
-      `<text x="31" y="${r1(y - (layout ? 6 : 3))}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8"${layout && sensorLabelNeedsFit(f.name) ? ' textLength="50" lengthAdjust="spacingAndGlyphs"' : ''}>${esc(f.name)}</text>` +
-      `<text x="31" y="${r1(y + (layout ? 11 : 10))}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
+      `<text x="31" y="${r1(y - 3)}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${esc(f.name)}</text>` +
+      `<text x="31" y="${r1(y + 10)}" font-size="12" class="wc wt wv">${fmt(f.wert)}</text>` +
       `<circle cx="72" cy="${y}" r="4" fill="${cl}" stroke="#fff" stroke-width="1.5"/></g>`;
   };
   return fl.map((f) => { const id = `sensor-${f.index}`; return openComponent(id) + pille(f) + closeComponent(id); }).join('');
@@ -3568,419 +1462,6 @@ function heaterState(c, L, S, NUM) {
   const hs_p = (hso ? hso.p : 0) + (hsu ? hsu.p : 0), hs_hatP = (hso && hso.leistung) || (hsu && hsu.leistung);
 
   return { hso, hsu, HS, hs_on, hs_p, hs_hatP };
-}
-
-// Internal heater inventory only. It does not validate SVG, text, routes or
-// paint and must never by itself authorize an editor candidate.
-function inspectTankHeaterGeometry(card,model) {
-  const fail=()=>({status:'unsupported',reason:'heater-geometry-unproven'});
-  try {
-    const c=card?._cfg,g=model?.geometry,parts=model?.components;
-    if (!c || !g || !parts || !Number.isInteger(c.hs_stufen) || c.hs_stufen<1 || c.hs_stufen>12) return fail();
-    const {S,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],state=heaterState(c,L,S,NUM),canonical=diagramModel(c);
-    if (['heaterY','ru','bu'].some(key=>g[key]!==canonical.geometry[key])) return fail();
-    const split=c.typ==='getrennt',specs=[['upper-heater',state.hso,split?'hot-tank':'tank',g.heaterY],
-      ['lower-heater',state.hsu,split?'buffer-tank':'tank',(g.ru+g.bu)/2]];
-    const heaters=[];
-    for (const [id,heater,parentId,y] of specs) {
-      const child=parts[id];if (!heater) {if (child) return fail();continue;}
-      const parent=parts[parentId],reference=canonical.components[parentId],base=child?.baseOrigin,origin=child?.origin,b=child?.bounds,local=child?.localOrigin;
-      if (!parent || !reference || !['x','y'].every(key=>parent.baseOrigin?.[key]===reference.baseOrigin[key]) ||
-          !['x','y','width','height'].every(key=>parent.bounds?.[key]===reference.bounds[key]) || !base || !origin || !b || !local || child.parent!==parentId ||
-          ![y,base.x,base.y,origin.x,origin.y,parent.origin.x,parent.origin.y,parent.baseOrigin.x,parent.baseOrigin.y,local.x,local.y].every(Number.isFinite) ||
-          base.x!==106 || base.y!==y-13 || b.x!==0 || b.y!==0 || b.width!==108 || b.height!==41 ||
-          local.x!==base.x-parent.baseOrigin.x || local.y!==base.y-parent.baseOrigin.y ||
-          origin.x!==parent.origin.x+local.x || origin.y!==parent.origin.y+local.y) return fail();
-      const dx=origin.x-base.x,dy=origin.y-base.y,pitch=70/c.hs_stufen;
-      const body={x:198+dx,y:y-11+dy,width:16,height:22};
-      // The SVG path remains in canonical coordinates; the enclosing component
-      // translates it. Its collision envelope is already in world coordinates.
-      const coil={d:`M202 ${y}h-10l-3-4${'l-6 8l-6-8'.repeat(6)}l-3 4`,dx,dy,x:112.7+dx,y:y-5.3+dy,width:90.6,height:10.6};
-      const stages=heater.stufe?Array.from({length:c.hs_stufen},(_,i)=>({x:r2(124+i*pitch)+dx,y:y+11+dy,width:r2(pitch-2),height:4,active:i<heater.step})):[];
-      const glow=heater.on?{x:106+dx,y:y-13+dy,width:100,height:26}:null;
-      const info=[heater.leistung?watt(heater.p):'',heater.temp?fmt(S(heater.temp)):''].filter(Boolean).join(' · ');
-      const texts=[{x:192,y:y-13,className:'we wo wt',text:heater.name,dx,dy},
-        ...(info?[{x:192,y:y+(heater.stufe?28:22),className:'we wo',text:info,dx,dy}]:[])];
-      heaters.push({id,parent:parentId,y:y+dy,body,coil,stages,glow,texts,on:heater.on});
-    }
-    return {status:'unsupported',reason:'heater-geometry-inventory-only',heaters,
-      unresolved:['heater-text','heater-svg-and-strokes','heater-animation','heater-route-and-body-collisions','target-commit']};
-  } catch (_) {return fail();}
-}
-
-// These are independent partial checks, not candidate authorization. A full
-// proof must also account for every other rendered shape, paint and collision.
-function inspectTankHeaterSvgShapes(card,model,svg) {
-  const fail=()=>({status:'unsupported',reason:'heater-svg-unproven'});
-  try {
-    const inventory=inspectTankHeaterGeometry(card,model),view=svg?.ownerDocument?.defaultView;
-    if (inventory.reason!=='heater-geometry-inventory-only' || !svg?.isConnected || !view?.getComputedStyle) return fail();
-    const root=svg.getScreenCTM(),det=root && root.a*root.d-root.b*root.c;
-    if (!root || root.is2D===false || !Number.isFinite(det) || !det) return fail();
-    const all=Array.from(svg.querySelectorAll('path,rect,ellipse')).filter(el=>!el.closest('defs'));
-    const unique=(tag,attrs)=>{const found=all.filter(el=>el.localName===tag && Object.entries(attrs).every(([k,v])=>el.getAttribute(k)===String(v)));return found.length===1?found[0]:null;};
-    const matrixMatches=(el,dx,dy)=>{
-      const a=el?.getScreenCTM();if (!a || a.is2D===false) return false;
-      const rel={a:(root.d*a.a-root.c*a.b)/det,b:(-root.b*a.a+root.a*a.b)/det,
-        c:(root.d*a.c-root.c*a.d)/det,d:(-root.b*a.c+root.a*a.d)/det,
-        e:(root.d*(a.e-root.e)-root.c*(a.f-root.f))/det,f:(-root.b*(a.e-root.e)+root.a*(a.f-root.f))/det};
-      return [rel.a-1,rel.b,rel.c,rel.d-1,rel.e-dx,rel.f-dy].every(n=>Number.isFinite(n) && Math.abs(n)<=1e-8);
-    };
-    const computedPaint=(el,maxStroke,animation=false)=>{
-      const s=view.getComputedStyle(el),raw=s?.strokeWidth;
-      if (!s || s.filter!=='none' || s.clipPath!=='none' || s.mask!=='none' ||
-          s.markerStart!=='none' || s.markerMid!=='none' || s.markerEnd!=='none' ||
-          s.mixBlendMode!=='normal' || (s.vectorEffect && s.vectorEffect!=='none')) return false;
-      if (maxStroke===0) {if(s.stroke!=='none')return false;}
-      else if (s.stroke==='none' || typeof raw!=='string' || !/^(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(raw.trim()) ||
-          Number.parseFloat(raw)>maxStroke) return false;
-      if (animation && (s.animationName!=='wb' || s.animationDuration!=='2.4s' || s.animationIterationCount!=='infinite')) return false;
-      return true;
-    };
-    for (const heater of inventory.heaters) {
-      const {dx,dy}=heater.texts[0],y=heater.y-dy,color=heater.on?card._cfg.farben.aktiv:'#b0b6bd';
-      const coil=unique('path',{d:heater.coil.d,fill:'none',stroke:color,'stroke-width':'2.6','stroke-linecap':'round','stroke-linejoin':'round'});
-      const body=unique('rect',{x:198,y:y-11,width:16,height:22,rx:3,fill:'#2b2f35',stroke:color,'stroke-width':'1.5'});
-      if (!coil || !body || !matrixMatches(coil,dx,dy) || !matrixMatches(body,dx,dy) || !computedPaint(coil,2.6) || !computedPaint(body,1.5)) return fail();
-      const coilStyle=view.getComputedStyle(coil);
-      if(coilStyle.strokeLinecap!=='round' || coilStyle.strokeLinejoin!=='round')return fail();
-      for (const [i,stage] of heater.stages.entries()) {
-        const el=unique('rect',{x:r2(124+i*70/card._cfg.hs_stufen),y:y+11,width:stage.width,height:4,rx:1.5,fill:stage.active?card._cfg.farben.aktiv:'rgba(255,255,255,.3)'});
-        if (!el || !matrixMatches(el,dx,dy) || !computedPaint(el,0)) return fail();
-      }
-      const glows=all.filter(el=>el.localName==='ellipse' && el.getAttribute('cx')==='156' && el.getAttribute('cy')===String(y) && el.getAttribute('rx')==='50' && el.getAttribute('ry')==='13');
-      if (glows.length!==(heater.on?1:0)) return fail();
-      if (heater.on) {
-        const glow=glows[0],fill=glow.getAttribute('fill');
-        const ref=(fill||'').match(/^url\(#(wwHeat|ww-text-stage-\d+)\)$/),gradient=ref && svg.querySelector?.(`#${ref[1]}`),stops=gradient && Array.from(gradient.querySelectorAll('stop'));
-        if (!ref || !gradient || gradient.localName!=='radialGradient' || !stops || stops.length!==2 ||
-            stops[0].getAttribute('offset')!=='0' || stops[1].getAttribute('offset')!=='1' ||
-            stops.some(stop=>stop.getAttribute('stop-color')!==card._cfg.farben.aktiv) ||
-            stops[0].getAttribute('stop-opacity')!=='.75' || stops[1].getAttribute('stop-opacity')!=='0' ||
-            glow.getAttribute('class')!=='wb' || glow.style?.getPropertyValue('animation-duration')!=='2.4s' ||
-            !matrixMatches(glow,dx,dy) || !computedPaint(glow,0,true)) return fail();
-      }
-    }
-    return {status:'unsupported',reason:'heater-svg-shapes-bound-only',count:inventory.heaters.length,
-      unresolved:['ancestor-paint-and-gradient','heater-text','heater-route-and-body-collisions','other-svg-shapes','target-commit']};
-  } catch (_) {return fail();}
-}
-function inspectTankHeaterMeasuredTexts(card,model,records) {
-  const fail=()=>({status:'unsupported',reason:'heater-text-unproven'});
-  try {
-    const inventory=inspectTankHeaterGeometry(card,model);
-    if (inventory.reason!=='heater-geometry-inventory-only' || !Array.isArray(records)) return fail();
-    const boxes=[];
-    for (const heater of inventory.heaters) for(const expected of heater.texts) {
-      const matches=records.filter(r=>r?.x===String(expected.x) && r.y===String(expected.y) && r.className===expected.className && r.text===expected.text);
-      if (matches.length!==1) return fail();
-      const {matrix:m,box:b}=matches[0];
-      if (!m || !b || ![m.a,m.b,m.c,m.d,m.e,m.f,b.x,b.y,b.width,b.height,b.x+b.width,b.y+b.height].every(Number.isFinite) ||
-          b.width<=0 || b.height<=0 || ![m.a-1,m.b,m.c,m.d-1,m.e-expected.dx,m.f-expected.dy].every(n=>Math.abs(n)<=1e-8)) return fail();
-      boxes.push({owner:heater.id,...b});
-    }
-    return {status:'unsupported',reason:'heater-text-inventory-only',boxes,
-      unresolved:['heater-text-bounds-and-collisions','other-text','computed-paint','target-commit']};
-  } catch (_) {return fail();}
-}
-
-// Separate bounded clearance check; this cannot validate or commit a candidate.
-function inspectTankHeaterTextClearance(card,candidate,records) {
-  const fail=(reason='heater-text-clearance-unproven')=>({status:'unsupported',reason});
-  try {
-    const model=candidate?.model, inventory=inspectTankHeaterGeometry(card,model),text=inspectTankHeaterMeasuredTexts(card,model,records);
-    if (inventory.reason!=='heater-geometry-inventory-only' || text.reason!=='heater-text-inventory-only' || !candidate.routes) return fail();
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    const expanded=b=>({x:b.x-1,y:b.y-1,width:b.width+2,height:b.height+2});
-    const expected=inventory.heaters.flatMap(h=>h.texts.map(t=>({...t,owner:h.id,parent:h.parent})));
-    const used=new Set(),boxes=[];
-    for (const t of expected) {
-      const matches=records.filter(r=>r?.x===String(t.x) && r.y===String(t.y) && r.className===t.className && r.text===t.text);
-      if(matches.length!==1 || used.has(matches[0]))return fail();used.add(matches[0]);
-      const q=expanded(matches[0].box),heater=inventory.heaters.find(h=>h.id===t.owner),isName=t.className==='we wo wt';
-      const slot=isName?{x:73+t.dx,y:heater.y-27,width:122,height:20}
-        :{x:73+t.dx,y:heater.y+(heater.stages.length?16:10),width:122,height:19};
-      if (![q.x,q.y,q.width,q.height,q.x+q.width,q.y+q.height].every(Number.isFinite) || q.width<=0 || q.height<=0) return fail();
-      if(q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
-        return fail('heater-text-slot-overflow');
-      boxes.push({owner:t.owner,parent:t.parent,...q});
-    }
-    const others=records.filter(r=>!used.has(r));
-    if(others.some(r=>!r?.box || ![r.box.x,r.box.y,r.box.width,r.box.height,r.box.x+r.box.width,r.box.y+r.box.height].every(Number.isFinite) || r.box.width<0 || r.box.height<0))return fail();
-    const shapeClearance=inspectTankHeaterShapeClearance(card,candidate);
-    if(shapeClearance.reason!=='heater-shape-clearance-bound-only')return fail();
-    if(others.some(r=>shapeClearance.paints.some(p=>hit(expanded(r.box),p))))return fail('heater-text-obstacle-contact');
-    for(let i=0;i<boxes.length;i++) {
-      const box=boxes[i];
-      if(boxes.slice(i+1).some(b=>hit(box,b)) || others.some(r=>hit(box,expanded(r.box))))return fail('heater-text-obstacle-contact');
-      for(const [id,b] of Object.entries(model.components)) {
-        if(id===box.owner || id===box.parent || id==='domestic-boundary')continue;
-        if(!b?.origin || !b.bounds || ![b.origin.x,b.origin.y,b.bounds.x,b.bounds.y,b.bounds.width,b.bounds.height].every(Number.isFinite))return fail();
-        if(hit(box,{x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2}))return fail('heater-text-obstacle-contact');
-      }
-      const own=inventory.heaters.find(h=>h.id===box.owner);
-      if([own.coil,expanded(own.body),...own.stages.map(expanded)].some(b=>hit(box,b)))return fail('heater-text-obstacle-contact');
-      // The parent tank contour remains an obstacle despite its permitted body overlap.
-      const tank=model.components[box.parent],p=tank.origin,h=tank.bounds.height;
-      for(const y of [p.y+26,p.y+h-26]) if(hit(box,{x:p.x-1,y:y-1,width:132,height:22}))return fail('heater-text-obstacle-contact');
-    }
-    const obstacles=[],segment=(a,b,w)=>obstacles.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
-    for(const route of Object.values(candidate.routes)) {
-      if(!route || !Array.isArray(route.points) || !Array.isArray(route.crossings))return fail();
-      for(let i=1;i<route.points.length;i++)segment(route.points[i-1],route.points[i],5);
-      for(const p of route.points.slice(1,-1))obstacles.push({x:p.x-13,y:p.y-13,width:26,height:26});
-      for(const c of route.crossings)if(c.bridge)obstacles.push({x:c.point.x-11,y:c.point.y-11,width:22,height:22});
-    }
-    for(const [id,component] of Object.entries(model.components)) for(const [name,port] of Object.entries(component.ports||{})) if(port.stub) {
-      const [x,y,width,height]=diagramStub(model,`${id}.${name}`);obstacles.push({x:x-.4,y:y-.4,width:width+.8,height:height+.8});
-    }
-    for(const id of ['domestic-cold','domestic-hot']) {
-      const edge=model.connections[id];if(!edge)return fail();const a=diagramPort(model,edge.from),b=diagramPort(model,edge.to);let p=a;
-      for(const ref of edge.via) {const j=model.junctions[ref],q={x:p.x,y:j.y};segment(p,q,5);segment(q,j,5);p=j;}
-      const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
-    }
-    if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite)) || boxes.some(b=>obstacles.some(o=>hit(b,o))))return fail('heater-text-obstacle-contact');
-    return {status:'unsupported',reason:'heater-text-clearance-bound-only',boxes,
-      unresolved:['other-text-inventory','heater-shapes','computed-paint','target-commit']};
-  } catch (_) {return fail();}
-}
-
-// Heater paint may overlap its owning tank, but not foreign devices or pipes.
-// The glow is included at its full extent for every animation phase.
-function inspectTankHeaterShapeClearance(card,candidate) {
-  const fail=(reason='heater-shape-clearance-unproven')=>({status:'unsupported',reason});
-  try {
-    const model=candidate?.model,inventory=inspectTankHeaterGeometry(card,model);
-    if(inventory.reason!=='heater-geometry-inventory-only' || !candidate.routes)return fail();
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    const expand=(b,w)=>({x:b.x-w,y:b.y-w,width:b.width+2*w,height:b.height+2*w});
-    const paints=inventory.heaters.flatMap(h=>[h.coil,expand(h.body,.75),...h.stages,...(h.glow?[h.glow]:[])].map(b=>({owner:h.id,parent:h.parent,...b})));
-    if(paints.some(p=>![p.x,p.y,p.width,p.height,p.x+p.width,p.y+p.height].every(Number.isFinite) || p.width<=0 || p.height<=0))return fail();
-    for(const paint of paints) for(const [id,b] of Object.entries(model.components)) {
-      if(id===paint.owner || id===paint.parent || id==='domestic-boundary')continue;
-      if(!b?.origin || !b.bounds || ![b.origin.x,b.origin.y,b.bounds.x,b.bounds.y,b.bounds.width,b.bounds.height].every(Number.isFinite))return fail();
-      if(hit(paint,{x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2}))return fail('heater-shape-obstacle-contact');
-    }
-    for(const paint of paints) {
-      const tank=model.components[paint.parent],p=tank.origin,h=tank.bounds.height;
-      for(const y of [p.y+26,p.y+h-26])if(hit(paint,{x:p.x-1,y:y-1,width:132,height:22}))return fail('heater-shape-obstacle-contact');
-      if(card._cfg.typ==='trennblech' && hit(paint,{x:p.x-.35,y:model.geometry.yt-2.35,width:130.7,height:4.7}))return fail('heater-shape-obstacle-contact');
-    }
-    const obstacles=[],segment=(a,b,w)=>obstacles.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
-    for(const route of Object.values(candidate.routes)) {
-      if(!route || !Array.isArray(route.points) || !Array.isArray(route.crossings))return fail();
-      for(let i=1;i<route.points.length;i++)segment(route.points[i-1],route.points[i],5);
-      for(const p of route.points.slice(1,-1))obstacles.push({x:p.x-13,y:p.y-13,width:26,height:26});
-      for(const crossing of route.crossings)if(crossing.bridge)obstacles.push({x:crossing.point.x-11,y:crossing.point.y-11,width:22,height:22});
-    }
-    for(const [id,component] of Object.entries(model.components)) for(const [name,port] of Object.entries(component.ports||{})) if(port.stub) {
-      const [x,y,width,height]=diagramStub(model,`${id}.${name}`);obstacles.push({x:x-.4,y:y-.4,width:width+.8,height:height+.8});
-    }
-    for(const id of ['domestic-cold','domestic-hot']) {
-      const edge=model.connections[id];if(!edge)return fail();const a=diagramPort(model,edge.from),b=diagramPort(model,edge.to);let p=a;
-      for(const ref of edge.via) {const j=model.junctions[ref],q={x:p.x,y:j.y};segment(p,q,5);segment(q,j,5);p=j;}
-      const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
-    }
-    if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite)) || paints.some(p=>obstacles.some(o=>hit(p,o))))return fail('heater-shape-obstacle-contact');
-    return {status:'unsupported',reason:'heater-shape-clearance-bound-only',paints,
-      unresolved:['heater-text','other-tank-attachments','svg-inventory','computed-paint','target-commit']};
-  } catch (_) {return fail();}
-}
-
-// Bound sensor paint, including strokes, against all other devices and pipes.
-// A sensor's contact with its own parent tank is intentional.
-function inspectTankSensorClearance(c,candidate) {
-  const fail=reason=>({status:'unsupported',reason});
-  try {
-    const m=candidate.model, paints=[],hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    if(!m || !candidate.routes || !c.fuehler.length)return fail('sensor-clearance-unproven');
-    for(let i=0;i<c.fuehler.length;i++) {
-      const f=c.fuehler[i],pos=isNum(f.hoehe)?Number(f.hoehe):((i+.5)*100)/c.fuehler.length,y=40+310*clamp(pos,0,100)/100,
-        id=`sensor-${i}`,b=m.components[id],parentId=c.typ==='getrennt'?(y>m.geometry.yt?'buffer-tank':'hot-tank'):'tank',parent=m.components[parentId];
-      if(!b || !parent || b.parent!==parentId || b.baseOrigin.x!==2 || b.baseOrigin.y!==y-15 ||
-         b.bounds.x!==0 || b.bounds.y!==0 || b.bounds.width!==74 || b.bounds.height!==30 ||
-         b.localOrigin.x!==2-parent.baseOrigin.x || b.localOrigin.y!==y-15-parent.baseOrigin.y) return fail('sensor-clearance-unproven');
-      const dx=parent.origin.x-parent.baseOrigin.x,dy=parent.origin.y-parent.baseOrigin.y;
-      if(b.origin.x!==2+dx || b.origin.y!==y-15+dy || ![dx,dy].every(Number.isFinite))return fail('sensor-clearance-unproven');
-      paints.push({id,parent:parentId,x:1.25+dx,y:r1(r1(y)-15)-.75+dy,width:75.5,height:31.5});
-    }
-    const obstacles=[];
-    for(const [id,b] of Object.entries(m.components)) {
-      if(id==='domestic-boundary' || id.startsWith('sensor-'))continue;
-      if(!b?.origin || !b.bounds)return fail('sensor-clearance-unproven');
-      obstacles.push({id,x:b.origin.x+b.bounds.x,y:b.origin.y+b.bounds.y,width:b.bounds.width,height:b.bounds.height});
-      for(const [name,p] of Object.entries(b.ports||{}))if(p.stub) {
-        const [x,y,width,height]=diagramStub(m,`${id}.${name}`);obstacles.push({x:x-.4,y:y-.4,width:width+.8,height:height+.8});
-      }
-    }
-    const segment=(a,b,w)=>obstacles.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
-    for(const route of Object.values(candidate.routes)) {
-      if(!Array.isArray(route?.points) || !Array.isArray(route.crossings))return fail('sensor-clearance-unproven');
-      for(let i=1;i<route.points.length;i++)segment(route.points[i-1],route.points[i],5);
-      for(const p of route.points.slice(1,-1))obstacles.push({x:p.x-13,y:p.y-13,width:26,height:26});
-      for(const x of route.crossings)if(x.bridge)obstacles.push({x:x.point.x-11,y:x.point.y-11,width:22,height:22});
-    }
-    for(const id of ['domestic-cold','domestic-hot']) {
-      const edge=m.connections[id];if(!edge) {if(supportsStandaloneAirWp(c))continue;return fail('sensor-clearance-unproven');}
-      const a=diagramPort(m,edge.from),b=diagramPort(m,edge.to);let p=a;
-      for(const ref of edge.via) {const j=m.junctions[ref];if(!j)return fail('sensor-clearance-unproven');const q={x:p.x,y:j.y};segment(p,q,5);segment(q,j,5);p=j;}
-      const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
-    }
-    if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite)))return fail('sensor-clearance-unproven');
-    for(let i=0;i<paints.length;i++)if(paints.slice(i+1).some(p=>hit(paints[i],p)) || obstacles.some(o=>o.id!==paints[i].parent && hit(paints[i],o)))return fail('sensor-obstacle-contact');
-    // The fixed legend's bar is independent of the movable FM and WP.
-    const legend={x:386,y:128,width:38,height:5};
-    if(obstacles.some(o=>hit(legend,o)) || paints.some(p=>hit(legend,p)))return fail('sensor-obstacle-contact');
-    return {status:'unsupported',reason:'sensor-clearance-bound-only'};
-  }catch(_){return fail('sensor-clearance-unproven');}
-}
-
-// The entire circulation assembly is rigidly attached to the FM boundary.
-// Include the pump's animated ring at its maximum 1.8x scale.
-// Bind the running CSS animation and its current centered transform to the
-// maximum painted radius used by circulation clearance.
-function inspectCirculationRingAnimation(svg,ring,pump) {
-  try {
-    const matrix=svg?.getScreenCTM(),det=matrix && matrix.a*matrix.d-matrix.b*matrix.c;
-    if(!matrix || !Number.isFinite(det) || !det || !pump?.origin)return false;
-    const style=svg.ownerDocument.defaultView.getComputedStyle(ring),animations=ring.getAnimations?.(),animation=animations?.[0],effect=animation?.effect,
-      timing=effect?.getTiming?.(),frames=effect?.getKeyframes?.(),a=ring.getScreenCTM(),x=pump.origin.x+10,y=pump.origin.y+10;
-    if(!style || style.animationName!=='wp' || style.animationDuration!=='1.6s' || style.animationIterationCount!=='infinite' ||
-       style.transformBox!=='fill-box' || !animations || animations.length!==1 || animation.animationName!=='wp' || animation.playbackRate!==1 ||
-       effect?.target!==ring || !timing || timing.duration!==1600 || timing.iterations!==Infinity || timing.delay!==0 || timing.direction!=='normal' || timing.easing!=='linear' ||
-       !frames || frames.length!==2 || frames[0].computedOffset!==0 || frames[1].computedOffset!==1 || frames[0].easing!=='ease' ||
-       ![undefined,'none'].includes(frames[0].transform) || frames[0].opacity!=='0.8' || frames[1].opacity!=='0' || frames[1].transform!=='scale(1.8)' || !a)return false;
-    // At scale 1 the CTM cannot reveal a bad transform origin. Bind the
-    // computed origin to the actual fill-box midpoint independently of phase.
-    const box=ring.getBBox?.(),origin=typeof style.transformOrigin==='string' && style.transformOrigin.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))px\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))px(?:\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))px)?$/);
-    if(!box || !origin || ![box.x,box.y,box.width,box.height,x,y].every(Number.isFinite) ||
-       Math.abs(box.x-(x-10))>1e-6 || Math.abs(box.y-(y-10))>1e-6 ||
-       Math.abs(box.width-20)>1e-6 || Math.abs(box.height-20)>1e-6 ||
-       Math.abs(Number(origin[1])-box.width/2)>1e-6 || Math.abs(Number(origin[2])-box.height/2)>1e-6 ||
-       (origin[3]!==undefined && Number(origin[3])!==0))return false;
-    const allowedFrameProperties=new Set(['offset','computedOffset','easing','composite','opacity','transform']);
-    if(frames.some(frame=>Object.keys(frame).some(key=>!allowedFrameProperties.has(key)) || ![undefined,'auto'].includes(frame.composite)))return false;
-    const rel={a:(matrix.d*a.a-matrix.c*a.b)/det,b:(-matrix.b*a.a+matrix.a*a.b)/det,
-      c:(matrix.d*a.c-matrix.c*a.d)/det,d:(-matrix.b*a.c+matrix.a*a.d)/det,
-      e:(matrix.d*(a.e-matrix.e)-matrix.c*(a.f-matrix.f))/det,f:(-matrix.b*(a.e-matrix.e)+matrix.a*(a.f-matrix.f))/det};
-    return Object.values(rel).every(Number.isFinite) && rel.a>=1-1e-7 && rel.a<=1.8+1e-7 && Math.abs(rel.a-rel.d)<=1e-7 &&
-      Math.abs(rel.b)<=1e-7 && Math.abs(rel.c)<=1e-7 && Math.abs(rel.e-x*(1-rel.a))<=1e-6 && Math.abs(rel.f-y*(1-rel.a))<=1e-6;
-  }catch(_){return false;}
-}
-
-function inspectCirculationClearance(c,candidate) {
-  const fail=reason=>({status:'unsupported',reason});
-  try {
-    const m=candidate?.model,fm=m?.components.fm,b=m?.components['domestic-boundary'],p=m?.components['circulation-pump'];
-    if(!c?.fm || !c.zirkulationspumpe || !fm || !b || !p || !candidate.routes ||
-       b.parent!=='fm' || p.parent!=='domestic-boundary' || b.baseOrigin.x!==362 || b.baseOrigin.y!==-26 ||
-       b.localOrigin.x!==22 || b.localOrigin.y!==-40 || p.baseOrigin.x!==385 || p.baseOrigin.y!==-16 ||
-       p.localOrigin.x!==23 || p.localOrigin.y!==10 || p.bounds.x!==0 || p.bounds.y!==0 || p.bounds.width!==20 || p.bounds.height!==20)
-      return fail('circulation-clearance-unproven');
-    const dx=fm.origin.x-fm.baseOrigin.x,dy=fm.origin.y-fm.baseOrigin.y;
-    if(![dx,dy].every(Number.isFinite) || b.origin.x!==362+dx || b.origin.y!==-26+dy || p.origin.x!==385+dx || p.origin.y!==-16+dy)
-      return fail('circulation-clearance-unproven');
-    const cold=m.junctions['domestic-cold-tee'],hot=m.junctions['domestic-hot-tee'];
-    if(!cold || !hot || cold.parent!=='domestic-boundary' || hot.parent!=='domestic-boundary' ||
-       cold.x!==362+dx || hot.x!==428+dx || cold.y!==-6+dy || hot.y!==-6+dy) return fail('circulation-clearance-unproven');
-    for(const [id,from,to] of [['circulation-hot','domestic-hot-tee','circulation-pump.in'],['circulation-pump-through','circulation-pump.in','circulation-pump.out'],['circulation-cold','circulation-pump.out','domestic-cold-tee']]) {
-      const edge=m.connections[id];if(!edge || edge.from!==from || edge.to!==to || edge.via.length)return fail('circulation-clearance-unproven');
-    }
-    const a=diagramPort(m,'circulation-pump.in'),z=diagramPort(m,'circulation-pump.out'),x=395+dx,y=-6+dy;
-    if(!a || !z || a.x!==x+10 || z.x!==x-10 || a.y!==y || z.y!==y)return fail('circulation-clearance-unproven');
-    const paint=[{x:cold.x-5.9,y:y-5.9,width:hot.x-cold.x+11.8,height:11.8},{x:x-19.35,y:y-19.35,width:38.7,height:38.7}],hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    const obstacles=[];
-    if(c.fuehler.length) obstacles.push({x:386,y:128,width:38,height:5});
-    for(const [id,q] of Object.entries(m.components)) {
-      if(['fm','domestic-boundary','circulation-pump'].includes(id))continue;
-      if(!q?.origin || !q.bounds)return fail('circulation-clearance-unproven');
-      obstacles.push({x:q.origin.x+q.bounds.x-1,y:q.origin.y+q.bounds.y-1,width:q.bounds.width+2,height:q.bounds.height+2});
-    }
-    const segment=(a,b,w)=>obstacles.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
-    for(const r of Object.values(candidate.routes)) {
-      if(!Array.isArray(r?.points) || !Array.isArray(r.crossings))return fail('circulation-clearance-unproven');
-      for(let i=1;i<r.points.length;i++)segment(r.points[i-1],r.points[i],5);
-      for(const p of r.points.slice(1,-1))obstacles.push({x:p.x-13,y:p.y-13,width:26,height:26});
-      for(const cross of r.crossings)if(cross.bridge)obstacles.push({x:cross.point.x-11,y:cross.point.y-11,width:22,height:22});
-    }
-    if(obstacles.some(o=>![o.x,o.y,o.width,o.height].every(Number.isFinite)) || paint.some(p=>obstacles.some(o=>hit(p,o))))return fail('circulation-obstacle-contact');
-    return {status:'unsupported',reason:'circulation-clearance-bound-only'};
-  }catch(_){return fail('circulation-clearance-unproven');}
-}
-
-function supportsInternalHeaterExperiment(c) {
-  if (!c || !['schicht','trennblech','getrennt'].includes(c.typ) || !c.fm ||
-      (!c.heizstab_oben && !c.heizstab_unten) || c.zirkulationspumpe || c.weiche || c.energie.length) return false;
-  return !!diagramModel({...c,heizstab_oben:null,heizstab_unten:null}).routingScope.fm;
-}
-
-// Heater routing supplies a candidate to the gated editor/card path.
-// This check alone cannot authorize a commit: text, paint and freshness follow.
-function prepareInternalHeaterRouteCandidate(card,layout) {
-  const fail=(reason='heater-route-unproven')=>({status:'unsupported',reason});
-  try {
-    const c=card?._cfg;
-    if(!supportsInternalHeaterExperiment(c))return fail();
-    if(c.typ==='getrennt') {
-      const resolved=resolveSeparatedLayout(c,layout,card);
-      if(resolved.status!=='candidate')return fail(resolved.errors?.[0]?.code || 'heater-route-unproven');
-      const tanks=['hot-tank','buffer-tank'].map(id=>resolved.model.components[id]);
-      if(tanks.some(t=>t.origin.x!==t.baseOrigin.x || t.origin.y!==t.baseOrigin.y))return fail('heater-tank-movement-unproven');
-      if(c.wp) {
-        const wp=resolved.model.components.wp,valve=resolved.model.components.valve;
-        if([wp,valve].some(t=>t.origin.x!==t.baseOrigin.x || t.origin.y!==t.baseOrigin.y) || resolved.model.layoutValveRotation ||
-            [['wp','upper-supply'],['wp','lower-supply'],['wp','return'],['hot-tank','wp-supply'],['hot-tank','wp-return'],['buffer-tank','lower-supply'],['buffer-tank','lower-return']].some(([id,name])=>{
-              const p=resolved.model.components[id].ports[name];return !p || p.direction!==p.canonicalSide;
-            }))return fail('heater-wp-movement-unproven');
-      }
-      return {status:'unsupported',reason:'heater-route-inventory-only',candidate:resolved,
-        unresolved:['heater-text','complete-svg-and-ambient-paint','target-commit']};
-    }
-    const without={...c,heizstab_oben:null,heizstab_unten:null},baseline=resolveLayoutCandidate({},without,layout);
-    if(baseline.status!=='candidate')return fail(baseline.errors?.[0]?.code==='body-collision'?'heater-body-collision':baseline.errors?.[0]?.code || 'heater-route-unproven');
-    const model=diagramModel(c),fm=model.components.fm;
-    for(const id of ['fm',...(c.wp?['wp']:[])]) {model.components[id].origin.x=baseline.model.components[id].origin.x;model.components[id].origin.y=baseline.model.components[id].origin.y;}
-    if(fm.origin.x===fm.baseOrigin.x && fm.origin.y===fm.baseOrigin.y && (!c.wp || (model.components.wp.origin.x===model.components.wp.baseOrigin.x && model.components.wp.origin.y===model.components.wp.baseOrigin.y)))return fail();
-    model.routingScope.fm=true;
-    const body=id=>{const b=model.components[id];return {id,x:b.origin.x+b.bounds.x,y:b.origin.y+b.bounds.y,width:b.bounds.width,height:b.bounds.height};};
-    const bodies=['tank','tank-feet','fm',...(c.wp?['wp','valve']:[])].map(body),hit=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
-    for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++)
-      if(!(bodies[i].id==='tank' && bodies[j].id==='tank-feet') && hit(bodies[i],bodies[j]))return fail('heater-body-collision');
-    for(const id of ['domestic-cold','domestic-hot']) {
-      const edge=model.connections[id],a=diagramPort(model,edge.from),b=diagramPort(model,edge.to),w=5;
-      const segments=[{x:a.x-w,y:Math.min(a.y,b.y)-w,width:2*w,height:Math.abs(a.y-b.y)+2*w}];
-      if(a.x!==b.x)segments.push({x:Math.min(a.x,b.x)-w,y:b.y-w,width:Math.abs(a.x-b.x)+2*w,height:2*w});
-      if(segments.some(segment=>bodies.some(item=>item.id!=='fm' && hit(segment,item))))return fail('heater-domestic-collision');
-    }
-    const ids=[...(c.fm?['fm-supply','fm-return']:[]),...(c.wp?['wp-upper-supply','wp-lower-supply','wp-upper-return','wp-lower-return','wp-valve-return']:[])];
-    const routes=routeDiagramConnections(model,ids);
-    if(Object.keys(routes).length!==ids.length || Object.values(routes).some(r=>r.status!=='routed'))return fail();
-    const candidate={model,routes,capabilities:baseline.capabilities,inactive:baseline.inactive},clearance=inspectTankHeaterShapeClearance(card,candidate);
-    if(clearance.reason!=='heater-shape-clearance-bound-only')return fail(clearance.reason);
-    if(c.fuehler.length && inspectTankSensorClearance(c,candidate).reason!=='sensor-clearance-bound-only')return fail('sensor-obstacle-contact');
-    return {status:'unsupported',reason:'heater-route-inventory-only',candidate,
-      unresolved:['heater-text','complete-svg-and-ambient-paint','target-commit']};
-  } catch (_) {return fail();}
-}
-
-// Combine heater and regular text checks for the gated FM and air-WP path.
-// A commit additionally requires complete paint, target parity and freshness.
-function inspectInternalHeaterCandidateText(card,candidate,records,html) {
-  const fail=()=>({status:'unsupported',reason:'heater-combined-text-unproven'});
-  try {
-    const inv=inspectTankHeaterGeometry(card,candidate?.model),heater=inspectTankHeaterTextClearance(card,candidate,records);
-    if(inv.reason!=='heater-geometry-inventory-only' || heater.reason!=='heater-text-clearance-bound-only')return fail();
-    const expected=inv.heaters.flatMap(h=>h.texts),heaterRecords=new Set();
-    for(const t of expected) {
-      const found=records.filter(r=>r?.x===String(t.x) && r.y===String(t.y) && r.className===t.className && r.text===t.text);
-      if(found.length!==1 || heaterRecords.has(found[0]))return fail();heaterRecords.add(found[0]);
-    }
-    const regular=inspectMeasuredLayoutTexts(card,candidate,records.filter(r=>!heaterRecords.has(r)));
-    const symbols=inspectLayoutSymbolPaint(card,candidate,records,html);
-    if(regular.reason!=='text-inventory-staged-only' || symbols.reason!=='layout-symbol-paint-bound-only')return fail();
-    return {status:'unsupported',reason:'heater-combined-text-bound-only',count:records.length,
-      unresolved:['target-parity-and-freshness','complete-paint','commit']};
-  } catch (_) {return fail();}
 }
 
 function renderHeatPump({ WP, W, model, portStub, openComponent, closeComponent, c, wpCopText, wp_abtau, F, wp_on, kuehl, QT, more, wpStatus, wpPowerText, wpTemperatures, S, L, wp_sperre }) {
@@ -4283,7 +1764,7 @@ function renderDomesticPipes({ TW, ZK, model, point, dc, de, dh, dw, F, zirk_on,
   return o;
 }
 
-function renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON, layout }) {
+function renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON }) {
   let o = '';
   const TWc = c.trinkwasser;
   if (TW) {
@@ -4293,7 +1774,7 @@ function renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more,
     if (ZK) {
       const b = model.components['circulation-pump'], px = b.origin.x + 10, py = b.origin.y + 10;
       o += `<g data-act="zirk" class="wx"><title>${L.zirkTitle}</title><circle cx="${px}" cy="${py}" r="14" fill="transparent"/>${pumpe(px, py, 'l', zirk_on)}</g>`;
-      o += `<text x="${px}" y="${py - (layout ? 26 : 14)}" font-size="7" class="wc ws" font-weight="600">${L.zirk}</text>`;
+      o += `<text x="${px}" y="${py - 14}" font-size="7" class="wc ws" font-weight="600">${L.zirk}</text>`;
     }
     o += `<text x="${tk - 8}" y="${-14 + domesticOffset}" font-size="7.5" class="we" font-weight="600" fill="${F.tw_kalt}">${esc(c.text_tw_kalt ?? L.kalt)}</text><text x="${tw + 8}" y="${-14 + domesticOffset}" font-size="7.5" font-weight="600" fill="${F.tw_warm}">${esc(c.text_tw_warm ?? L.warm)}</text>`;
     if (TT && FMx && (FMx.temp || FMx.durchfluss))
@@ -4336,10 +1817,10 @@ const renderPumpe = (x, y, d, on, aktiv) => {
     `<circle cx="${x}" cy="${y}" r="10" fill="#2b2f35" stroke="${cl}" stroke-width="1.6"/>` +
     `<path d="M${r2(x + 10 * dx)} ${r2(y + 10 * dy)}L${r2(x - 5 * dx + 8.66 * dy)} ${r2(y - 5 * dy + 8.66 * dx)}L${r2(x - 5 * dx - 8.66 * dy)} ${r2(y - 5 * dy - 8.66 * dx)}Z" fill="${on ? aktiv : '#6b7280'}"/>`;
 };
-const renderMischer = (x, y, cl, a, cw, ck, upright = 0) =>
+const renderMischer = (x, y, cl, a, cw, ck) =>
   `<line x1="${x}" y1="${y}" x2="${x - 18}" y2="${y}" stroke="#8a9099" stroke-width="2"/>` +
   `<rect x="${x - 34}" y="${y - 9}" width="16" height="18" rx="3" class="wm"/>` +
-  `<text x="${x - 26}" y="${y + 3}"${upright ? ` transform="rotate(${-upright} ${x - 26} ${y})"` : ''} font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
+  `<text x="${x - 26}" y="${y + 3}" font-size="8" class="wc wt" fill="#cfd4da">M</text>` +
   `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}ZM${x - 9} ${y + 14}H${x + 9}L${x} ${y}ZM${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="#1f2329" stroke="${cl}" stroke-width="1.6" stroke-linejoin="round"/>` +
   (a !== null ? `<path d="M${x - 9} ${y - 14}H${x + 9}L${x} ${y}Z" fill="${cw}" fill-opacity="${r2(0.1 + 0.8 * a)}"/><path d="M${x + 15} ${y - 9}V${y + 9}L${x} ${y}Z" fill="${ck}" fill-opacity="${r2(0.9 - 0.8 * a)}"/>` : '') +
   `<circle cx="${x}" cy="${y}" r="2.5" fill="${cl}"/>`;
@@ -4596,9 +2077,8 @@ function renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComp
 
 function renderValve({ WP, W, model, more, mischer, CK, CW, vb }) {
   if (!WP) return '';
-  const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + 14, rotation = model.layoutValveRotation || 0;
-  const symbol = W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK, rotation)}</g>` : mischer(vx, vy, CK, null, CW, CK, rotation);
-  return rotation ? `<g transform="rotate(${rotation} ${vx} ${vy})">${symbol}</g>` : symbol;
+  const v = model.components.valve, vx = v.origin.x + 34, vy = v.origin.y + v.bounds.height / 2;
+  return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK)}</g>` : mischer(vx, vy, CK);
 }
 
 function renderAdditionalHeatFlue({ K, kTyp, L, S, openComponent, closeComponent }) {
@@ -4690,10 +2170,11 @@ function renderCardHeader({ chip, avg, col, titel, L, c, S, NUM, SO, so_on, K, k
   return o;
 }
 
-function renderTemperatureLegend({ fl, FM, WP, L, c }) {
+function renderTemperatureLegend({ fl, FM, WP, L, c, offset }) {
   let o = '';
   if (fl.length) {
-    const lx = FM || WP ? 405 : 280, ly = FM || WP ? 122 : 30;
+    const d = FM && offset ? offset : { x: 0, y: 0 };
+    const lx = (FM || WP ? 405 : 280) + d.x, ly = (FM || WP ? 122 : 30) + d.y;
     o += `<text x="${lx}" y="${ly}" font-size="8" class="wc ws" font-weight="600" letter-spacing=".8">${L.speicher}</text><rect x="${lx - 19}" y="${ly + 6}" width="38" height="5" rx="2.5" fill="url(#wwLegend)"/><text x="${lx - 23}" y="${ly + 11}" font-size="8" class="we ws">${c.t_min}°</text><text x="${lx + 23}" y="${ly + 11}" font-size="8" class="ws">${c.t_max}°</text>`;
   }
   return o;
@@ -4786,1383 +2267,6 @@ function renderDistributor(model, slots, states, draw) {
   return out + '</g>';
 }
 
-// Internal preparation only; the card and editor do not yet activate layouts.
-const LAYOUT_ID = /^[A-Za-z0-9_-]+$/;
-const layoutObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-
-// Accept the raw configuration, before filtering: public IDs map to the same
-// private indices as setConfig's active lists, never to a remembered index.
-function layoutIdentityMap(config) {
-  const components = Object.create(null), inactive = Object.create(null), overflow = Object.create(null), errors = [];
-  for (const [field, prefix, active] of [
-    ['fuehler', 'sensor', item => isEnt(Array.isArray(item) ? item[1] : item?.entity)],
-    ['heizkreise', 'heating-circuit', item => hasEnt(item)],
-  ]) {
-    const seen = new Set(); let index = 0;
-    const items = Array.isArray(config[field]) ? config[field] : [];
-    items.forEach((item, rawIndex) => {
-      const id = !Array.isArray(item) && layoutObject(item) ? item.id : undefined;
-      const path = `${field}[${rawIndex}].id`;
-      let valid = true;
-      if (id !== undefined) {
-        if (typeof id !== 'string' || !LAYOUT_ID.test(id)) { errors.push({ code: 'invalid-id', path }); valid = false; }
-        else if (seen.has(id)) { errors.push({ code: 'duplicate-id', path }); valid = false; }
-        else seen.add(id);
-      }
-      const included = active(item) && (field !== 'heizkreise' || index < 6);
-      if (included && id !== undefined && valid) components[`${prefix}:${id}`] = `${prefix}-${index}`;
-      else if (id !== undefined && valid) {
-        (active(item) ? overflow : inactive)[`${prefix}:${id}`] = true;
-      }
-      if (active(item)) index++;
-    });
-  }
-  return { components, inactive, overflow, errors };
-}
-
-// Capabilities must be built for the current configuration from proven movable
-// components and port sides, not model guesses. Identity errors must be handled
-// before using the map; an unknown capability makes an override an orphan:
-// Inactive capabilities are known fixed identities, not permission to render.
-// List identities that disappear from the configuration remain unknown.
-function validateLayoutV2(layout, capabilities) {
-  const errors = [], inactive = [], add = (code, path) => errors.push({ code, path });
-  const fields = (value, allowed, path) => {
-    for (const key of Object.keys(value)) if (!allowed.includes(key)) add('unknown-field', `${path}.${key}`);
-  };
-  if (!layoutObject(layout)) return { errors: [{ code: 'invalid-layout', path: 'layout' }] };
-  fields(layout, ['version', 'components', 'ports'], 'layout');
-  if (layout.version !== 2) add('unsupported-version', 'layout.version');
-  for (const section of ['components', 'ports']) {
-    if (layout[section] === undefined) continue;
-    if (!layoutObject(layout[section])) { add('invalid-section', `layout.${section}`); continue; }
-    for (const [id, value] of Object.entries(layout[section])) {
-      const path = `layout.${section}.${id}`;
-      const active = Object.prototype.hasOwnProperty.call(capabilities[section] || {}, id);
-      const dormant = Object.prototype.hasOwnProperty.call(capabilities.inactive?.[section] || {}, id);
-      if (!active && !dormant) add('unknown-id', path);
-      else if (!active) inactive.push({ code: 'inactive-id', path });
-      if (!layoutObject(value)) { add('invalid-entry', path); continue; }
-      if (section === 'components') {
-        const valve = id === 'valve' && (active || dormant);
-        fields(value, valve ? ['x', 'y', 'rotation'] : ['x', 'y'], path);
-        const hasPosition = value.x !== undefined || value.y !== undefined;
-        if ((!valve || hasPosition) && (!Number.isFinite(value.x) || !Number.isFinite(value.y))) add('invalid-position', path);
-        if (valve && value.rotation !== undefined && ![0, 90, 180, 270].includes(value.rotation)) add('invalid-rotation', `${path}.rotation`);
-        if (valve && !hasPosition && value.rotation === undefined) add('invalid-entry', path);
-      } else {
-        fields(value, ['mode', 'side'], path);
-        if (value.mode !== 'auto' && value.mode !== 'manual') add('invalid-mode', `${path}.mode`);
-        if (value.mode === 'auto' && value.side !== undefined) add('invalid-side', `${path}.side`);
-        if (value.mode === 'manual' && !(capabilities.ports?.[id] || capabilities.inactive?.ports?.[id] || []).includes(value.side)) add('invalid-side', `${path}.side`);
-      }
-    }
-  }
-  return { errors, inactive };
-}
-
-// Layout is configuration data. Detach it from the caller without normalizing
-// invalid values; validation must see them and fail closed. Cycles are invalid.
-function snapshotLayout(value, ancestors = new Set()) {
-  if (!value || typeof value !== 'object') return value;
-  if (ancestors.has(value)) throw new Error('cyclic layout');
-  ancestors.add(value);
-  const copy = Array.isArray(value)
-    ? value.map(item => snapshotLayout(item, ancestors))
-    : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshotLayout(item, ancestors)]));
-  ancestors.delete(value);
-  return Object.freeze(copy);
-}
-
-// Internal geometry candidate only. This is not permission to render a layout:
-// presentation bounds, live labels and complete renderer integration need their
-// own checks before any public activation. List identities are validated even
-// though list components are not yet movable here.
-// Playground-derived separated tank experiment. Connector pairs are mirrored
-// together: anchors, painted stubs, escape direction and routing obstacles all
-// change as one unit. Every alternative starts from a fresh model.
-function resolveSeparatedLayout(config, layout, heaterCard=null) {
-  if(heaterCard && (heaterCard._cfg!==config || !supportsInternalHeaterExperiment(config)))
-    return {status:'unsupported',errors:[{code:'heater-scope-unproven',path:'layout'}]};
-  const componentMap = { tank: 'hot-tank', buffer: 'buffer-tank', fm: 'fm', ...(config.wp ? { wp: 'wp', valve: 'valve' } : {}) };
-  const fixed = { 'wp.upper-supply': ['top'], 'wp.lower-supply': ['left', 'right'], 'wp.return': ['left', 'right'],
-    'tank.wp-supply': ['left', 'right'], 'tank.wp-return': ['left', 'right'],
-    'buffer.lower-supply': ['left', 'right'], 'buffer.lower-return': ['left', 'right'] };
-  const capabilities = { components: componentMap,
-    ports: { 'tank.fm-supply': ['left', 'right'], 'tank.fm-return': ['left', 'right'],
-      'fm.supply': ['left', 'right'], 'fm.return': ['left', 'right'], ...(config.wp ? fixed : {}) },
-    inactive: { components: config.wp ? {} : { wp: 'wp', valve: 'valve' }, ports: config.wp ? {} : fixed } };
-  const validation = validateLayoutV2(layout, capabilities);
-  if (validation.errors.length) return { status: 'invalid', errors: validation.errors };
-  if (config.wp) {
-    const proof = diagramModel(config);
-    const proofSides = { 'wp.upper-supply': 'top', 'wp.lower-supply': 'left', 'wp.return': 'left',
-      'hot-tank.wp-supply': 'right', 'hot-tank.wp-return': 'right', 'buffer-tank.lower-supply': 'right', 'buffer-tank.lower-return': 'right' };
-    for (const [ref, side] of Object.entries(proofSides)) {
-      const [id, name] = ref.split('.'), port = proof.components[id]?.ports[name];
-      const geometry = diagramPortGeometry(proof, ref);
-      if (!port || port.direction !== side || geometry.side !== side || !geometry.stub)
-        return { status: 'unsupported', errors: [{ code: 'unproven-port-geometry', path: `layout.ports.${ref}` }] };
-    }
-  }
-  const choices = (names, canonical) => {
-    const entries = names.map(name => layout.ports?.[name]).filter(Boolean);
-    const manual = [...new Set(entries.filter(e => e.mode === 'manual').map(e => e.side))];
-    if (manual.length > 1) return null;
-    if (manual.length) return manual;
-    return entries.some(e => e.mode === 'auto') ? [canonical, canonical === 'left' ? 'right' : 'left'] : [canonical];
-  };
-  const tankChoices = choices(['tank.fm-supply', 'tank.fm-return'], 'right');
-  const fmChoices = choices(['fm.supply', 'fm.return'], 'left');
-  const upperChoices = choices(['tank.wp-supply', 'tank.wp-return'], 'right');
-  const lowerChoices = choices(['buffer.lower-supply', 'buffer.lower-return'], 'right');
-  const wpChoices = choices(['wp.lower-supply', 'wp.return'], 'left');
-  if (!tankChoices || !fmChoices || !upperChoices || !lowerChoices || !wpChoices)
-    return { status: 'invalid', errors: [{ code: 'paired-port-side-conflict', path: 'layout.ports' }] };
-  const ids = ['fm-supply', 'fm-return', ...(config.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
-  let best = null, failure = { code: 'no-path', path: 'layout' };
-  for (const tankSide of tankChoices) for (const fmSide of fmChoices)
-    for (const upperSide of (config.wp ? upperChoices : ['right']))
-    for (const lowerSide of (config.wp ? lowerChoices : ['right']))
-    for (const wpSide of (config.wp ? wpChoices : ['left'])) {
-    const model = diagramModel(config);
-    if(heaterCard) model.routingScope.fm=true;
-    for (const [id, position] of Object.entries(layout.components || {})) if (Object.hasOwn(componentMap, id)) {
-      const component = model.components[componentMap[id]];
-      if (position.x !== undefined) { component.origin.x = position.x; component.origin.y = position.y; }
-    }
-    for (const [id, names, side] of [['hot-tank', ['fm-supply', 'fm-return'], tankSide], ['fm', ['supply', 'return'], fmSide]]) {
-      const component = model.components[id];
-      for (const name of names) {
-        const port = component.ports[name];
-        if (!port || !port.stub || !['left', 'right'].includes(port.canonicalSide) || port.direction !== port.canonicalSide)
-          return { status: 'unsupported', errors: [{ code: 'unproven-port-geometry', path: `layout.ports.${id}.${name}` }] };
-        if (port.canonicalSide !== side) {
-          port.x = 2 * component.bounds.x + component.bounds.width - port.x;
-          port.stub.x = 2 * component.bounds.x + component.bounds.width - port.stub.x - port.stub.width;
-          port.direction = side; port.effectiveSide = side;
-        }
-      }
-      component.routingAreas = [{ ...component.bounds }, ...Object.values(component.ports).filter(p => p.stub).map(p => ({ ...p.stub }))];
-    }
-    if (config.wp) {
-      for (const [id, names, side, canonical] of [
-        ['hot-tank', ['wp-supply', 'wp-return'], upperSide, 'right'],
-        ['buffer-tank', ['lower-supply', 'lower-return'], lowerSide, 'right'],
-        ['wp', ['upper-supply', 'lower-supply', 'return'], wpSide, 'left'],
-      ]) {
-        const component = model.components[id];
-        if (side !== canonical) for (const name of names) {
-          const port = component.ports[name];
-          port.x = 2 * component.bounds.x + component.bounds.width - port.x;
-          port.stub.x = 2 * component.bounds.x + component.bounds.width - port.stub.x - port.stub.width;
-          if (port.direction === 'left') port.direction = 'right'; else if (port.direction === 'right') port.direction = 'left';
-          port.effectiveSide = port.direction;
-        }
-        component.routingAreas = [{ ...component.bounds }, ...Object.values(component.ports).filter(p => p.stub).map(p => ({ ...p.stub }))];
-      }
-      const rotation = layout.components?.valve?.rotation || 0, valve = model.components.valve;
-      const clockwise = { top: 'right', right: 'bottom', bottom: 'left', left: 'top' }, cx = 34, cy = 14;
-      for (let step = 0; step < rotation / 90; step++) {
-        for (const port of Object.values(valve.ports)) {
-          const x = port.x; port.x = cx - (port.y - cy); port.y = cy + (x - cx); port.direction = clockwise[port.direction];
-        }
-        const b = valve.bounds, { x, y, width, height } = b;
-        b.x = cx - (y + height - cy); b.y = cy + (x - cx); b.width = height; b.height = width;
-      }
-      valve.routingAreas = [{ ...valve.bounds }]; model.layoutValveRotation = rotation;
-    }
-    model.components['tank-feet'].routingAreas = [{ x: 0, y: 0, width: 11, height: 22 }, { x: 77, y: 0, width: 11, height: 22 }];
-    const bodies = ['hot-tank', 'buffer-tank', 'tank-feet', 'fm', ...(config.wp ? ['wp', 'valve'] : [])].map(id => {
-      const c = model.components[id], b = c.bounds; return { id, x: c.origin.x + b.x, y: c.origin.y + b.y, width: b.width, height: b.height };
-    });
-    const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-    let collision = false;
-    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
-      if (bodies[i].id === 'buffer-tank' && bodies[j].id === 'tank-feet') continue;
-      if (intersects(bodies[i], bodies[j])) collision = true;
-    }
-    for (const id of ['domestic-cold', 'domestic-hot']) {
-      const edge = model.connections[id], a = diagramPort(model, edge.from), b = diagramPort(model, edge.to), w = 5;
-      const segments = [{ x: a.x - w, y: Math.min(a.y, b.y) - w, width: 2 * w, height: Math.abs(a.y - b.y) + 2 * w }];
-      if (a.x !== b.x) segments.push({ x: Math.min(a.x, b.x) - w, y: b.y - w, width: Math.abs(a.x - b.x) + 2 * w, height: 2 * w });
-      if (segments.some(segment => bodies.some(body => body.id !== 'fm' && intersects(segment, body)))) collision = true;
-    }
-    if (collision) { failure = { code: 'body-or-domestic-collision', path: 'layout.components' }; continue; }
-    model.layoutSeparatedPreview = true;
-    const routes = routeDiagramConnections(model, ids);
-    const bad = Object.entries(routes).find(([, route]) => route.status !== 'routed');
-    if (bad || Object.keys(routes).length !== ids.length) {
-      failure = { code: bad?.[1].code || bad?.[1].reason || 'incomplete-batch', path: `layout.connections.${bad?.[0] || ''}` }; continue;
-    }
-    if(config.zirkulationspumpe && inspectCirculationClearance(config,{model,routes}).reason!=='circulation-clearance-bound-only') {
-      failure={code:'circulation-obstacle-contact',path:'layout'};continue;
-    }
-    if(config.fuehler.length && inspectTankSensorClearance(config,{model,routes}).reason!=='sensor-clearance-bound-only') {
-      failure={code:'sensor-obstacle-contact',path:'layout'};continue;
-    }
-    if(heaterCard && inspectTankHeaterShapeClearance(heaterCard,{model,routes}).reason!=='heater-shape-clearance-bound-only') {
-      failure={code:'heater-shape-obstacle-contact',path:'layout'};continue;
-    }
-    const length = Object.values(routes).reduce((sum, r) => sum + r.points.slice(1).reduce((n, p, i) => n + Math.abs(p.x - r.points[i].x) + Math.abs(p.y - r.points[i].y), 0), 0);
-    if (!best || length < best.length) best = { status: 'candidate', capabilities, inactive: validation.inactive, model, routes, length };
-  }
-  return best || { status: 'unsupported', errors: [failure] };
-}
-
-// Internal, deliberately narrow WP+one-pump layout candidate. The WP may move
-// in both axes; its lower-supply tee follows the actual moved port. Every
-// connection is then generated and validated as one complete batch. This is
-// not a public capability until text, shadows and paint ordering are proven.
-function resolveWpHeatingLayoutCandidate(config,layout,model) {
-  const unsupported=(code,path='layout')=>({status:'unsupported',errors:[{code,path}]});
-  try {
-    const capabilities={components:{wp:'wp'},ports:{},inactive:{components:{},ports:{}}};
-    const validation=validateLayoutV2(layout,capabilities);
-    if (validation.errors.length) return {status:'invalid',errors:validation.errors};
-    const position=layout.components && layout.components.wp;
-    if (!position) return unsupported('unmoved-candidate','layout.components.wp');
-    const wp=model.components.wp;
-    if (position.x===wp.origin.x && position.y===wp.origin.y) return unsupported('unmoved-candidate','layout.components.wp');
-    wp.origin.x=position.x; wp.origin.y=position.y;
-    model.junctions['supply-tee'].y=wp.origin.y+wp.ports['lower-supply'].y;
-    routedWpHeatingModels.add(model);
-    const incidence=resolveLegacyWpHeatingIncidences(model);
-    if (incidence.status!=='resolved') return unsupported('unproven-geometry','layout.components.wp');
-    const resolve=ref=>{
-      const j=model.junctions[ref]; if (j) return {...j,ref};
-      const dot=ref.lastIndexOf('.'),id=ref.slice(0,dot),c=model.components[id],p=c.ports[ref.slice(dot+1)];
-      return {...p,x:c.origin.x+p.x,y:c.origin.y+p.y,ref,owner:id};
-    };
-    const side=(ref,id,index)=>incidence.junctions.find(j=>j.ref===ref).incidences.find(i=>i.connectionId===id && i.segmentIndex===index).side;
-    const policy={radius:4}, routes=[];
-    for (const [id,edge] of Object.entries(model.connections)) {
-      if (id.startsWith('manifold-')) continue;
-      const nodes=[edge.from,...edge.via,edge.to].map(resolve),from={...nodes[0]},to={...nodes.at(-1)};
-      if (model.junctions[from.ref]) from.direction=side(from.ref,id,0);
-      if (model.junctions[to.ref]) to.direction=side(to.ref,id,nodes.length-2);
-      const junctions=nodes.slice(1,-1).map((n,i)=>({...n,incomingSide:side(n.ref,id,i),outgoingSide:side(n.ref,id,i+1)}));
-      const role=id.includes('supply') || id.startsWith('heating-pump-') ? 'supply' : 'neutral';
-      let points=null;
-      if (id==='hk-return') {
-        const a=nodes[0],b=nodes.at(-1),turnY=b.y+30;
-        points=[{x:a.x,y:a.y},{x:a.x,y:turnY},{x:b.x,y:turnY},{x:b.x,y:b.y}];
-      } else if (id.startsWith('heating-pump-')) points=nodes.map(({x,y})=>({x,y}));
-      const route=points ? validateDirectedFixedPolyline({id,role,nodes,points},policy)
-        : routeDirectedJunctionConnection({id,role,from,to,junctions,lead:['wp-valve-return','wp-lower-supply'].includes(id)?20:12,clearance:13,compileOptions:policy});
-      if (route.status!=='routed') return unsupported(route.code || route.reason,`layout.connections.${id}`);
-      routes.push(route);
-    }
-    const checked=inspectCompleteLegacyWpHeatingBatch(model,routes,policy);
-    if (checked.reason!=='heating-decorations-and-paint-validation-required')
-      return unsupported(checked.code || checked.reason,'layout.connections');
-    return {status:'heating-candidate',model,routes,policy,capabilities,inactive:validation.inactive};
-  } catch (_) { return unsupported('unproven-geometry'); }
-}
-
-// Narrow standalone air-WP scope. All unlisted equipment stays fail-closed.
-function supportsStandaloneAirWp(c) {
-  return !!c && !!c.wp && c.wp.typ==='luft' && !c.wp.wmz && !c.fm && !c.zirkulationspumpe &&
-    ['schicht','trennblech'].includes(c.typ) && !c.heizkreise.length && !c.verteiler && !c.weiche &&
-    !c.solar && !c.kamin && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen &&
-    !c.energie.length && c.fuehler.every(f=>String(f.name ?? '').length<=20) && String(c.hersteller ?? '').length<=8 && String(c.name_wp ?? '').length<=5 &&
-    String(c.text_wp_an ?? '').length<=12 && String(c.text_wp_aus ?? '').length<=12;
-}
-function resolveStandaloneAirWp(c,layout,model) {
-  const fail=(code,path='layout')=>({status:'unsupported',errors:[{code,path}]});
-  if(!supportsStandaloneAirWp(c) || !model.components.wp || !model.components.valve || !model.components.tank)return fail('unsupported-configuration');
-  const fixed={'wp.upper-supply':'top','wp.lower-supply':'left','wp.return':'left'},ports={};
-  for(const [ref,side] of Object.entries(fixed)) {
-    const [id,name]=ref.split('.'),p=model.components[id].ports[name],g=diagramPortGeometry(model,ref);
-    if(!p || p.direction!==side || g.side!==side || !g.stub)return fail('unproven-port-geometry',`layout.ports.${ref}`);
-    ports[ref]=[side];
-  }
-  const capabilities={components:{wp:'wp'},ports,inactive:{components:{fm:'fm'},ports:{'fm.supply':['left'],'fm.return':['right']}}};
-  const validation=validateLayoutV2(layout,capabilities);if(validation.errors.length)return {status:'invalid',errors:validation.errors};
-  const position=layout.components?.wp;if(position) {model.components.wp.origin.x=position.x;model.components.wp.origin.y=position.y;}
-  for(const id of ['tank','wp','valve']) {const q=model.components[id];q.routingAreas=[{...q.bounds},...Object.values(q.ports).filter(p=>p.stub).map(p=>({...p.stub}))];}
-  for(const id of Object.keys(model.components).filter(id=>id.startsWith('sensor-')))model.components[id].routingAreas=[{x:-80,y:0,width:240,height:30}];
-  model.routingScope.fm=true;
-  const bodies=['tank','tank-feet','wp','valve'].map(id=>{const q=model.components[id],b=q.bounds;return {id,x:q.origin.x+b.x,y:q.origin.y+b.y,width:b.width,height:b.height};});
-  const hit=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
-  for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++)if(!(bodies[i].id==='tank' && bodies[j].id==='tank-feet') && hit(bodies[i],bodies[j]))return fail('body-collision','layout.components');
-  const ids=['wp-upper-supply','wp-lower-supply','wp-upper-return','wp-lower-return','wp-valve-return'],routes=routeDiagramConnections(model,ids);
-  if(Object.keys(routes).length!==ids.length)return fail('incomplete-batch','layout.connections');
-  for(const [id,r] of Object.entries(routes))if(r.status!=='routed')return fail(r.code||r.reason,`layout.connections.${id}`);
-  if(c.fuehler.length && inspectTankSensorClearance(c,{model,routes}).reason!=='sensor-clearance-bound-only')return fail('sensor-obstacle-contact');
-  return {status:'candidate',model,routes,capabilities,inactive:validation.inactive};
-}
-
-function resolveLayoutCandidate(rawConfig, config, layout) {
-  const identity = layoutIdentityMap(rawConfig);
-  if (identity.errors.length) return { status: 'invalid', errors: identity.errors };
-  const model = diagramModel(config);
-  if(supportsStandaloneAirWp(config))return resolveStandaloneAirWp(config,layout,model);
-  if (config.wp && config.heizkreise.length===1 && config.heizkreise[0].pumpe && !model.components.fm &&
-      model.components['heating-pump-0'] && ['schicht','trennblech'].includes(config.typ))
-    return resolveWpHeatingLayoutCandidate(config,layout,model);
-  const supported = model.routingScope.fm && ['schicht', 'trennblech', 'getrennt'].includes(config.typ) &&
-    !config.weiche && !config.energie.length &&
-    !!model.components.fm && (!config.wp || !!model.components.wp);
-  // Internal scope is checked before layout syntax. A public integration must
-  // explicitly decide its error precedence and user-facing diagnostics.
-  if (!supported) return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
-  if (config.typ === 'getrennt') {
-    const allowed = new Set(['hot-tank', 'buffer-tank', 'tank-feet', 'fm', 'domestic-boundary', ...(config.zirkulationspumpe ? ['circulation-pump'] : []), ...config.fuehler.map((_,i)=>`sensor-${i}`), ...(config.wp ? ['wp', 'valve'] : [])]);
-    if (Object.keys(model.components).some(id => !allowed.has(id)))
-      return { status: 'unsupported', errors: [{ code: 'unsupported-configuration', path: 'layout' }] };
-    return resolveSeparatedLayout(config, layout);
-  }
-  // Only the physical sides already drawn by the symbol, with a matching
-  // routing direction and stub, are supported. Auto selects that sole proven
-  // side; manual can pin it. Alternative sides need their own painted symbol,
-  // obstacle and complete batch-routing evidence before they can be offered.
-  const fixedPorts = { 'fm.supply': 'left', 'fm.return': 'right',
-    'wp.upper-supply': 'top', 'wp.lower-supply': 'left', 'wp.return': 'left' };
-  const ports = {}, inactivePorts = {};
-  for (const [ref, side] of Object.entries(fixedPorts)) {
-    const [id, name] = ref.split('.');
-    if (!model.components[id]) { inactivePorts[ref] = [side]; continue; }
-    const port = model.components[id].ports[name], geometry = diagramPortGeometry(model, ref);
-    if (!port || port.direction !== side || geometry.side !== side || !geometry.stub)
-      return { status: 'unsupported', errors: [{ code: 'unproven-port-geometry', path: `layout.ports.${ref}` }] };
-    ports[ref] = [side];
-  }
-  const capabilities = { components: { fm: 'fm', ...(config.wp ? { wp: 'wp' } : {}) }, ports,
-    inactive: { components: config.wp ? {} : { wp: 'wp' }, ports: inactivePorts } };
-  const validation = validateLayoutV2(layout, capabilities);
-  if (validation.errors.length) return { status: 'invalid', errors: validation.errors };
-  for (const [id, position] of Object.entries(layout.components || {})) {
-    if (!Object.prototype.hasOwnProperty.call(capabilities.components, id)) continue;
-    const component = model.components[capabilities.components[id]];
-    component.origin.x = position.x; component.origin.y = position.y;
-  }
-  const ids = ['fm-supply', 'fm-return', ...(config.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
-  // Router obstacles protect pipes, but do not by themselves prevent two
-  // devices (or a fixed domestic pipe and another body) from overlapping.
-  const bodies = ['tank', 'tank-feet', 'fm', ...(config.wp ? ['wp', 'valve'] : [])].map(id => {
-    const component = model.components[id], b = component.bounds;
-    return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height };
-  });
-  const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
-    if (bodies[i].id === 'tank' && bodies[j].id === 'tank-feet') continue;
-    if (intersects(bodies[i], bodies[j])) return { status: 'unsupported', errors: [{ code: 'body-collision', path: 'layout.components' }] };
-  }
-  for (const id of ['domestic-cold', 'domestic-hot']) {
-    const edge = model.connections[id], a = diagramPort(model, edge.from), b = diagramPort(model, edge.to), w = 5;
-    const segments = [{ x: a.x - w, y: Math.min(a.y, b.y) - w, width: 2 * w, height: Math.abs(a.y - b.y) + 2 * w }];
-    if (a.x !== b.x) segments.push({ x: Math.min(a.x, b.x) - w, y: b.y - w, width: Math.abs(a.x - b.x) + 2 * w, height: 2 * w });
-    if (segments.some(segment => bodies.some(body => body.id !== 'fm' && intersects(segment, body))))
-      return { status: 'unsupported', errors: [{ code: 'domestic-collision', path: 'layout.components' }] };
-  }
-  const routes = routeDiagramConnections(model, ids);
-  for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
-    return { status: 'unsupported', errors: [{ code: route.code || route.reason, path: `layout.connections.${id}` }] };
-  }
-  if (config.zirkulationspumpe && inspectCirculationClearance(config,{model,routes}).reason!=='circulation-clearance-bound-only')
-    return {status:'unsupported',errors:[{code:'circulation-obstacle-contact',path:'layout'}]};
-  if (config.fuehler.length && inspectTankSensorClearance(config,{model,routes}).reason!=='sensor-clearance-bound-only')
-    return {status:'unsupported',errors:[{code:'sensor-obstacle-contact',path:'layout'}]};
-  return { status: 'candidate', capabilities, inactive: validation.inactive, model, routes };
-}
-
-// Internal preflight, not a public render-safety guarantee: the renderer has
-// no complete text measurement or painted-envelope validation yet. Never
-// expose partial HTML on failure. A moved candidate takes the renderer's
-// all-routed branch, including its live-label checks.
-const layoutRenderRoutes = new WeakMap();
-const layoutTextMeasurementJobs = new WeakMap();
-// This checks only measured volume labels; it is not a complete text or paint
-// proof. The 76px central slot lies strictly inside the 130px-wide, rx=65,
-// ry=22 tank outline, including its 1.5px contour, at least 6px from each end.
-function inspectMeasuredVolumeSlots(card,candidate,records) {
-  const fail=reason=>({status:'unsupported',reason});
-  try {
-    if (!card?._cfg || !candidate?.model || !candidate.routes || !Array.isArray(records)) return fail('volume-text-unproven');
-    const cfg=card._cfg,model=candidate.model,L=T[sprache(cfg,card._hass)],visible=v=>v!==null && v!==undefined && v!=='';
-    const specs=cfg.typ==='getrennt'
-      ? [{id:'hot-tank',y:38,value:cfg.volumen_ww,prefix:L.ww},{id:'buffer-tank',y:338,value:cfg.volumen,prefix:L.puffer}]
-      : [{id:'tank',y:338,value:cfg.volumen,prefix:null}];
-    const boxes=[];
-    for (const spec of specs.filter(s=>s.prefix || visible(s.value))) {
-      const c=model.components[spec.id],b=c?.bounds,o=c?.origin,base=c?.baseOrigin;
-      if (!b || !o || !base || b.x!==0 || b.y!==0 || b.width!==130 || !Number.isFinite(b.height) || b.height<44 ||
-          ![o.x,o.y,base.x,base.y].every(Number.isFinite)) return fail('volume-text-unproven');
-      const expected=[spec.prefix,visible(spec.value)?`${spec.value} l`:null].filter(Boolean).join(' · ');
-      const matches=records.filter(r=>r && r.text===expected && r.x==='137' && r.y===String(spec.y) && r.className==='wc wt wo');
-      if (matches.length!==1) return fail('volume-text-unproven');
-      const r=matches[0],m=r.matrix,q=r.box,dx=o.x-base.x,dy=o.y-base.y,eps=1e-8;
-      if (!m || !q || ![m.a,m.b,m.c,m.d,m.e,m.f,q.x,q.y,q.width,q.height].every(Number.isFinite) ||
-          Math.abs(m.a-1)>eps || Math.abs(m.b)>eps || Math.abs(m.c)>eps || Math.abs(m.d-1)>eps ||
-          Math.abs(m.e-dx)>eps || Math.abs(m.f-dy)>eps || q.width<0 || q.height<0 ||
-          ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('volume-text-unproven');
-      const slot=cfg.typ==='getrennt'?{x:o.x+1,y:o.y+1,width:128,height:b.height-2}
-        :{x:o.x+27,y:o.y+6,width:76,height:b.height-12};
-      if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
-        return fail('volume-label-overflow');
-      if(cfg.typ==='getrennt') {
-        const inside=(x,y)=>{const cy=y<o.y+22?o.y+22:y>o.y+b.height-22?o.y+b.height-22:null;
-          return cy===null || ((x-o.x-65)/64)**2+((y-cy)/21)**2<=1;};
-        if(![q.x,q.x+q.width].every(x=>[q.y,q.y+q.height].every(y=>inside(x,y))))return fail('volume-label-overflow');
-      }
-      boxes.push(q);
-    }
-    if (!boxes.length) return fail('volume-text-unproven');
-    const paint=[],segment=(a,b,w)=>paint.push({x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,
-      width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
-    for (const route of Object.values(candidate.routes)) {
-      if (!route || !Array.isArray(route.points) || !Array.isArray(route.crossings)) return fail('volume-text-unproven');
-      for (let i=0;i<route.points.length-1;i++) segment(route.points[i],route.points[i+1],5);
-      for (const p of route.points.slice(1,-1)) paint.push({x:p.x-13,y:p.y-13,width:26,height:26});
-      for (const crossing of route.crossings) if (crossing.bridge) paint.push({x:crossing.point.x-11,y:crossing.point.y-11,width:22,height:22});
-    }
-    for (const id of ['domestic-cold','domestic-hot']) {
-      const edge=model.connections[id]; if (!edge) continue;
-      const a=diagramPort(model,edge.from),b=diagramPort(model,edge.to);
-      segment(a,{x:a.x,y:b.y},5);if(a.x!==b.x)segment({x:a.x,y:b.y},b,5);
-    }
-    if (paint.some(p=>![p.x,p.y,p.width,p.height,p.x+p.width,p.y+p.height].every(Number.isFinite))) return fail('volume-text-unproven');
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    if (boxes.some(a=>paint.some(b=>hit(a,b)))) return fail('volume-label-pipe-contact');
-    // No success status: staging parity, other text, shadows and paint remain.
-    return {status:'unsupported',reason:'volume-slots-staged-only',count:boxes.length};
-  } catch (_) { return fail('volume-text-unproven'); }
-}
-// Internal partial inventory for the non-separated FM/WP scope. A successful
-// result is still unsupported: shadows, decorative paint and the legacy
-// reference's complete pipe inventory are not proven here.
-function inspectMeasuredLayoutTexts(card,candidate,records) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m || !Array.isArray(records) || !candidate.routes || !m.routingScope?.fm ||
-        !['schicht','trennblech','getrennt'].includes(c.typ) || c.weiche || c.energie.length ||
-        (!m.components.fm && !supportsStandaloneAirWp(c)) || (c.typ==='getrennt' ? !m.components['hot-tank'] || !m.components['buffer-tank'] : !m.components.tank)) return fail('text-inventory-unproven');
-    const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],F=c.farben;
-    const fm=c.fm,wp=c.wp,items=[];
-    for(const [id,x,y,width,height] of [...(fm?[['fm',340,14,110,90]]:[]),...(wp?[['wp',330,150,120,222]]:[])]) {
-      const b=m.components[id];
-      if (!b || b.baseOrigin?.x!==x || b.baseOrigin?.y!==y || b.bounds?.x!==0 || b.bounds?.y!==0 ||
-          b.bounds?.width!==width || b.bounds?.height!==height) return fail('text-inventory-unproven');
-    }
-    const add=(owner,x,y,css,text,slot)=>items.push({owner,x:String(x),y:String(y),css,text:String(text),slot});
-    // The manufacturer row ends before the separate droplet at x=421.
-    if(fm) {add('fm',352,32,'wt',c.hersteller,{x:346,y:18,width:74,height:22});
-    add('fm',352,92,null,c.name_fm,{x:346,y:69,width:45,height:31});}
-    const f=freshWaterState(c,fm,false,S,ON,NUM);
-    if (fm?.temp) add('fm',418,fm.durchfluss?77:84,'wc wt',f.fmTempText,{x:393,y:62,width:50,height:34});
-    if (fm?.durchfluss) add('fm',418,fm.temp?90:84,'wc',f.fmFlowText,{x:393,y:62,width:50,height:34});
-    if (wp) {
-      const state=heatPumpState(c,L,F,S,ON,NUM),display=heatPumpDisplay(c,state,L,F,S,NUM);
-      add('wp',342,168,'wt',c.hersteller,{x:336,y:154,width:74,height:20});
-      // COP is right-aligned in the unobstructed upper housing row; actual
-      // manufacturer/COP overlap is checked separately from these slots.
-      if (wp.cop) add('wp',438,168,'we wt wx',display.wpCopText,{x:390,y:154,width:54,height:20});
-      if (wp.leistung) add('wp',390,305,'wc wt',display.wpPowerText,{x:343,y:283,width:94,height:27});
-      add('wp',390,wp.leistung?320:309,'wc',display.wpStatus[0],{x:343,y:wp.leistung?308:283,width:94,height:wp.leistung?17:43});
-      if (display.wpTemperatures) add('wp',390,341,'wc wx',display.wpTemperatures,{x:336,y:328,width:108,height:17});
-      add('wp',342,364,null,c.name_wp,{x:336,y:343,width:84,height:27});
-      if (wp.sg_ready) add('wp',424,356,'we wt wx',`SG ${S(wp.sg_ready)}`,{x:336,y:343,width:91,height:20});
-      if (wp.quelle_ein || wp.quelle_aus) add('wp',390,382,'wc wv wx',`${L.luft} ${[wp.quelle_ein ? fmt(S(wp.quelle_ein)) : '', wp.quelle_aus ? fmt(S(wp.quelle_aus)) : ''].filter(Boolean).join(' → ')}`,
-        {x:300,y:372,width:180,height:18});
-      const valve=m.components.valve;
-      const rotation=m.layoutValveRotation || 0;
-      if (!valve || ![0,90,180,270].includes(rotation) || (rotation && c.typ!=='getrennt')) return fail('text-inventory-unproven');
-      const vx=valve.origin.x+34,vy=valve.origin.y+14,mx=vx-26,my=vy;
-      const [a,b,cc,d]=({0:[1,0,0,1],90:[0,1,-1,0],180:[-1,0,0,-1],270:[0,-1,1,0]})[rotation];
-      const cx=vx+a*(mx-vx)+cc*(my-vy),cy=vy+b*(mx-vx)+d*(my-vy);
-      const width=rotation%180?18:16,height=rotation%180?16:18;
-      add('valve',mx,my+3,'wc wt','M',{x:cx-width/2+1,y:cy-height/2+1,width:width-2,height:height-2});
-      // The coordinates are already model-relative. Counter-rotation keeps the
-      // glyph upright at the rotated motor centre.
-      items[items.length-1].absolute=true;
-      items[items.length-1].translation={x:cx-mx,y:cy-my};
-    }
-    if(fm) {
-    const cold=diagramPort(m,m.connections['domestic-cold'].from),hot=diagramPort(m,m.connections['domestic-hot'].to);
-    const boundary=m.components['domestic-boundary'],offset=boundary.origin.y-boundary.baseOrigin.y;
-    if(c.zirkulationspumpe) {
-      const pump=m.components['circulation-pump'],x=pump.origin.x+10,y=pump.origin.y+10;
-      add(null,x,y-26,'wc ws',L.zirk,{x:x-45,y:y-38,width:90,height:16});
-    }
-    add(null,cold.x-8,-14+offset,'we',c.text_tw_kalt ?? L.kalt,{x:cold.x-138,y:-31+offset,width:132,height:21});
-    add(null,hot.x+8,-14+offset,null,c.text_tw_warm ?? L.warm,{x:hot.x+6,y:-31+offset,width:132,height:21});
-    }
-    if (c.typ==='getrennt') {
-      for(const [id,y,prefix,value] of [['hot-tank',38,L.ww,c.volumen_ww],['buffer-tank',338,L.puffer,c.volumen]]) {
-        const tank=m.components[id],b=tank?.bounds,o=tank?.baseOrigin;
-        if (!b || !o || b.x!==0 || b.y!==0 || b.width!==130 || !Number.isFinite(b.height) || b.height<44) return fail('text-inventory-unproven');
-        const text=[prefix,value!==null && value!==undefined && value!==''?`${value} l`:null].filter(Boolean).join(' · ');
-        add(id,137,y,'wc wt wo',text,{x:o.x+1,y:o.y+1,width:128,height:b.height-2});
-        items[items.length-1].tankEllipse={x:o.x,y:o.y,height:b.height};
-      }
-    } else if (c.volumen!==null && c.volumen!==undefined && c.volumen!=='') {
-      const tank=m.components.tank;
-      add('tank',137,338,'wc wt wo',`${c.volumen} l`,{x:tank.baseOrigin.x+27,y:tank.baseOrigin.y+6,width:76,height:tank.bounds.height-12});
-    }
-    if(c.fuehler.length) {
-      add(null,405,122,'wc ws',L.speicher,{x:370,y:109,width:70,height:17});
-      add(null,382,133,'we ws',`${c.t_min}°`,{x:330,y:121,width:54,height:17});
-      add(null,428,133,'ws',`${c.t_max}°`,{x:426,y:121,width:54,height:17});
-    }
-    for(const f of tankState(c,S,m.geometry.yt).fl) {
-      const id=`sensor-${f.index}`,y=r1(f.y);
-      add(id,31,r1(y-6),'wc ws',f.name,{x:4,y:r1(y-15)-.5,width:54,height:14.5});
-      add(id,31,r1(y+11),'wc wt wv',fmt(f.wert),{x:4,y:r1(y-15)+12,width:54,height:18});
-    }
-    if (records.length!==items.length) return fail('text-inventory-unproven');
-    const boxes=[],hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    for (const item of items) {
-      const component=item.owner && m.components[item.owner],dx=component && !item.absolute?component.origin.x-component.baseOrigin.x:0,dy=component && !item.absolute?component.origin.y-component.baseOrigin.y:0;
-      if (item.owner && (!component || ![dx,dy].every(Number.isFinite))) return fail('text-inventory-unproven');
-      const matches=records.filter(r=>r?.x===item.x && r.y===item.y && r.className===item.css && r.text===item.text);
-      if (matches.length!==1) return fail('text-inventory-unproven');
-      const {box:measured,matrix:t}=matches[0],s=item.slot,slot={x:s.x+dx,y:s.y+dy,width:s.width,height:s.height};
-      // Keep one SVG unit of visible separation from text, strokes and stubs.
-      const q=measured && {x:measured.x-1,y:measured.y-1,width:measured.width+2,height:measured.height+2};
-      const tx=item.translation?.x ?? dx,ty=item.translation?.y ?? dy;
-      if (!q || !t || ![q.x,q.y,q.width,q.height,t.a,t.b,t.c,t.d,t.e,t.f].every(Number.isFinite) || q.width<0 || q.height<0 ||
-          Math.abs(t.a-1)>1e-8 || Math.abs(t.b)>1e-8 || Math.abs(t.c)>1e-8 || Math.abs(t.d-1)>1e-8 ||
-          Math.abs(t.e-tx)>1e-8 || Math.abs(t.f-ty)>1e-8 || ![q.x+q.width,q.y+q.height].every(Number.isFinite)) return fail('text-inventory-unproven',{owner:item.owner,x:item.x,y:item.y,matrix:t,expected:{x:tx,y:ty},box:q});
-      if (q.x<slot.x || q.y<slot.y || q.x+q.width>slot.x+slot.width || q.y+q.height>slot.y+slot.height)
-        return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
-      if(item.tankEllipse) {
-        const e=item.tankEllipse,ex=e.x+dx,ey=e.y+dy,h=e.height;
-        const inside=(x,y)=>{const cx=ex+65,cy=y<ey+22?ey+22:y>ey+h-22?ey+h-22:null;
-          return cy===null || ((x-cx)/64)**2+((y-cy)/21)**2<=1;};
-        if(![q.x,q.x+q.width].every(x=>[q.y,q.y+q.height].every(y=>inside(x,y))))
-          return fail('text-slot-overflow',{owner:item.owner,x:item.x,y:item.y,box:q,slot});
-      }
-      boxes.push({owner:item.owner,anchor:{x:item.x,y:item.y},...q});
-    }
-    // Boxes already include one unit on each side for obstacle clearance.
-    // Text/text needs one unit total, so compare half-unit expansions.
-    const textBox=b=>({x:b.x+.5,y:b.y+.5,width:b.width-1,height:b.height-1});
-    for (let i=0;i<boxes.length;i++) for(let j=i+1;j<boxes.length;j++) if(hit(textBox(boxes[i]),textBox(boxes[j]))) return fail('text-overlap',{first:boxes[i],second:boxes[j]});
-    const obstacles=[];
-    for (const [id,b] of Object.entries(m.components)) {
-      if (id==='domestic-boundary') continue;
-      if (!b?.origin || !b.bounds || ![b.origin.x,b.origin.y,b.bounds.x,b.bounds.y,b.bounds.width,b.bounds.height].every(Number.isFinite)) return fail('text-inventory-unproven');
-      obstacles.push({owner:id,x:b.origin.x+b.bounds.x-1,y:b.origin.y+b.bounds.y-1,width:b.bounds.width+2,height:b.bounds.height+2});
-      for(const [name,p] of Object.entries(b.ports || {})) if(p.stub) {
-        const [x,y,width,height]=diagramStub(m,`${id}.${name}`);
-        obstacles.push({owner:null,x:x-.4,y:y-.4,width:width+.8,height:height+.8});
-      }
-    }
-    const segment=(a,b,w)=>obstacles.push({owner:null,x:Math.min(a.x,b.x)-w,y:Math.min(a.y,b.y)-w,width:Math.abs(a.x-b.x)+2*w,height:Math.abs(a.y-b.y)+2*w});
-    for(const route of Object.values(candidate.routes)) {
-      if(!route || !Array.isArray(route.points) || !Array.isArray(route.crossings)) return fail('text-inventory-unproven');
-      for(let i=1;i<route.points.length;i++) segment(route.points[i-1],route.points[i],5);
-      for(const p of route.points.slice(1,-1)) obstacles.push({owner:null,x:p.x-13,y:p.y-13,width:26,height:26});
-      for(const crossing of route.crossings) if(crossing.bridge) obstacles.push({owner:null,x:crossing.point.x-11,y:crossing.point.y-11,width:22,height:22});
-    }
-    for(const id of ['domestic-cold','domestic-hot']) {
-      const edge=m.connections[id];if(!edge)continue;const a=diagramPort(m,edge.from),b=diagramPort(m,edge.to);let p=a;
-      for(const ref of edge.via) {const j=m.junctions[ref],q={x:p.x,y:j.y};segment(p,q,5);segment(q,j,5);p=j;}
-      const q={x:p.x,y:b.y};segment(p,q,5);segment(q,b,5);
-    }
-    if(c.zirkulationspumpe) {
-      const a=m.junctions['domestic-cold-tee'],b=m.junctions['domestic-hot-tee'];if(!a || !b)return fail('text-inventory-unproven');
-      segment(a,b,5.9);
-    }
-    if(obstacles.some(o=>![o.x,o.y,o.width,o.height,o.x+o.width,o.y+o.height].every(Number.isFinite))) return fail('text-inventory-unproven');
-    for (const box of boxes) for (const obstacle of obstacles)
-      if ((!obstacle.owner || obstacle.owner!==box.owner) && hit(box,obstacle)) return fail('text-obstacle-contact',{box,obstacle});
-    return {status:'unsupported',reason:'text-inventory-staged-only',count:boxes.length};
-  } catch (_) { return fail('text-inventory-unproven'); }
-}
-
-// The configured shadow is decorative: it may overlap text, pipes and other
-// symbols. Bind the actual renderer's filter and its finite clipped regions;
-// this is not a proof of the remaining SVG paint or permission to commit.
-function inspectLayoutShadowPolicy(card,candidate,html) {
-  const fail=()=>({status:'unsupported',reason:'layout-shadow-policy-unproven'});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || typeof html!=='string') return fail();
-    const filter='<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter>';
-    const expectedCount=(c.typ==='getrennt'?2:1)+(c.fm?1:0)+(c.wp?1:0);
-    if (html.split(filter).length!==2 || (html.match(/<filter\b/g)||[]).length!==1 ||
-        (html.match(/\bfilter\s*=/g)||[]).length!==expectedCount ||
-        (html.match(/filter="url\(#wwShadow\)"/g)||[]).length!==expectedCount) return fail();
-    const tanks=c.typ==='getrennt'?['hot-tank','buffer-tank']:['tank'];
-    const specs=[...tanks.map(id=>{const b=m.components[id];return [id,130,b?.bounds?.height,'65" ry="22',b?.origin?.y===b?.baseOrigin?.y?'wwTemp':`wwTemp-${id}`];}),...(c.fm?[['fm',110,90,'12','wwRed']]:[]),...(c.wp?[['wp',120,222,'14','wwRed']]:[])];
-    const shadows=[];
-    for (const [id,width,height,rx,fill] of specs) {
-      const b=m.components[id],o=b?.origin,box=b?.bounds;
-      if (!o || !box || box.x!==0 || box.y!==0 || box.width!==width || box.height!==height || !Number.isFinite(height) || height<44 ||
-          ![o.x,o.y].every(Number.isFinite)) return fail();
-      const rendered=`<rect x="${o.x}" y="${o.y}" width="${width}" height="${height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`;
-      if (html.split(rendered).length!==2) return fail();
-      const shadow={owner:id,x:o.x-.3*width,y:o.y-.3*height,width:1.6*width,height:1.6*height};
-      if (![shadow.x,shadow.y,shadow.width,shadow.height,shadow.x+shadow.width,shadow.y+shadow.height].every(Number.isFinite)) return fail();
-      shadows.push(shadow);
-    }
-    return {status:'unsupported',reason:'layout-shadow-policy-bound-only',shadows,
-      allowedOverlap:'decorative-shadow',unresolved:['svg-paint','style-reference-binding','commit-freshness']};
-  } catch (_) { return fail(); }
-}
-
-// Validate the actual target Shadow Root, not the namespaced measurement
-// clone. A later commit must repeat this check synchronously; this snapshot
-// alone never authorizes rendering.
-function inspectLayoutTargetReferences(parent,html) {
-  const fail=()=>({status:'unsupported',reason:'layout-target-references-unproven'});
-  try {
-    const doc=parent?.ownerDocument,root=parent?.getRootNode(),view=doc?.defaultView;
-    if (!parent?.isConnected || !root?.host?.isConnected || !Array.isArray(root.adoptedStyleSheets) ||
-        root.adoptedStyleSheets.length || typeof view?.CSSStyleSheet!=='function') return fail();
-    const styles=Array.from(root.querySelectorAll('style,link'));
-    if (styles.length!==1 || styles[0].localName!=='style' || styles[0].textContent!==CSS || !styles[0].sheet ||
-        styles[0].disabled===true || styles[0].sheet.disabled!==false ||
-        ![null,'','all'].includes(styles[0].getAttribute('media')) ||
-        !['','all'].includes(styles[0].sheet.media?.mediaText)) return fail();
-    const expected=new view.CSSStyleSheet();
-    if (typeof expected.replaceSync!=='function') return fail();
-    expected.replaceSync(CSS);
-    const actualRules=Array.from(styles[0].sheet.cssRules,r=>r.cssText),expectedRules=Array.from(expected.cssRules,r=>r.cssText);
-    if (actualRules.length!==expectedRules.length || actualRules.some((s,i)=>s!==expectedRules[i])) return fail();
-    const template=doc.createElement('template');template.innerHTML=html;
-    const svgs=template.content.querySelectorAll('svg');
-    if (svgs.length!==1) return fail();
-    const svg=svgs[0],elements=[svg,...svg.querySelectorAll('[id]')],ids=elements.map(el=>el.id).filter(Boolean);
-    if (!ids.includes('wwNut') || new Set(ids).size!==ids.length) return fail();
-    const slot=parent.querySelector('[data-layout-viewport]'),reference=slot?.querySelector('svg');
-    if (!reference?.isConnected || reference.getRootNode()!==root || reference.parentNode!==slot) return fail();
-    for(const el of root.querySelectorAll('[id]')) if (!reference.contains(el) && el!==reference && ids.includes(el.id)) return fail();
-    if (namespaceLegacyHeatingSvgIds(svg,root).status!=='prepared') return fail();
-    return {status:'unsupported',reason:'layout-target-references-bound-only',
-      unresolved:['inherited-style-freshness','svg-paint','commit-freshness']};
-  } catch (_) { return fail(); }
-}
-
-// Bounded symbol/text interactions in the non-separated FM/WP renderer.
-// Display text and the valve's M are intentionally painted over their own
-// display/motor background. Shadows are handled separately as decorative.
-function inspectLayoutSymbolPaint(card,candidate,records,html) {
-  const fail=(reason,detail)=>({status:'unsupported',reason,...(detail?{detail}:{})});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || !Array.isArray(records) || typeof html!=='string')
-      return fail('layout-symbol-paint-unproven');
-    const fm=m.components.fm,wp=m.components.wp,boundary=m.components['domestic-boundary'];
-    if ((!fm && !supportsStandaloneAirWp(c)) || (!!fm!==!!boundary) || !!wp!==!!c.wp) return fail('layout-symbol-paint-unproven');
-    const delta=b=>({x:b.origin.x-b.baseOrigin.x,y:b.origin.y-b.baseOrigin.y}),f=fm?delta(fm):null;
-    const icons=fm?[{id:'fm-droplet',x:421+f.x,y:20+f.y,width:18,height:38}]:[];
-    if(c.zirkulationspumpe) {const p=m.components['circulation-pump'];if(!p)return fail('layout-symbol-paint-unproven');
-      icons.push({id:'circulation-pump',x:p.origin.x-9.35,y:p.origin.y-9.35,width:38.7,height:38.7});
-      for(const id of ['domestic-cold-tee','domestic-hot-tee']) {const j=m.junctions[id];if(!j)return fail('layout-symbol-paint-unproven');icons.push({id,x:j.x-5.9,y:j.y-5.9,width:11.8,height:11.8});}}
-
-    if(c.fuehler.length) icons.push({id:'sensor-legend',x:386,y:128,width:38,height:5});
-    const droplet=c.fm?.temp || c.fm?.durchfluss ? 'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
-      : 'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z';
-    if (fm && html.split(droplet).length!==2) return fail('layout-symbol-paint-unproven');
-    if (wp) {
-      const w=delta(wp);
-      if (html.split('<circle cx="390" cy="226" r="42"').length!==2 ||
-          html.split('<circle cx="434" cy="353" r="5"').length!==2) return fail('layout-symbol-paint-unproven');
-      icons.push({id:'wp-fan',x:346.5+w.x,y:182.5+w.y,width:87,height:87},
-        {id:'wp-led',x:428.5+w.x,y:347.5+w.y,width:11,height:11});
-    }
-    if(fm) {
-    const cold=diagramPort(m,m.connections['domestic-cold'].from),hot=diagramPort(m,m.connections['domestic-hot'].to);
-    const dy=boundary.origin.y-boundary.baseOrigin.y;
-    const coldPath=`M${cold.x-4}${-23+dy}l4 4 4-4`,hotPath=`M${hot.x-4}${-19+dy}l4-4 4 4`;
-    if (html.split(coldPath).length!==2 || html.split(hotPath).length!==2) return fail('layout-symbol-paint-unproven');
-    icons.push({id:'domestic-cold-arrow',x:cold.x-4.8,y:-23.8+dy,width:9.6,height:5.6},
-      {id:'domestic-hot-arrow',x:hot.x-4.8,y:-23.8+dy,width:9.6,height:5.6});
-    }
-    for(const id of c.typ==='getrennt'?['hot-tank','buffer-tank']:['tank']) {
-    const tank=m.components[id],o=tank?.origin,b=tank?.bounds;
-    if (!o || !b || ![o.x,o.y,b.width,b.height].every(Number.isFinite)) return fail('layout-symbol-paint-unproven');
-    const top=`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
-      bottom=`M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`;
-    if (html.split(top).length!==2 || html.split(bottom).length!==2) return fail('layout-symbol-paint-unproven');
-    if(c.typ==='getrennt') {
-      for(const baseY of [o.y+26,o.y+b.height-26]) for(let i=0;i<512;i++) {
-        const a=i/512,z=(i+1)/512,curve=t=>baseY+40*t*(1-t),ys=[curve(a),curve(z),...(a<=.5 && z>=.5?[curve(.5)]:[])];
-        icons.push({id:`${id}-contour`,x:o.x+130*a-.6,y:Math.min(...ys)-.6,width:130/512+1.2,height:Math.max(...ys)-Math.min(...ys)+1.2});
-      }
-    } else icons.push({id:'tank-top-contour',x:o.x-.6,y:o.y+25.4,width:131.2,height:21.2},
-      {id:'tank-bottom-contour',x:o.x-.6,y:o.y+b.height-26.6,width:131.2,height:21.2});
-    }
-    if (c.typ==='trennblech') {
-      const y=m.geometry.yt;
-      if (!Number.isFinite(y) || html.split(`<rect x="73" y="${y-2}" width="128" height="4" fill="url(#wwGrid)"/>`).length!==2 ||
-          html.split(`M73 ${y-2}H201M73 ${y+2}H201`).length!==2) return fail('layout-symbol-paint-unproven');
-      icons.push({id:'tank-baffle',x:72.65,y:y-2.35,width:128.7,height:4.7});
-    }
-    const hit=(a,b)=>a.x<=b.x+b.width && a.x+a.width>=b.x && a.y<=b.y+b.height && a.y+a.height>=b.y;
-    if (icons.some(a=>![a.x,a.y,a.width,a.height,a.x+a.width,a.y+a.height].every(Number.isFinite)) ||
-        records.some(r=>!r?.box || ![r.box.x,r.box.y,r.box.width,r.box.height,r.box.x+r.box.width,r.box.y+r.box.height].every(Number.isFinite)))
-      return fail('layout-symbol-paint-unproven');
-    for(const r of records) for(const icon of icons)
-      if(hit({x:r.box.x-1,y:r.box.y-1,width:r.box.width+2,height:r.box.height+2},icon))
-        return fail('text-obstacle-contact',{text:r.text,x:r.x,y:r.y,box:r.box,icon});
-    return {status:'unsupported',reason:'layout-symbol-paint-bound-only',symbols:icons,
-      unresolved:['remaining-decorative-paint','commit-freshness']};
-  } catch (_) { return fail('layout-symbol-paint-unproven'); }
-}
-
-function inspectLayoutPipePaint(card,candidate,html) {
-  const fail=()=>({status:'unsupported',reason:'layout-pipe-paint-unproven'});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || typeof html!=='string' || !candidate.routes) return fail();
-    const controlled=new Set(['w0','w1','w2','w3','wk']);
-    for (const match of html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bclass\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi)) {
-      const raw=match[2],value=(raw[0]==='"' || raw[0]==="'")?raw.slice(1,-1):raw;
-      const used=value.trim().split(/\s+/).filter(token=>controlled.has(token));
-      if (used.length && (used.length!==1 || value!==used[0] || match[1]!== (used[0]==='wk'?'rect':'path'))) return fail();
-    }
-    const ids=[...(c.fm?['fm-supply','fm-return']:[]),...(c.wp?['wp-upper-supply','wp-lower-supply','wp-upper-return','wp-lower-return','wp-valve-return']:[])];
-    if (Object.keys(candidate.routes).length!==ids.length || ids.some(id=>!candidate.routes[id])) return fail();
-    const recomputed=routeDiagramConnections(m,ids),pick=r=>({status:r?.status,path:r?.path,points:r?.points,crossings:r?.crossings,paintOrder:r?.paintOrder});
-    if (ids.some(id=>candidate.routes[id].status!=='routed' || JSON.stringify(pick(candidate.routes[id]))!==JSON.stringify(pick(recomputed[id])))) return fail();
-    const {S,ON,NUM}=sensorReader(card._hass),F=c.farben,L=T[sprache(c,card._hass)],point=ref=>diagramPort(m,ref);
-    const water=freshWaterState(c,c.fm,!!c.zirkulationspumpe,S,ON,NUM),heat=heatPumpState(c,L,F,S,ON,NUM),groups={};
-    const primaryPipe=(id,_legacy,color,on,duration)=>{groups[id]=rohr(candidate.routes[id].path,color,on,duration);return '';};
-    renderPrimaryPipes({primaryPipe,FM:!!c.fm,WP:!!c.wp,model:m,point,F,fm_on:water.fm_on,c,SPLIT:c.typ==='getrennt',
-      y_bo:m.geometry.bo,y_bu:m.geometry.bu,CK:heat.CK,wpO:heat.wpO,tO:heat.tO,wpU:heat.wpU,tU:heat.tU,
-      wp_on:heat.wp_on,y_ro:m.geometry.ro,y_ru:m.geometry.ru,CW:heat.CW,HK:false,QS:false,W:heat.W,ON,QT:heat.QT});
-    if (Object.keys(groups).length!==ids.length || ids.some(id=>typeof groups[id]!=='string')) return fail();
-    const ordered=[...ids].sort((a,b)=>candidate.routes[a].paintOrder-candidate.routes[b].paintOrder);
-    let dc,de,dh,dw,domestic='';
-    if(c.fm) {
-      dc=point(m.connections['domestic-cold'].from);de=point(m.connections['domestic-cold'].to);
-      dh=point(m.connections['domestic-hot'].from);dw=point(m.connections['domestic-hot'].to);
-      const zirk_on=!!c.zirkulationspumpe && ON(c.zirkulationspumpe);
-      domestic=renderDomesticPipes({TW:true,ZK:!!c.zirkulationspumpe,model:m,point,dc,de,dh,dw,F,zirk_on,zapf:water.zapf});
-    }
-    const fragment=ordered.map(id=>groups[id]).join('')+domestic;
-    if (!fragment || html.split(fragment).length!==2) return fail();
-    for (const layer of ['w0','w1','w2','w3'])
-      if ((html.match(new RegExp(`class="${layer}"`,'g'))||[]).length!==(fragment.match(new RegExp(`class="${layer}"`,'g'))||[]).length) return fail();
-    const markers=[];
-    if(c.fm) {const boundary=m.components['domestic-boundary'],offset=boundary.origin.y-boundary.baseOrigin.y;
-      markers.push(`<path d="M${dc.x-4}${-23+offset}l4 4 4-4" class="wa"/>`,
-        `<path d="M${dw.x-4}${-19+offset}l4-4 4 4" class="wa"/>`,
-        `<text x="${dc.x-8}" y="${-14+offset}"`,`<text x="${dw.x+8}" y="${-14+offset}"`);
-    }
-    if (c.wp) {const v=m.components.valve;markers.push(`<line x1="${v.origin.x+34}" y1="${v.origin.y+14}" x2="${v.origin.x+16}"`);}
-    const tanks=c.typ==='getrennt'?['hot-tank','buffer-tank']:['tank'];
-    for (const [id,rx,fill] of [...tanks.map(id=>[id,'65" ry="22',m.components[id].origin.y===m.components[id].baseOrigin.y?'wwTemp':`wwTemp-${id}`]),...(c.fm?[['fm','12','wwRed']]:[]),...(c.wp?[['wp','14','wwRed']]:[])]) {
-      const b=m.components[id];markers.push(`<rect x="${b.origin.x}" y="${b.origin.y}" width="${b.bounds.width}" height="${b.bounds.height}" rx="${rx}" fill="url(#${fill})" filter="url(#wwShadow)"/>`);
-    }
-    let last=html.indexOf(fragment)+fragment.length;
-    for(const mark of markers) {const i=html.indexOf(mark,last);if(i<0 || html.indexOf(mark,i+1)>=0) return fail();last=i+mark.length;}
-    const refs=c.fm?['fm.supply','fm.return','fm.cold-water','fm.hot-water',m.connections['fm-supply'].from,m.connections['fm-return'].to]:[];
-    if(c.wp) refs.push('wp.upper-supply','wp.lower-supply','wp.return',m.connections['wp-upper-supply'].to,
-      m.connections['wp-upper-return'].from,m.connections['wp-lower-supply'].to,m.connections['wp-lower-return'].from);
-    if (new Set(refs).size!==refs.length || (html.match(/class="wk"/g)||[]).length!==refs.length) return fail();
-    for(const ref of refs) if(html.split(stub(...diagramStub(m,ref))).length!==2) return fail();
-    return {status:'unsupported',reason:'layout-pipe-paint-bound-only',routes:ids.length+2,stubs:refs.length,
-      unresolved:['remaining-decorative-paint','commit-freshness']};
-  } catch (_) { return fail(); }
-}
-// Complete paint inventory for the experimental FM/air-WP stratified and
-// baffle-tank paths. Other tank types and equipment remain closed.
-function inspectCompleteSimpleFmPaint(card,candidate,svg) {
-  const fail=()=>({status:'unsupported',reason:'layout-complete-paint-unproven'});
-  try {
-    const c=card?._cfg,m=candidate?.model;
-    if (!c || !m?.routingScope?.fm || !['schicht','trennblech','getrennt'].includes(c.typ) || (!c.fm && !supportsStandaloneAirWp(c)) || !svg?.isConnected) return fail();
-    const split=c.typ==='getrennt',tankIds=split?['hot-tank','buffer-tank']:['tank'];
-    const wp=!!c.wp,hasHeater=!!(c.heizstab_oben || c.heizstab_unten);
-    // Only stationary-tank heater experiments are inventoried here.
-    const heaters=hasHeater?inspectTankHeaterGeometry(card,m):null,tank=m.components[tankIds[0]];
-    if(hasHeater && (!tank || tankIds.some(id=>{const t=m.components[id];return !t || t.origin.x!==t.baseOrigin.x || t.origin.y!==t.baseOrigin.y;}) ||
-        heaters.reason!=='heater-geometry-inventory-only' || inspectTankHeaterSvgShapes(card,m,svg).reason!=='heater-svg-shapes-bound-only' ||
-        inspectTankHeaterShapeClearance(card,candidate).reason!=='heater-shape-clearance-bound-only')) return fail();
-    const ellipses=Array.from(svg.querySelectorAll('ellipse')).filter(el=>el.localName==='ellipse' && !el.closest('defs'));
-    if(ellipses.length!==(heaters?heaters.heaters.filter(h=>h.on).length:0))return fail();
-    const allowed=[...(c.fm?['domestic-boundary','fm']:[]),...(c.zirkulationspumpe?['circulation-pump']:[]),...tankIds,'tank-feet',...(wp?['wp','valve']:[]),...(heaters?heaters.heaters.map(h=>h.id):[]),...c.fuehler.map((_,i)=>`sensor-${i}`)];
-    const {S,ON,NUM}=sensorReader(card._hass),L=T[sprache(c,card._hass)],heat=wp?heatPumpState(c,L,c.farben,S,ON,NUM):null;
-    const valveFraction=wp && c.wp.ventil ? heat.vb : null;
-    const valveRotation=m.layoutValveRotation || 0;
-    if (![0,90,180,270].includes(valveRotation) || (valveRotation && !split)) return fail();
-    if (Object.keys(m.components).sort().join(',')!==allowed.sort().join(',')) return fail();
-    const shapes=Array.from(svg.querySelectorAll('path,rect,circle,line')).filter(el=>!el.closest('defs')),
-      paths=shapes.filter(el=>el.localName==='path'),rects=shapes.filter(el=>el.localName==='rect'),
-      circles=shapes.filter(el=>el.localName==='circle'),lines=shapes.filter(el=>el.localName==='line');
-    const hasDisplay=!!(c.fm?.temp || c.fm?.durchfluss), baffle=c.typ==='trennblech';
-    if (shapes.length!==paths.length+rects.length+circles.length+lines.length ||
-        rects.length!==(hasDisplay?15:14)+(wp?11:0)-(c.fm?0:8)+(baffle?1:0)+(split?4:0)+(heaters?heaters.heaters.reduce((n,h)=>n+1+h.stages.length,0):0)+c.fuehler.length+(c.fuehler.length?1:0) || circles.length!==(wp?7:0)+c.fuehler.length+(c.zirkulationspumpe?(6+(ON(c.zirkulationspumpe)?1:0)):0) || lines.length!==(wp?1:0)+c.fuehler.length) return fail();
-    const cls=el=>el.getAttribute('class')||'',plain=paths.filter(el=>!['w0','w1','w2','w3','wa'].includes(cls(el)));
-    const fm=m.components.fm,o=tank.origin,b=tank.bounds;
-    const expectedPaths=[`M${o.x} ${o.y+26}Q${o.x+65} ${o.y+46} ${o.x+130} ${o.y+26}`,
-      `M${o.x} ${o.y+b.height-26}Q${o.x+65} ${o.y+b.height-6} ${o.x+130} ${o.y+b.height-26}`,
-      ...(c.fm?[hasDisplay?'M430 22C426 29 424 32 424 35A6 6 0 0 0 436 35C436 32 434 29 430 22Z'
-        :'M430 30C424 40 421 45 421 49A9 9 0 0 0 439 49C439 45 436 40 430 30Z']:[])];
-    if (baffle) expectedPaths.push(`M73 ${m.geometry.yt-2}H201M73 ${m.geometry.yt+2}H201`);
-    if (split) {const q=m.components['buffer-tank'],p=q.origin,h=q.bounds.height;
-      expectedPaths.push(`M${p.x} ${p.y+26}Q${p.x+65} ${p.y+46} ${p.x+130} ${p.y+26}`,
-        `M${p.x} ${p.y+h-26}Q${p.x+65} ${p.y+h-6} ${p.x+130} ${p.y+h-26}`);}
-    if (plain.length!==(wp?(valveFraction===null?9:11):3)+(baffle?1:0)+(split?2:0)+(heaters?heaters.heaters.length:0)+(c.zirkulationspumpe?1:0)-(c.fm?0:1) || expectedPaths.some(d=>plain.filter(el=>el.getAttribute('d')===d).length!==1)) return fail();
-    const match=(el,x,y,w,h)=>el.getAttribute('x')===String(x) && el.getAttribute('y')===String(y) &&
-      el.getAttribute('width')===String(w) && el.getAttribute('height')===String(h);
-    const fmRects=fm?rects.filter(el=>match(el,fm.origin.x,fm.origin.y,110,90)):[],
-      feetRects=rects.filter(el=>match(el,93,362,11,22)||match(el,170,362,11,22)),feet=m.components['tank-feet'];
-    const footParent=m.components[split?'buffer-tank':'tank'];
-    if (!feet || feet.parent!==footParent?.id || feet.localOrigin?.x!==93-footParent.baseOrigin.x ||
-        feet.localOrigin?.y!==362-footParent.baseOrigin.y ||
-        feet.origin.x-feet.baseOrigin.x!==footParent.origin.x-footParent.baseOrigin.x ||
-        feet.origin.y-feet.baseOrigin.y!==footParent.origin.y-footParent.baseOrigin.y) return fail();
-    if (baffle) {
-      const y=m.geometry.yt,plates=rects.filter(el=>match(el,73,y-2,128,4)),edges=plain.filter(el=>el.getAttribute('d')===expectedPaths[c.fm?3:2]);
-      if (!Number.isFinite(y) || plates.length!==1 || plates[0].getAttribute('fill')!=='url(#wwGrid)' ||
-          edges.length!==1 || edges[0].getAttribute('stroke')!=='#fff' || edges[0].getAttribute('stroke-opacity')!=='.6' ||
-          edges[0].getAttribute('stroke-width')!=='.7') return fail();
-    }
-    if (fmRects.length!==(c.fm?2:0) || rects.filter(el=>cls(el)==='wk').length!==((wp?13:6)-(c.fm?0:6)) ||
-        feetRects.length!==2 || rects.filter(el=>match(el,93,362,11,22)).length!==1 || rects.filter(el=>match(el,170,362,11,22)).length!==1) return fail();
-    const displays=rects.filter(el=>match(el,392,62,52,34));
-    if (displays.length!==(hasDisplay?1:0) || displays.some(el=>el.getAttribute('rx')!=='5' ||
-        el.getAttribute('fill')!=='#0f1114' || el.getAttribute('fill-opacity')!=='.85' ||
-        el.getAttribute('stroke')!=='#fff' || el.getAttribute('stroke-opacity')!=='.08')) return fail();
-    for(const id of tankIds) {const q=m.components[id],p=q.origin,h=q.bounds.height,
-      tankRects=rects.filter(el=>match(el,p.x,p.y,130,h));
-    if (!Number.isFinite(h) || h<44 || tankRects.length!==3 || rects.filter(el=>match(el,p.x+14,p.y+30,7,h-60)).length!==1 ||
-        tankRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
-        tankRects.filter(el=>el.getAttribute('fill')==='url(#wwCyl)').length!==1 ||
-        tankRects.filter(el=>el.getAttribute('fill')==='none' && el.getAttribute('stroke-width')==='1.5').length!==1) return fail();}
-    if (c.fm && (fmRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
-        fmRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1)) return fail();
-    let wpDisplays=[],petals=[],fanGroup,valvePath,valveShapes=[];
-    if (wp) {
-      const w=m.components.wp,v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
-      const wpRects=rects.filter(el=>match(el,w.origin.x,w.origin.y,120,222));
-      wpDisplays=rects.filter(el=>match(el,342,282,96,46));
-      if (wpRects.length!==2 || wpRects.filter(el=>el.getAttribute('filter')==='url(#wwShadow)').length!==1 ||
-          wpRects.filter(el=>el.getAttribute('fill')==='url(#wwBox)').length!==1 || wpDisplays.length!==1 ||
-          wpDisplays[0].getAttribute('rx')!=='8' || wpDisplays[0].getAttribute('fill')!=='#0f1114' ||
-          wpDisplays[0].getAttribute('stroke')!=='#fff' ||
-          rects.filter(el=>cls(el)==='wm' && match(el,v.origin.x,v.origin.y+5,16,18)).length!==1) return fail();
-      const valveD=`M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}ZM${vx-9} ${vy+14}H${vx+9}L${vx} ${vy}ZM${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`;
-      valvePath=plain.find(el=>el.getAttribute('d')===valveD);
-      if (valveFraction!==null) {
-        const triangles=[[`M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}Z`,r2(0.1+0.8*valveFraction)],
-          [`M${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`,r2(0.9-0.8*valveFraction)]];
-        if (triangles.some(([d,opacity])=>plain.filter(el=>el.getAttribute('d')===d && el.getAttribute('fill-opacity')===String(opacity)).length!==1)) return fail();
-      }
-      valveShapes=[...rects.filter(el=>cls(el)==='wm' && match(el,v.origin.x,v.origin.y+5,16,18)),
-        ...plain.filter(el=>el.getAttribute('d')===valveD || (valveFraction!==null && [
-          `M${vx-9} ${vy-14}H${vx+9}L${vx} ${vy}Z`, `M${vx+15} ${vy-9}V${vy+9}L${vx} ${vy}Z`].includes(el.getAttribute('d')))),
-        ...circles.filter(el=>el.getAttribute('cx')===String(vx) && el.getAttribute('cy')===String(vy) && el.getAttribute('r')==='2.5'),...lines.filter(el=>el.getAttribute('x1')===String(vx) && el.getAttribute('y1')===String(vy))];
-      const bladeD='M390 226Q405 213 397 192Q383 203 390 226Z';petals=plain.filter(el=>el.getAttribute('d')===bladeD);
-      if (!valvePath || petals.length!==5 || [0,72,144,216,288].some(angle=>petals.filter(el=>el.getAttribute('transform')===`rotate(${angle} 390 226)`).length!==1)) return fail();
-      fanGroup=petals[0].parentElement;
-      if (!fanGroup || fanGroup.localName!=='g' || petals.some(el=>el.parentElement!==fanGroup) || fanGroup.getAttribute('transform')!==null ||
-          (fanGroup.getAttribute('class')||null)!==(heat.wp_on || heat.wp_abtau?'wr':null) ||
-          (fanGroup.getAttribute('style')||null)!==(heat.wp_abtau?'animation-duration:4s':null)) return fail();
-      const expectedCircles=[[390,226,42],[390,226,36],[390,226,14],[390,226,25],[390,226,7],[434,353,5],[vx,vy,2.5]];
-      if (expectedCircles.some(([x,y,r])=>circles.filter(el=>el.getAttribute('cx')===String(x) && el.getAttribute('cy')===String(y) && el.getAttribute('r')===String(r)).length!==1) ||
-          lines.filter(el=>el.getAttribute('x1')===String(vx) && el.getAttribute('y1')===String(vy) && el.getAttribute('x2')===String(vx-18) && el.getAttribute('y2')===String(vy)).length!==1) return fail();
-    }
-    const sensorShapes=new Map(),sensorState=tankState(c,S,m.geometry.yt);
-    if(c.fuehler.length && rects.filter(el=>match(el,386,128,38,5) && el.getAttribute('rx')==='2.5' && el.getAttribute('fill')==='url(#wwLegend)').length!==1)return fail();
-    if(c.fuehler.length && inspectTankSensorClearance(c,candidate).reason!=='sensor-clearance-bound-only') return fail();
-    for(const f of sensorState.fl) {
-      const b=m.components[`sensor-${f.index}`],y=r1(f.y),cl=sensorState.col(f.wert);
-      const rs=rects.filter(el=>match(el,2,r1(y-15),58,30) && el.getAttribute('rx')==='10' && el.getAttribute('stroke')===cl && el.getAttribute('stroke-width')==='1.5' && el.getAttribute('style')==='fill:var(--secondary-background-color,#2a2d33)');
-      const cs=circles.filter(el=>el.getAttribute('cx')==='72' && el.getAttribute('cy')===String(y) && el.getAttribute('r')==='4' && el.getAttribute('fill')===cl && el.getAttribute('stroke')==='#fff' && el.getAttribute('stroke-width')==='1.5');
-      const ls=lines.filter(el=>el.getAttribute('x1')==='60' && el.getAttribute('x2')==='72' && el.getAttribute('y1')===String(y) && el.getAttribute('y2')===String(y) && el.getAttribute('stroke')===cl && el.getAttribute('stroke-width')==='1.5');
-      if(!b || rs.length!==1 || cs.length!==1 || ls.length!==1) return fail();
-      for(const el of [...rs,...cs,...ls]) sensorShapes.set(el,{x:b.origin.x-b.baseOrigin.x,y:b.origin.y-b.baseOrigin.y});
-    }
-    let circulationRing=null;const circulationShapes=new Set();
-    if(c.zirkulationspumpe) {
-      if(inspectCirculationClearance(c,candidate).reason!=='circulation-clearance-bound-only')return fail();
-      const p=m.components['circulation-pump'],x=p.origin.x+10,y=p.origin.y+10,on=ON(c.zirkulationspumpe),color=on?c.farben.aktiv:'#8a9099';
-      const action=Array.from(svg.querySelectorAll('g[data-act]'));
-      if(action.length!==1 || action[0].getAttribute('data-act')!=='zirk' || action[0].getAttribute('class')!=='wx' ||
-         action[0].querySelector('title')?.textContent!==L.zirkTitle || action[0].querySelectorAll('title').length!==1)return fail();
-      const matches=(x,y,r)=>circles.filter(el=>el.getAttribute('cx')===String(x) && el.getAttribute('cy')===String(y) && el.getAttribute('r')===String(r));
-      const click=matches(x,y,14),body=matches(x,y,10).filter(el=>el.getAttribute('fill')==='#2b2f35' && el.getAttribute('stroke')===color && el.getAttribute('stroke-width')==='1.6'),
-        rings=matches(x,y,10).filter(el=>el.getAttribute('class')==='wp' && el.getAttribute('fill')==='none' && el.getAttribute('stroke')===color && el.getAttribute('stroke-width')==='1.5');
-      const triangle=`M${x-10} ${y}L${x+5} ${r2(y-8.66)}L${x+5} ${r2(y+8.66)}Z`,arrows=plain.filter(el=>el.getAttribute('d')===triangle && el.getAttribute('fill')===(on?c.farben.aktiv:'#6b7280'));
-      if(click.length!==1 || click[0].getAttribute('fill')!=='transparent' || body.length!==1 || rings.length!==(on?1:0) || arrows.length!==1 ||
-          [...click,...body,...rings,...arrows].some(el=>el.parentElement!==action[0]))return fail();
-      for(const ref of ['domestic-cold-tee','domestic-hot-tee']) {
-        const j=m.junctions[ref],outer=matches(j.x,j.y,5.5),inner=matches(j.x-1.5,j.y-1.5,1.6);
-        if(outer.length!==1 || outer[0].getAttribute('class')!=='wn' || inner.length!==1 || inner[0].getAttribute('fill')!=='#fff' || inner[0].getAttribute('opacity')!=='.45')return fail();
-      }
-      for(const el of [...click,...body,...rings,...arrows])circulationShapes.add(el);
-      for(const ref of ['domestic-cold-tee','domestic-hot-tee']) {const j=m.junctions[ref];for(const el of [...matches(j.x,j.y,5.5),...matches(j.x-1.5,j.y-1.5,1.6)])circulationShapes.add(el);}
-      circulationRing=rings[0] || null;
-    }
-    const matrix=svg.getScreenCTM(),det=matrix && matrix.a*matrix.d-matrix.b*matrix.c;
-    if (!matrix || !Number.isFinite(det) || !det) return fail();
-    if(circulationRing && !inspectCirculationRingAnimation(svg,circulationRing,m.components['circulation-pump']))return fail();
-    const delta=fm?{x:fm.origin.x-fm.baseOrigin.x,y:fm.origin.y-fm.baseOrigin.y}:{x:0,y:0},droplet=fm?plain.find(el=>el.getAttribute('d')===expectedPaths[2]):null;
-    const feetDelta={x:feet.origin.x-feet.baseOrigin.x,y:feet.origin.y-feet.baseOrigin.y};
-    const wpDelta=wp?{x:m.components.wp.origin.x-m.components.wp.baseOrigin.x,y:m.components.wp.origin.y-m.components.wp.baseOrigin.y}:null;
-    const fixedShapes=[...rects,...plain.filter(el=>!petals.includes(el)),...circles.filter(el=>el!==circulationRing),...lines];
-    if (wp) fixedShapes.push(fanGroup.parentElement);
-    for(const el of fixedShapes) {
-      const a=el.getScreenCTM();if(!a || a.is2D===false) return fail();
-      const rel={a:(matrix.d*a.a-matrix.c*a.b)/det,b:(-matrix.b*a.a+matrix.a*a.b)/det,
-        c:(matrix.d*a.c-matrix.c*a.d)/det,d:(-matrix.b*a.c+matrix.a*a.d)/det,
-        e:(matrix.d*(a.e-matrix.e)-matrix.c*(a.f-matrix.f))/det,
-        f:(-matrix.b*(a.e-matrix.e)+matrix.a*(a.f-matrix.f))/det};
-      const moved=el===droplet || displays.includes(el),wpMoved=wp && (wpDisplays.includes(el) || (circles.includes(el) && el.getAttribute('r')!=='2.5' && !sensorShapes.has(el) && !circulationShapes.has(el)) || el===fanGroup.parentElement),
-        x=sensorShapes.has(el)?sensorShapes.get(el).x:moved?delta.x:wpMoved?wpDelta.x:feetRects.includes(el)?feetDelta.x:0,
-        y=sensorShapes.has(el)?sensorShapes.get(el).y:moved?delta.y:wpMoved?wpDelta.y:feetRects.includes(el)?feetDelta.y:0;
-      let expected={a:1,b:0,c:0,d:1,e:x,f:y};
-      if (valveRotation && valveShapes.includes(el)) {
-        const [a,b,c,d]=({90:[0,1,-1,0],180:[-1,0,0,-1],270:[0,-1,1,0]})[valveRotation];
-        const v=m.components.valve,vx=v.origin.x+34,vy=v.origin.y+14;
-        expected={a,b,c,d,e:vx-a*vx-c*vy,f:vy-b*vx-d*vy};
-      }
-      if (!['a','b','c','d','e','f'].every(key=>Number.isFinite(rel[key]) && Math.abs(rel[key]-expected[key])<=1e-8)) return fail();
-    }
-    const bodies=[...tankIds,'tank-feet',...(fm?['fm']:[]),...(wp?['wp','valve']:[])].map(id=>{const q=m.components[id];return {id,x:q.origin.x+q.bounds.x-2,y:q.origin.y+q.bounds.y-2,width:q.bounds.width+4,height:q.bounds.height+4};});
-    for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++) {
-      const a=bodies[i],d=bodies[j];if((a.id==='tank'||a.id==='buffer-tank') && d.id==='tank-feet') continue;
-      if (![a.x,a.y,a.width,a.height,d.x,d.y,d.width,d.height].every(Number.isFinite) || a.width<=4 || a.height<=4 || d.width<=4 || d.height<=4 ||
-          (a.x<=d.x+d.width && a.x+a.width>=d.x && a.y<=d.y+d.height && a.y+a.height>=d.y)) return fail();
-    }
-    return {status:'complete',scope:`fm${wp?'-air-wp':''}-${c.typ}`};
-  } catch (_) {return fail();}
-}
-function layoutRelevantHassKey(card,hass) {
-  if (!card || !hass || !hass.states || !Array.isArray(card._ents)) return null;
-  return JSON.stringify([sprache(card._cfg,hass),...card._ents.map(e=>{
-    const entity=hass.states[e];
-    return [!!entity,typeof entity?.state,String(entity?.state),String(entity?.attributes?.unit_of_measurement || '')];
-  })]);
-}
-function layoutMeasurementDraftKey(owner) {
-  try {
-    const draft=owner?._layoutDraft;
-    if (owner?._layoutPanel) return !owner._layoutDraftNeedsRebind && draft && Array.isArray(draft.history) && Number.isInteger(draft.index)
-      ? JSON.stringify([draft.index,draft.history[draft.index]]) : null;
-    return JSON.stringify([draft?.value ?? null,owner?._savedLayout?.value ?? null]);
-  } catch (_) { return null; }
-}
-function markLayoutTextUnproven(owner,parent,code='text-slots-and-paint-unproven') {
-  const de=sprache(owner._config || owner._cfg,owner._hass)==='de';
-  if (owner._layoutPanel?.previewRoot===parent) {
-    owner._layoutPanel.apply.disabled=true;
-    owner._layoutPanel.status.textContent=code==='volume-label-overflow' || code==='volume-label-pipe-contact'
-      ? (de?'Das Volumenetikett passt nicht sicher in die Darstellung.':'The volume label does not fit safely in the diagram.')
-      : ['text-slot-overflow','text-overlap','text-obstacle-contact'].includes(code)
-      ? (de?'Ein Text passt nicht sicher in die Darstellung.':'A text label does not fit safely in the diagram.')
-      : code==='text-inventory-staged-only'
-      ? (de?'Texte am Kandidaten geprüft; die Zeichnung ist noch nicht vollständig geprüft.':'Candidate text checked; paint validation is not complete yet.')
-      : code==='volume-slots-staged-only'
-      ? (de?'Volumenetikett am Kandidaten geprüft; übriger Text und Zeichnung sind noch nicht vollständig geprüft.':'Candidate volume label checked; remaining text and paint validation is not complete yet.')
-      : (de?'Text und Zeichnung sind noch nicht vollständig geprüft.':'Text and paint validation is not complete yet.');
-  }
-  if (owner._layoutStatus?.status==='pending') {
-    owner._layoutStatus={status:'unsupported',errors:[{code,path:'layout'}]};
-    const notice=owner._box?.querySelector?.('[data-layout-status]');
-    if (notice) notice.textContent=savedLayoutNotice(owner._layoutStatus,de?'de':'en',false);
-  }
-}
-function cancelLayoutTextMeasurement(owner) {
-  const job=owner && layoutTextMeasurementJobs.get(owner);
-  if (!job) return;
-  if (job.canceling) return;job.canceling=true;
-  if (!job.applying) {try {job.receipt?.rollback?.();} catch (_) {}}
-  job.controller.abort(); job.cleanup();job.held?.release?.();
-  if (layoutTextMeasurementJobs.get(owner)!==job) return;
-  layoutTextMeasurementJobs.delete(owner);
-  markLayoutTextUnproven(owner,job.parent);
-}
-// The candidate's viewBox is also the fixed aspect-ratio contract of the
-// future SVG. It is derived from the rendered model, never from the prior DOM.
-function layoutCandidateViewport(svg) {
-  const raw=svg?.getAttribute?.('viewBox');
-  if (typeof raw!=='string') return null;
-  const value='[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?', separator='(?:\\s*,\\s*|\\s+)';
-  const match=raw.trim().match(new RegExp(`^(${value})${separator}(${value})${separator}(${value})${separator}(${value})$`,'i'));
-  if (!match) return null;
-  const fields=match.slice(1);
-  if (fields.some(s=>!Number.isFinite(Number(s)))) return null;
-  const [x,y,width,height]=fields.map(Number);
-  const ratio=width/height;
-  if (width<=0 || height<=0 || ratio<=0 || x+width<=x || y+height<=y ||
-      ![x+width,y+height,ratio].every(Number.isFinite)) return null;
-  return Object.freeze({x,y,width,height,viewBox:`${x} ${y} ${width} ${height}`});
-}
-function renderLayoutViewport(html,viewport) {
-  if (typeof html!=='string' || !viewport) return null;
-  const verified=layoutCandidateViewport({getAttribute:()=>viewport.viewBox});
-  if (!verified || ['x','y','width','height'].some(key=>verified[key]!==viewport[key])) return null;
-  const start=html.indexOf('<svg viewBox="'), end=html.indexOf('</svg>',start);
-  if (start<0 || end<0 || html.indexOf('<svg',start+4)>=0) return null;
-  const close=html.indexOf('>',start);
-  if (close<0 || close>end) return null;
-  const original=html.slice(start,close+1).match(/^<svg viewBox="([^"]+)"/);
-  const bounds=layoutCandidateViewport({getAttribute:()=>original?.[1]});
-  if (!bounds || viewport.x>bounds.x || viewport.y>bounds.y ||
-      viewport.x+viewport.width<bounds.x+bounds.width || viewport.y+viewport.height<bounds.y+bounds.height) return null;
-  const open=`<svg viewBox="${viewport.viewBox}" style="position:absolute;inset:0;width:100%;height:100%;">`;
-  const slot=`<div data-layout-viewport style="position:relative;width:100%;aspect-ratio:${viewport.width}/${viewport.height};max-height:860px;">`;
-  return html.slice(0,start)+slot+open+html.slice(close+1,end+6)+'</div>'+html.slice(end+6);
-}
-function requestLayoutVolumeMeasurement(owner,card,html,candidate) {
-  const unsupported=code=>({status:'unsupported',errors:[{code,path:'layout'}]});
-  try {
-    if (owner===card && typeof card._layoutFeatureEnabled==='function' && !card._layoutFeatureEnabled())
-      return unsupported('text-measurement-unavailable');
-    const parent=owner?._layoutPanel?.previewRoot || owner?._box;
-    const doc=parent?.ownerDocument,view=doc?.defaultView,root=parent?.getRootNode(),host=root?.host;
-    if (!owner?.isConnected || !parent?.isConnected || !host?.isConnected || !view?.AbortController ||
-        !view.MutationObserver || !view.ResizeObserver || !doc.fonts?.addEventListener || !doc.fonts?.removeEventListener)
-      return unsupported('text-measurement-unavailable');
-    const heating=candidate?.status==='heating-candidate';
-    const withHeatingModel=fn=>{const before=card._model;try{card._model=candidate.model;return fn();}finally{card._model=before;}};
-    const hassKey=layoutRelevantHassKey(card,owner._hass || card._hass);
-    if (hassKey===null) return unsupported('text-measurement-unavailable');
-    const draftKey=layoutMeasurementDraftKey(owner);
-    if (draftKey===null) return unsupported('text-measurement-unavailable');
-    const candidateIntegrity=candidate ? layoutCandidateIntegrity(candidate) : null;
-    if (candidate && candidateIntegrity===null) return unsupported('text-measurement-unavailable');
-    const key=JSON.stringify([html,card._cfg,owner._config || null,hassKey,draftKey]);
-    const previous=layoutTextMeasurementJobs.get(owner);
-    if (previous && previous.parent===parent && previous.key===key)
-      return previous.ready ? {status:'ready-candidate',viewport:previous.viewport,errors:[]} :
-        {status:'pending',viewport:previous.viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
-    cancelLayoutTextMeasurement(owner);
-    const template=doc.createElement('template');template.innerHTML=html;
-    const svgs=template.content.querySelectorAll('svg');
-    if (svgs.length!==1) return unsupported('text-measurement-unavailable');
-    const viewport=layoutCandidateViewport(svgs[0]);
-    if (!viewport) return unsupported('text-stage-viewport-unproven');
-    const svgHtml=svgs[0].outerHTML,controller=new view.AbortController(),generation={};
-    const job={parent,key,hassKey,card,controller,generation,viewport,pending:true,cleanup:()=>{}};
-    const invalidate=()=>{if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);};
-    const invalidateAndRefresh=()=>{
-      if (layoutTextMeasurementJobs.get(owner)!==job) return;
-      invalidate();
-      // A newer job or a detached/replaced view owns its own refresh instead.
-      Promise.resolve().then(()=>{
-        if (!owner.isConnected || !parent.isConnected || layoutTextMeasurementJobs.has(owner) ||
-            (owner._layoutPanel?.previewRoot || owner._box)!==parent) return;
-        if (owner._layoutPanel) owner._refreshLayoutUI({preserveFocusedInput:true});
-        else { owner._key=undefined; owner._update(); }
-      });
-    };
-    const fonts=doc.fonts;
-    const mutation=new view.MutationObserver(invalidateAndRefresh),resize=new view.ResizeObserver(()=>{
-      const box=host.getBoundingClientRect();
-      if (!box || !Number.isFinite(box.width) || !Number.isFinite(box.height) ||
-          box.width!==job.width || box.height!==job.height) invalidateAndRefresh();
-    });
-    const media=typeof view.matchMedia==='function' ? ['(prefers-color-scheme: dark)','(forced-colors: active)','(prefers-contrast: more)'].map(q=>view.matchMedia(q)) : [];
-    job.cleanup=()=>{mutation.disconnect();resize.disconnect();for (const name of ['loading','loadingdone','loadingerror']) fonts.removeEventListener(name,invalidate);
-      for (const query of media) query.removeEventListener?.('change',invalidate);};
-    layoutTextMeasurementJobs.set(owner,job);
-    for (const name of ['loading','loadingdone','loadingerror']) fonts.addEventListener(name,invalidate);
-    for (const query of media) query.addEventListener?.('change',invalidate);
-    // Theme and viewport changes invalidate; text/paint remain unsupported
-    // even if the measurement finishes without an observable change.
-    for (let node=host;node;node=node.parentElement || node.getRootNode?.().host || null)
-      mutation.observe(node,{attributes:true,attributeFilter:['class','style','hidden','dir']});
-    if (doc.head) mutation.observe(doc.head,{childList:true,subtree:true,attributes:true,characterData:true});
-    const rect=host.getBoundingClientRect();job.width=rect.width;job.height=rect.height;
-    if (![job.width,job.height].every(Number.isFinite) || job.width<0 || job.height<0) {
-      cancelLayoutTextMeasurement(owner);
-      return unsupported('text-measurement-unavailable');
-    }
-    resize.observe(host);
-    const current=token=>{try{return token===generation && layoutTextMeasurementJobs.get(owner)===job && !job.canceling && !controller.signal.aborted &&
-      owner.isConnected && parent.isConnected && (owner._layoutPanel?.previewRoot || owner._box)===parent &&
-      (!candidate || layoutCandidateIntegrity(candidate)===candidateIntegrity) &&
-      JSON.stringify([html,card._cfg,owner._config || null,layoutRelevantHassKey(card,owner._hass || card._hass),layoutMeasurementDraftKey(owner)])===key;}catch(_){return false;}};
-    job.current=current;
-    const finish=result=>{
-      const held=result?.held;let targetReceipt;
-      try {
-      if (!current(generation)) {if(layoutTextMeasurementJobs.get(owner)===job) cancelLayoutTextMeasurement(owner);return;}
-      const independent=result?.textStyleParity==='independent-text-measurements-only' && held?.validate?.()===true;
-      if (heating) {
-        const evidence=independent ? withHeatingModel(()=>inspectInternalHeatingEvidence(card,candidate,html,result.textRecords)) : {reason:'heating-evidence-unproven'};
-        const refs=independent ? inspectLayoutTargetReferences(parent,html) : {reason:'layout-target-references-unproven'};
-        if(evidence.reason==='heating-partial-evidence-only' && refs.reason==='layout-target-references-bound-only' &&
-           result.ambientPaintProof?.reason==='layout-ambient-paint-bound-only' && current(generation) && held.validate()) {
-          const verify=(svg,records)=>withHeatingModel(()=>inspectInternalHeatingSvgInventory(card,candidate,svg,true,viewport).reason==='heating-svg-inventory-bound-only' &&
-            inspectInternalHeatingContourContainment(card,candidate,svg).reason==='heating-contours-contained-only' &&
-            inspectInternalHeatingComputedStrokes(svg).reason==='heating-computed-strokes-bound-only' &&
-            inspectInternalHeatingAnimations(card,candidate,svg).reason==='heating-animations-bound-only' &&
-            inspectInternalHeatingEvidence(card,candidate,html,records).reason==='heating-partial-evidence-only');
-          const probe=held.probe?.(verify);
-          if(probe?.status==='validated-target-probe' && held.validate() && current(generation)) {
-            const target=held.consume?.(verify);targetReceipt=target;
-            if(target?.status==='committed-target' && target.validate?.() && current(generation)) {
-              if(owner===card) {
-                if(target.consume() && current(generation)) {
-                  const previous={model:card._model,candidate:card._layoutCandidate,status:card._layoutStatus};
-                  try {card._model=candidate.model;card._layoutCandidate=candidate;card._layoutStatus={status:'rendered-candidate',errors:[]};
-                    if(!current(generation) || layoutTextMeasurementJobs.get(owner)!==job){job.cleanup();return;}
-                    target.seal();layoutTextMeasurementJobs.delete(owner);job.cleanup();card._box?.querySelector?.('[data-layout-status]')?.remove?.();return;
-                  }catch(error){if(layoutTextMeasurementJobs.get(owner)===job){card._model=previous.model;card._layoutCandidate=previous.candidate;card._layoutStatus=previous.status;target.rollback();}throw error;}
-                }
-                target.rollback();
-              } else {job.pending=false;job.ready=true;job.receipt=target;owner._refreshLayoutUI();return;}
-            } else target?.rollback?.();
-          }
-        }
-        if(!current(generation) || layoutTextMeasurementJobs.get(owner)!==job){job.cleanup();return;}
-        layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,evidence.reason);return;
-      }
-      const heaterExperiment=!!(card._cfg.heizstab_oben || card._cfg.heizstab_unten);
-      const checkTexts=records=>heaterExperiment?inspectInternalHeaterCandidateText(card,candidate,records,html):inspectMeasuredLayoutTexts(card,candidate,records);
-      const textReady=value=>value.reason===(heaterExperiment?'heater-combined-text-bound-only':'text-inventory-staged-only');
-      const textInventory=independent ? checkTexts(result.textRecords) : {reason:'text-inventory-unproven'};
-      const shadowPolicy=independent ? inspectLayoutShadowPolicy(card,candidate,html) : {reason:'layout-shadow-policy-unproven'};
-      const targetReferences=independent ? inspectLayoutTargetReferences(parent,html) : {reason:'layout-target-references-unproven'};
-      const symbolPaint=independent && result.symbolStrokeProof?.reason==='layout-symbol-strokes-bound-only'
-        ? inspectLayoutSymbolPaint(card,candidate,result.textRecords,html) : {reason:'layout-symbol-paint-unproven'};
-      const pipePaint=independent && result.pipeStrokeProof?.reason==='layout-pipe-strokes-bound-only'
-        ? inspectLayoutPipePaint(card,candidate,html) : {reason:'layout-pipe-paint-unproven'};
-      const volume=independent ? inspectMeasuredVolumeSlots(card,candidate,result.textRecords) : {reason:'volume-text-unproven'};
-      // The legacy reference's exact pipe inventory is not established. Its
-      // independently measured canonical slot can reject an overflow, but an
-      // empty route inventory must never be treated as a paint proof.
-      const reference=independent ? inspectMeasuredVolumeSlots(card,{model:diagramModel(card._cfg),routes:{}},result.referenceTextRecords)
-        : {reason:'volume-text-unproven'};
-      const negative=['volume-label-overflow','volume-label-pipe-contact','text-slot-overflow','text-overlap','text-obstacle-contact'];
-      let code=negative.includes(volume.reason)?volume.reason:reference.reason==='volume-label-overflow'?reference.reason
-        : negative.includes(textInventory.reason)?textInventory.reason:negative.includes(symbolPaint.reason)?symbolPaint.reason
-        : textReady(textInventory) && shadowPolicy.reason==='layout-shadow-policy-bound-only' &&
-          targetReferences.reason==='layout-target-references-bound-only' && symbolPaint.reason==='layout-symbol-paint-bound-only' &&
-          pipePaint.reason==='layout-pipe-paint-bound-only' ? 'text-inventory-staged-only'
-        : 'text-slots-and-paint-unproven';
-      if (independent && (!current(generation) || held.validate()!==true)) code='text-slots-and-paint-unproven';
-      if (code==='text-inventory-staged-only') {
-        let complete=false;
-        const verifyTarget=(_svg,actualRecords)=>{
-          const actualText=checkTexts(actualRecords);
-          const actualSymbols=inspectLayoutSymbolPaint(card,candidate,actualRecords,html);
-          const actualRefs=inspectLayoutTargetReferences(parent,html);
-          const actualVolume=card._cfg.volumen!==null && card._cfg.volumen!==undefined && card._cfg.volumen!==''
-            ? inspectMeasuredVolumeSlots(card,candidate,actualRecords).reason==='volume-slots-staged-only' : true;
-          complete=inspectCompleteSimpleFmPaint(card,candidate,_svg).status==='complete';
-          return textReady(actualText) && actualSymbols.reason==='layout-symbol-paint-bound-only' &&
-            actualRefs.reason==='layout-target-references-bound-only' && actualVolume;
-        };
-        const probe=held.probe?.(verifyTarget);
-        if (probe?.status!=='validated-target-probe') code='text-slots-and-paint-unproven';
-        else if (complete && held.validate() && current(generation)) {
-          const target=held.consume?.((svg,records)=>verifyTarget(svg,records) && complete);
-          targetReceipt=target;
-          if (target?.status==='committed-target' && target.validate?.() && current(generation)) {
-            if (owner===card) {
-              if (target.consume() && current(generation)) {
-                const previous={model:card._model,candidate:card._layoutCandidate,status:card._layoutStatus};
-                try {
-                  card._model=candidate.model;card._layoutCandidate=candidate;
-                  card._layoutStatus={status:'rendered-candidate',errors:[]};
-                  if (!current(generation) || layoutTextMeasurementJobs.get(owner)!==job) {job.cleanup();return;}
-                  target.seal();layoutTextMeasurementJobs.delete(owner);job.cleanup();
-                  card._box?.querySelector?.('[data-layout-status]')?.remove?.();return;
-                } catch (error) {
-                  if (layoutTextMeasurementJobs.get(owner)===job) {
-                    card._model=previous.model;card._layoutCandidate=previous.candidate;card._layoutStatus=previous.status;target.rollback();
-                  }
-                  throw error;
-                }
-              }
-              target.rollback();
-            } else {
-              job.pending=false;job.ready=true;job.receipt=target;
-              owner._refreshLayoutUI();return;
-            }
-          } else target?.rollback?.();
-          code='text-slots-and-paint-unproven';
-        }
-      }
-      if (!current(generation) || layoutTextMeasurementJobs.get(owner)!==job) {job.cleanup();return;}
-      layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent,code);
-      } catch (_) {
-        if(layoutTextMeasurementJobs.get(owner)===job) {
-          try {(job.receipt || targetReceipt)?.rollback?.();} catch (_) {}
-          layoutTextMeasurementJobs.delete(owner);job.cleanup();markLayoutTextUnproven(owner,parent);
-        } else job.cleanup();
-      } finally {held?.release?.();}
-    };
-    Promise.resolve().then(()=>{
-      if (!current(generation)) return {status:'unsupported',reason:'text-stage-invalidated'};
-      const slot=parent.querySelector('[data-layout-viewport]');
-      const reference=slot?.querySelector('svg');
-      if (!reference || owner._layoutDrag) return {status:'unsupported',reason:'text-stage-reference-invalid'};
-      // On first mount the outer card may have had zero height when the job
-      // was queued. Establish the baseline after the fixed host is rendered,
-      // before any asynchronous measurement or observer delivery.
-      const rect=host.getBoundingClientRect();
-      if (!rect || ![rect.width,rect.height].every(Number.isFinite) || rect.width<=0 || rect.height<=0)
-        return {status:'unsupported',reason:'text-stage-viewport-unproven'};
-      job.width=rect.width;job.height=rect.height;
-      return stageLegacyHeatingTextCandidate(slot,svgHtml,key,generation,current,reference,controller.signal,true,'independent',true,true,
-        ()=>layoutTextMeasurementJobs.get(owner)===job,invalidate,heating?'heating-internal':'fm');
-    })
-      .then(finish,finish);
-    return {status:'pending',viewport,errors:[{code:'text-measurement-pending',path:'layout'}]};
-  } catch (_) { cancelLayoutTextMeasurement(owner); return unsupported('text-measurement-unavailable'); }
-}
-function renderLayoutCandidate(card, candidate, owner=card) {
-  const previous = card._model;
-  try {
-    card._model = candidate.model;
-    const heating=candidate.status==='heating-candidate';
-    if (!heating) layoutRenderRoutes.set(card, candidate);
-    const rendered=heating ? renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy) : null;
-    if (heating && rendered.reason!=='complete-card-text-shadow-paint-validation-required')
-      return {status:'unsupported',errors:[{code:rendered.reason||'heating-render-failed',path:'layout'}]};
-    const html = heating ? rendered.html : card._render();
-    const complete = heating ? typeof html==='string' : Object.values(candidate.routes).every(route => ['w0', 'w1', 'w2'].every(layer =>
-      html.includes(`<path d="${route.path}" class="${layer}"`)));
-    if (!complete) return { status: 'unsupported', errors: [{ code: 'incomplete-routed-output', path: 'layout' }] };
-    const viewBox=html.match(/<svg viewBox="([^"]+)"/);
-    const viewport=layoutCandidateViewport({getAttribute:name=>name==='viewBox' ? viewBox?.[1] : null});
-    if (!viewport) return {status:'unsupported',errors:[{code:'text-stage-viewport-unproven',path:'layout'}]};
-    return requestLayoutVolumeMeasurement(owner,card,html,candidate);
-  } catch (error) {
-    return { status: 'unsupported', errors: [{ code: typeof error?.code === 'string' ? error.code : 'render-failed', path: 'layout' }] };
-  } finally {
-    layoutRenderRoutes.delete(card);
-    card._model = previous;
-  }
-}
-
-// Two private geometry candidates per editor (saved and draft). Cache only plain, fully serializable
-// inputs; unusual values fall back to recomputation rather than risking a false hit.
-const layoutGeometryCache = new WeakMap();
-const layoutIntegrityIds = new WeakMap();
-let layoutNextIntegrityId = 0;
-function layoutIntegrityIdentity(value) {
-  if (value === null) return 0;
-  if (!layoutIntegrityIds.has(value)) layoutIntegrityIds.set(value, ++layoutNextIntegrityId);
-  return layoutIntegrityIds.get(value);
-}
-// Candidate models contain parent-linked accessor properties. Track descriptors,
-// accessor identities and their current values so a changed live model cannot
-// silently make cached routing evidence stale.
-function layoutCandidateIntegrity(candidate) {
-  const seen = new WeakSet();
-  function inspect(value) {
-    if (value === null || ['string', 'boolean', 'undefined'].includes(typeof value)) return [typeof value, value];
-    if (typeof value === 'number' && Number.isFinite(value)) return ['number', value];
-    if (!value || typeof value !== 'object' || seen.has(value) || Object.getOwnPropertySymbols(value).length) throw new Error('uncacheable');
-    seen.add(value);
-    const properties = [];
-    for (const [key, desc] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-      const flags = [desc.enumerable, desc.configurable];
-      if (Object.hasOwn(desc, 'value')) properties.push([key, flags, desc.writable, inspect(desc.value)]);
-      else properties.push([key, flags, layoutIntegrityIdentity(desc.get || null), layoutIntegrityIdentity(desc.set || null), inspect(desc.get?.call(value))]);
-    }
-    seen.delete(value);
-    return [layoutIntegrityIdentity(Object.getPrototypeOf(value)), properties];
-  }
-  try { return JSON.stringify(inspect([candidate.model, candidate.routes, candidate.policy])); } catch (_) { return null; }
-}
-function layoutGeometryKey(rawConfig, config, layout) {
-  const seen = new WeakSet();
-  function copy(value) {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (!value || typeof value !== 'object' || seen.has(value)) throw new Error('uncacheable');
-    const proto = Object.getPrototypeOf(value);
-    // Accept other realms' intrinsic prototypes but never an inherited-data
-    // prototype such as Object.create({x: ...}).
-    if (proto !== null) {
-      const descriptor = Object.getOwnPropertyDescriptor(proto, 'constructor'), constructor = descriptor?.value;
-      const native = typeof constructor === 'function' && constructor.prototype === proto &&
-        Function.prototype.toString.call(constructor) === `function ${Array.isArray(value) ? 'Array' : 'Object'}() { [native code] }`;
-      if (!native) throw new Error('uncacheable');
-    } else if (Array.isArray(value)) throw new Error('uncacheable');
-    if (Object.getOwnPropertySymbols(value).length) throw new Error('uncacheable');
-    seen.add(value);
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const result = Array.isArray(value) ? [] : Object.create(null);
-    for (const [key, desc] of Object.entries(descriptors)) {
-      if (Array.isArray(value) && key === 'length') continue;
-      if (Array.isArray(value) && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) throw new Error('uncacheable');
-      if (!desc.enumerable || !Object.hasOwn(desc, 'value')) throw new Error('uncacheable');
-      result[key] = copy(desc.value);
-    }
-    if (Array.isArray(value) && (result.length !== value.length || Object.keys(result).length !== value.length)) throw new Error('uncacheable');
-    seen.delete(value); return result;
-  }
-  try { return JSON.stringify(copy([rawConfig, config, layout])); } catch (_) { return null; }
-}
-function cachedLayoutCandidate(owner, rawConfig, config, layout) {
-  if (!owner) return resolveLayoutCandidate(rawConfig, config, layout);
-  const key = layoutGeometryKey(rawConfig, config, layout), entries = layoutGeometryCache.get(owner) || [];
-  const cached = key === null ? null : entries.find(entry => entry.key === key);
-  if (cached && layoutCandidateIntegrity(cached.candidate) === cached.integrity) {
-    layoutGeometryCache.set(owner, [cached, ...entries.filter(entry => entry !== cached)]); return cached.candidate;
-  }
-  const candidate = resolveLayoutCandidate(rawConfig, config, layout);
-  if (key !== null && candidate.status === 'candidate') {
-    const integrity = layoutCandidateIntegrity(candidate);
-    if (integrity !== null) layoutGeometryCache.set(owner, [{ key, candidate, integrity }, ...entries.filter(entry => entry.key !== key)].slice(0, 2));
-  }
-  return candidate;
-}
-
-function prepareLayoutCandidate(card, rawConfig, layout, cacheOwner) {
-  if (!card._hass || !layoutObject(card._hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
-  // Heater layouts are recomputed against the current live state; never cache
-  // an inactive glow clearance across a subsequent active state.
-  const heaterExperiment=supportsInternalHeaterExperiment(card._cfg);
-  if (heaterExperiment) {
-    const identity=layoutIdentityMap(rawConfig);if(identity.errors.length)return {status:'invalid',errors:identity.errors};
-    const reference={...card._cfg,heizstab_oben:null,heizstab_unten:null};
-    const checked=resolveLayoutCandidate(rawConfig,reference,layout);
-    if(checked.status==='invalid')return {status:'invalid',errors:checked.errors};
-  }
-  const trial=heaterExperiment?prepareInternalHeaterRouteCandidate(card,layout):null;
-  const candidate=heaterExperiment?(trial.reason==='heater-route-inventory-only'?{...trial.candidate,status:'candidate'}:
-    {status:'unsupported',errors:[{code:trial.reason || 'unsupported-configuration',path:'layout'}]}):cachedLayoutCandidate(cacheOwner, rawConfig, card._cfg, layout);
-  if (candidate.status==='heating-candidate') {
-    const rendered=renderLayoutCandidate(card,candidate,cacheOwner || card);
-    return rendered.status==='rendered-candidate' ? {...rendered,candidate} : rendered;
-  }
-  if (candidate.status !== 'candidate') return candidate;
-  const moved = Object.values(candidate.model.components).some(b => b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y);
-  const sideChanged = candidate.model.layoutSeparatedPreview && (candidate.model.layoutValveRotation || ['hot-tank', 'buffer-tank', 'fm', ...(card._cfg.wp ? ['wp'] : [])].some(id =>
-    Object.values(candidate.model.components[id].ports).some(port => port.effectiveSide && port.effectiveSide !== port.canonicalSide)));
-  if (!moved && !sideChanged) return { status: 'unsupported', errors: [{ code: 'unmoved-candidate', path: 'layout.components' }] };
-  const rendered = renderLayoutCandidate(card, candidate, cacheOwner || card);
-  return rendered.status === 'rendered-candidate' ? { ...rendered, candidate } : rendered;
-}
-
-function preflightLayoutRender(rawConfig, layout, hass, cacheOwner) {
-  if (!hass || !layoutObject(hass.states)) return { status: 'invalid', errors: [{ code: 'invalid-hass', path: 'hass.states' }] };
-  const card = new WarmwasserSchemaCard();
-  try { card.setConfig(rawConfig); }
-  catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-configuration', path: 'config' }] }; }
-  card._hass = hass;
-  const result = prepareLayoutCandidate(card, rawConfig, layout, cacheOwner);
-  // Keep the existing preflight API free of mutable candidate models.
-  if (result.status === 'rendered-candidate') return { status: result.status, html: result.html, viewport: result.viewport };
-  return result;
-}
-
-// A saved layout is user data even while the visual feature is gated. Explain
-// why it was not used without exposing partially routed SVG or raw values.
-function savedLayoutNotice(result, language, disabled = false) {
-  const de = language === 'de', code = result?.errors?.[0]?.code;
-  const reason = result?.status==='pending' ? (de ? 'Textprüfung läuft.' : 'Text validation is pending.')
-    : code === 'invalid-hass' ? (de ? 'Warte auf aktuelle Home-Assistant-Daten.' : 'Waiting for current Home Assistant data.')
-    : ['volume-label-overflow','volume-label-pipe-contact'].includes(code) ? (de ? 'Das Volumenetikett passt nicht sicher in die Darstellung.' : 'The volume label does not fit safely in the diagram.')
-    : code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Darstellung.' : 'A current sensor value does not fit the diagram.')
-    : code === 'unsupported-version' ? (de ? 'Die Layout-Version wird nicht unterstützt.' : 'The layout version is not supported.')
-    : code === 'unknown-id' || code === 'inactive-id' ? (de ? 'Ein gespeicherter Anschluss oder ein Gerät ist nicht verfügbar.' : 'A saved device or port is unavailable.')
-    : code === 'body-or-domestic-collision' || code === 'body-collision' || code === 'domestic-collision' ? (de ? 'Geräte oder Trinkwasserleitungen überlappen.' : 'Devices or domestic water pipes overlap.')
-    : result?.status === 'invalid' ? (de ? 'Das gespeicherte Layout ist ungültig.' : 'The saved layout is invalid.')
-    : result?.status === 'unsupported' && code !== 'unmoved-candidate' ? (de ? 'Die Positionen oder Leitungen können derzeit nicht sicher dargestellt werden.' : 'The positions or pipes cannot currently be displayed safely.') : '';
-  const off = disabled ? (de ? 'Die Layoutfunktion ist derzeit deaktiviert.' : 'The layout feature is currently disabled.') : '';
-  if (!reason && !off) return '';
-  const fallback = reason && code !== 'invalid-hass' ? (de ? 'Die Standardansicht wird angezeigt.' : 'The standard diagram is shown.') : '';
-  return [reason, off, fallback].filter(Boolean).join(' ');
-}
-
 class WarmwasserSchemaCard extends HTMLElement {
   static getConfigElement() { return document.createElement('warmwasser-schema-card-editor'); }
   static getStubConfig() { return { speicher: { typ: 'trennblech' }, fuehler: [] }; }
@@ -6170,7 +2274,6 @@ class WarmwasserSchemaCard extends HTMLElement {
   getGridOptions() { return { columns: 'full', min_columns: 6 }; }
 
   setConfig(config) {
-    cancelLayoutTextMeasurement(this);
     if (!config) throw new Error('Keine Konfiguration / no configuration');
     const c = { ...DEFAULTS, ...config, farben: { ...DEFAULTS.farben, ...(config.farben || {}) } };
     c.fuehler = (config.fuehler || [])
@@ -6199,78 +2302,16 @@ class WarmwasserSchemaCard extends HTMLElement {
     c.heizkreise = (config.heizkreise || []).filter(hasEnt).slice(0, 6);
     c.verteiler = normalizeDistributor(config.verteiler, config.heizkreise);
     c.energie = (config.energie || []).filter((e) => e && isEnt(e.entity));
-    const hasLayout = Object.prototype.hasOwnProperty.call(config, 'layout');
-    let savedLayout;
-    if (hasLayout) {
-      try { savedLayout = snapshotLayout(config.layout); }
-      catch (_) { savedLayout = null; }
-      c.layout = savedLayout;
-    }
     this._cfg = c;
-    this._savedLayout = hasLayout ? { value: savedLayout } : null;
-    this._layoutDraft = null;
-    this._layoutStatus = null;
-    // Snapshot identity inputs so an internal commit uses this card's config.
-    this._layoutIdentityConfig = Object.fromEntries(['fuehler', 'heizkreise'].map(field =>
-      [field, Array.isArray(config[field]) ? config[field].map(item => Array.isArray(item) ? [...item] : layoutObject(item) ? { ...item } : item) : []]));
-    this._layoutCandidate = null;
-    this._model = diagramModel(c);
-    // Layout values are geometry/configuration, never entity subscriptions.
-    const { layout: _layout, ...entityConfig } = c;
-    this._ents = [...new Set(collect(entityConfig, []))];
+    this._model = this._baseModel = diagramModel(c);
+    // Hidden beta: a saved layout is only evaluated with layout_editor_beta.
+    this._layout = config.layout_editor_beta === true && config.layout !== undefined ? layoutDiagramModel(c) : null;
+    this._ents = [...new Set(collect(c, []))];
     this._key = null;
     if (this._hass) this._update();
   }
 
-  // This gate is intentionally closed until the full editor and geometry scope
-  // is ready. Tests may override it on an instance to exercise the data path.
-  _layoutFeatureEnabled() { return false; }
-
-  // Internal only: no config event or persistence. A failed preparation leaves
-  // the currently rendered model untouched. setConfig always clears it.
-  _commitLayoutCandidate(layout) {
-    cancelLayoutTextMeasurement(this);
-    let draft;
-    try { draft = snapshotLayout(layout); }
-    catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-layout', path: 'layout' }] }; }
-    const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, draft);
-    if (result.status !== 'rendered-candidate') return result;
-    // An explicit draft takes precedence over saved config until setConfig.
-    // Neither this snapshot nor the saved config is emitted or persisted.
-    const guarded = this._layoutFeatureEnabled();
-    const previous = { candidate: this._layoutCandidate, model: this._model,
-      status: this._layoutStatus, draft: this._layoutDraft, html: this._box ? this._box.innerHTML : '' };
-    this._layoutDraft = guarded ? { value: draft } : null;
-    this._layoutCandidate = result.candidate;
-    this._model = result.candidate.model;
-    this._key = null;
-    const rollback = () => {
-      try {
-        if (this._box) this._box.innerHTML = previous.html;
-        this._layoutCandidate = previous.candidate; this._model = previous.model;
-        this._layoutStatus = previous.status; this._layoutDraft = previous.draft;
-      } catch (_) {
-        // Keep the attempted state and force a repaint if DOM restoration fails.
-      }
-      this._key = null;
-    };
-    try { this._update(); }
-    catch (_) {
-      rollback();
-      return { status: 'unsupported', errors: [{ code: 'commit-failed', path: 'layout' }] };
-    }
-    const applied = guarded ? this._layoutCandidate && this._layoutStatus?.status === 'rendered-candidate'
-      : this._layoutCandidate === result.candidate;
-    if (!applied) {
-      rollback();
-      return { status: 'unsupported', errors: [{ code: 'render-failed', path: 'layout' }] };
-    }
-    return { status: 'committed-candidate' };
-  }
-
   set hass(hass) {
-    const job=layoutTextMeasurementJobs.get(this);
-    if (job && layoutRelevantHassKey(job.card,hass)!==job.hassKey) cancelLayoutTextMeasurement(this);
     this._hass = hass;
     this._update();
   }
@@ -6281,7 +2322,6 @@ class WarmwasserSchemaCard extends HTMLElement {
   }
 
   disconnectedCallback() {
-    cancelLayoutTextMeasurement(this);
     this._textResizeObserver?.disconnect();
     this._textResizeObserver = null;
   }
@@ -6314,66 +2354,35 @@ class WarmwasserSchemaCard extends HTMLElement {
 
   _update() {
     if (!this._cfg || !this._hass) return;
-    // Units participate in rendered labels even when the entity state itself
-    // is unchanged. Structured encoding also prevents delimiter collisions.
-    const key=layoutRelevantHassKey(this,this._hass);
+    const key = sprache(this._cfg, this._hass) + '|' + this._ents.map((e) => this._hass.states[e]?.state).join('|');
     if (key === this._key) return;
+    this._key = key;
     if (!this._box) this._init();
-    const previous = { html: this._box.innerHTML, model: this._model, candidate: this._layoutCandidate, status: this._layoutStatus };
-    try {
-      const tpl = document.createElement('template');
-      let nextModel = this._model, nextCandidate = this._layoutCandidate, nextStatus = this._layoutStatus, html, viewport;
-      const enabled = this._layoutFeatureEnabled();
-      const selectedLayout = enabled && (this._layoutDraft || this._savedLayout);
-      if (selectedLayout) {
-        // Re-evaluate with current live values, allowing a previously unsafe
-        // label to recover without losing the saved layout or inactive entries.
-        const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, selectedLayout.value, this);
-        viewport = result.viewport;
-        nextStatus = { status: result.status, errors: result.errors || [] };
-        if (result.status === 'rendered-candidate') {
-          nextCandidate = result.candidate; nextModel = result.candidate.model; html = result.html;
-        } else { nextCandidate = null; nextModel = diagramModel(this._cfg); }
-      } else if (!enabled && this._savedLayout && !nextCandidate) {
-        // Validation is read-only; the gated layout is never committed.
-        const result = prepareLayoutCandidate(this, this._layoutIdentityConfig, this._savedLayout.value, this);
-        nextStatus = { status: result.status, errors: result.errors || [] };
-      } else if (nextCandidate) {
-        const result = renderLayoutCandidate(this, nextCandidate);
-        viewport = result.viewport;
-        if (result.status === 'rendered-candidate') html = result.html;
-        else { nextCandidate = null; nextModel = diagramModel(this._cfg); }
-      }
-      if (html === undefined) {
-        const model = this._model;
-        try { this._model = nextModel; html = this._render(); }
-        finally { this._model = model; }
-      }
-      if (enabled && viewport) {
-        const wrapped=renderLayoutViewport(html,viewport);
-        if (wrapped) html=wrapped;
-        else {
-          cancelLayoutTextMeasurement(this);
-          nextStatus={status:'unsupported',errors:[{code:'text-stage-viewport-unproven',path:'layout'}]};
-          nextCandidate=null;nextModel=diagramModel(this._cfg);
-          const model=this._model;
-          try {this._model=nextModel;html=this._render();} finally {this._model=model;}
-        }
-      }
-      const notice = this._savedLayout ? savedLayoutNotice(nextStatus, sprache(this._cfg, this._hass), !enabled) : '';
-      if (notice) html += `<div role="status" aria-live="polite"${nextStatus?.status==='pending'?' data-layout-status':''} style="padding:8px 12px;color:var(--secondary-text-color)">${esc(notice)}</div>`;
-      tpl.innerHTML = html;
-      if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
-      else this._box.replaceChildren(tpl.content);
-      this._fitDistributorText();
-      this._model = nextModel; this._layoutCandidate = nextCandidate; this._layoutStatus = nextStatus;
-      this._key = key;
-    } catch (error) {
-      try { this._box.innerHTML = previous.html; } catch (_) { /* next update must repaint */ }
-      this._model = previous.model; this._layoutCandidate = previous.candidate; this._layoutStatus = previous.status;
-      this._key = null;
-      throw error;
+    const tpl = document.createElement('template');
+    tpl.innerHTML = this._renderWithLayout();
+    if (this._box.firstChild && sameShape(this._box, tpl.content)) patch(this._box, tpl.content);
+    else this._box.replaceChildren(tpl.content);
+    this._fitDistributorText();
+  }
+
+  // Render the saved layout if it can be drawn; otherwise the standard diagram
+  // with a short notice. The result is kept for the editor (_layoutResult).
+  _renderWithLayout() {
+    const state = this._layout;
+    this._layoutResult = state ? { status: state.status, code: state.code || null } : null;
+    this._drawnModel = this._baseModel;
+    if (state?.status === 'applied') {
+      this._model = state.model;
+      try { const html = this._render(); this._drawnModel = state.model; return html; }
+      catch (error) { this._layoutResult = { status: 'unsupported', code: error.code || 'render-failed' }; }
+      finally { this._model = this._baseModel; }
     }
+    let html = this._render();
+    if (this._layoutResult && this._layoutResult.status !== 'none') {
+      const de = sprache(this._cfg, this._hass) === 'de';
+      html += `<div class="layout-note" role="status">${de ? 'Die gespeicherte Anordnung kann mit dieser Anlage derzeit nicht dargestellt werden. Die Standardansicht wird angezeigt.' : 'The saved arrangement cannot currently be displayed for this system. The standard diagram is shown.'}</div>`;
+    }
+    return html;
   }
 
   _click(ev) {
@@ -6451,14 +2460,12 @@ class WarmwasserSchemaCard extends HTMLElement {
 
     /* ---------- Bausteine ---------- */
     const pumpe = (x, y, d, on) => renderPumpe(x, y, d, on, F.aktiv);
-    const mischer = (x, y, cl, a = null, cw = CW, ck = CK, upright = 0) => renderMischer(x, y, cl, a, cw, ck, upright);
+    const mischer = (x, y, cl, a = null, cw = CW, ck = CK) => renderMischer(x, y, cl, a, cw, ck);
     const chip = (icon, text, on, e) =>
       renderChip(icon, text, on, e, F.aktiv);
 
     /* ---------- Kopfzeile ---------- */
     let o = renderCardHeader({ chip, avg, col, titel, L, c, S, NUM, SO, so_on, K, kTyp, t_k, k_feuer, WP, W, kuehl, wp, wp_on, HS, hs_hatP, hs_p, hs_on });
-
-    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L, prepared: layoutRenderRoutes.get(this) });
 
     /* ---------- Abmessungen ---------- */
     const QS = WP && QT !== 'luft';
@@ -6468,13 +2475,6 @@ class WarmwasserSchemaCard extends HTMLElement {
       ...distributorSlots.map((_, i) => { const b = model.components[`distributor-slot-${i}`]; return b.origin.y + b.bounds.height + 16; }));
     if (QS) unten = Math.max(unten, 566);
     let minX = baseMinX, maxX = 486, minY = -30, maxY = unten;
-    if (ZK && layoutRenderRoutes.get(this)?.model===model) minY=Math.min(minY,model.components['domestic-boundary'].origin.y-20);
-    const internalHeating = internalHeatingRenderContexts.get(this);
-    if (internalHeating?.paintBounds) {
-      const b = internalHeating.paintBounds;
-      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
-      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
-    }
     // Internal origin changes are used by tests and must not clip moved symbols.
     for (const b of Object.values(model.components)) {
       const dx = b.origin.x - b.baseOrigin.x, dy = b.origin.y - b.baseOrigin.y;
@@ -6482,13 +2482,6 @@ class WarmwasserSchemaCard extends HTMLElement {
         minX = Math.min(minX, baseMinX + dx); maxX = Math.max(maxX, 486 + dx);
         minY = Math.min(minY, -30 + dy); maxY = Math.max(maxY, unten + dy);
       }
-    }
-    // Every internal layout preview must include its routed paint envelope,
-    // including non-separated tanks. Canonical and unrelated legacy renders
-    // retain their existing viewBox. Sixteen units covers stroke and bridges.
-    if ((model.layoutSeparatedPreview || layoutRenderRoutes.get(this)?.model === model) && routes) for (const route of Object.values(routes)) for (const p of route.points) {
-      minX = Math.min(minX, p.x - 16); maxX = Math.max(maxX, p.x + 16);
-      minY = Math.min(minY, p.y - 16); maxY = Math.max(maxY, p.y + 16);
     }
     o += `<svg viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs>`;
     o += `<linearGradient id="wwTemp" gradientUnits="userSpaceOnUse" x1="0" y1="14" x2="0" y2="374"><stop offset="0" stop-color="${col(stops[0].wert)}"/>` +
@@ -6521,24 +2514,24 @@ class WarmwasserSchemaCard extends HTMLElement {
     o += `<filter id="wwShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".35"/></filter></defs>`;
 
     /* ---------- Rohre ---------- */
+    const routes = preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
     const primaryPipes = {};
     const primaryPipe = (id, legacyPath, color, on, duration) => {
       const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration);
       if (routes) { primaryPipes[id] = svg; return ''; }
       return svg;
     };
-    if (internalHeating) o += internalHeating.pipeFragment;
-    else o += renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT });
+    o += renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT });
     // Preserve the compiler's bridge order for whole pipe groups and animation.
     if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => routes[a].paintOrder - routes[b].paintOrder)) o += primaryPipes[id];
     o += renderDomesticPipes({ TW, ZK, model, point, dc, de, dh, dw, F, zirk_on, zapf });
-    o += renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON, layout:layoutRenderRoutes.get(this)?.model===model });
+    o += renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON });
     o += renderAdditionalAndSolarPipes({ K, SO, model, point, F, k_pumpe, so_on });
     /* ---------- Heizkreisverteiler ---------- */
     const y_vv = HK ? point(model.connections['manifold-supply'].from).y : 420 + dyw, y_rv = HK ? point(model.connections['manifold-return'].from).y : 448 + dyw;
     const y_hm = 482 + dyw, y_he = 548 + dyw;
     if (HK) {
-      if (!internalHeating) o += renderHeatingPipes({ WP, akt, distributorRunning, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
+      o += renderHeatingPipes({ WP, akt, distributorRunning, wpU, model, point, td, hk_fl, FM, W8, y_bu, y_m, y_ru, CK, CW, hks, aktReturn, aktSupply, y_rv, y_vv });
       o += `<text x="${bx1 - 8}" y="${y_vv + 3}" font-size="7.5" class="we ws" font-weight="600">VL</text><text x="${bx1 - 8}" y="${y_rv + 3}" font-size="7.5" class="we ws" font-weight="600">RL</text>`;
       o += renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComponent, hks, mischer, CW, L, y_hm, pumpe, y_he, F });
     }
@@ -6560,7 +2553,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     o += renderHeatMeters({ WP, W, K, FM, SPLIT, model, point, y_ru, more, zaehlerSym, NUM, U, openComponent, closeComponent });
 
     /* Legende */
-    o += renderTemperatureLegend({ fl, FM, WP, L, c });
+    o += renderTemperatureLegend({ fl, FM, WP, L, c, offset: model.legendOffset });
 
     /* ---------- Solar ---------- */
     o += renderSolarCollector({ SO, so_on, x0, model, F, L, S, U, NUM, more, pumpe, openComponent, closeComponent });
@@ -6585,7 +2578,7 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (K) o += portStub(`${bufferId}.additional-supply`) + portStub(`${bufferId}.additional-return`);
     if (FM) o += portStub(model.connections['fm-return'].to);
     o += renderHeaters({ hso, hsu, geo, y_ru, y_bu, openComponent, closeComponent, F, c, more, S });
-    o += renderTankSensors({ fl, col, more, openComponent, closeComponent, layout:layoutRenderRoutes.get(this)?.model===model });
+    o += renderTankSensors({ fl, col, more, openComponent, closeComponent });
 
     /* Legionellenschutz */
     o += renderLegionellaBadge({ c, L, F, S, ON, TT, tankId, openComponent, closeComponent });
@@ -6669,11 +2662,6 @@ const sel = {
 const F_ = (name, selector) => ({ name, selector });
 const E_ = (...names) => names.map((n) => F_(n, sel.ent));
 const leer = (v) => v === '' || v === null || v === undefined || v === false || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
-// Only fields in the form schema can be removed by a form change.
-const formFelder = (schema) => new Set(schema.flatMap((field) => [
-  ...(field.name ? [field.name] : []),
-  ...(!field.name && field.schema ? [...formFelder(field.schema)] : []),
-]));
 const aufraeumen = (o) => {
   if (Array.isArray(o)) return o.map(aufraeumen);
   if (o && typeof o === 'object') {
@@ -6685,122 +2673,7 @@ const aufraeumen = (o) => {
 };
 
 class WarmwasserSchemaCardEditor extends HTMLElement {
-  // Draft state is private until the visual editor is ready for release.
-  _beginLayoutDraft() {
-    cancelLayoutTextMeasurement(this);
-    let initial;
-    try { initial = snapshotLayout(Object.prototype.hasOwnProperty.call(this._config, 'layout') ? this._config.layout : { version: 2 }); }
-    catch (_) { initial = null; }
-    this._layoutDraft = { history: [initial], index: 0 };
-    this._layoutDraftNeedsRebind = false;
-    return this._layoutDraftState();
-  }
-
-  _layoutDraftState(includePreview = false) {
-    if (!this._layoutDraft) return null;
-    const { history, index } = this._layoutDraft, layout = history[index];
-    if (history.length > 1 && !this._layoutDraftNeedsRebind) {
-      let current = null;
-      try { current = JSON.stringify(this._config); } catch (_) {}
-      if (current === null || current !== this._layoutConfigFingerprint) this._layoutDraftNeedsRebind = true;
-    }
-    if (this._layoutDraftNeedsRebind) return { layout, canUndo: false, canRedo: false,
-      status: 'unbound', errors: [{ code: 'draft-needs-rebind', path: 'layout' }] };
-    const checked = preflightLayoutRender(this._config, layout, this._hass, this);
-    return { layout, canUndo: index > 0, canRedo: index + 1 < history.length,
-      status: checked.status, errors: checked.errors || [], ...(includePreview ? { html: checked.html, viewport: checked.viewport } : {}) };
-  }
-
-  _editLayoutDraft(layout, evaluate = true) {
-    cancelLayoutTextMeasurement(this);
-    if (!this._layoutDraft) this._beginLayoutDraft();
-    if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
-    let next;
-    try { next = snapshotLayout(layout); }
-    catch (_) { return { status: 'invalid', errors: [{ code: 'invalid-layout', path: 'layout' }] }; }
-    const draft = this._layoutDraft;
-    draft.history = [...draft.history.slice(0, draft.index + 1), next];
-    draft.index++;
-    return evaluate ? this._layoutDraftState() : null;
-  }
-
-  _undoLayoutDraft(evaluate = true) {
-    cancelLayoutTextMeasurement(this);
-    if (!this._layoutDraft) return null;
-    if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
-    if (this._layoutDraft.index > 0) this._layoutDraft.index--;
-    return evaluate ? this._layoutDraftState() : null;
-  }
-
-  _redoLayoutDraft(evaluate = true) {
-    cancelLayoutTextMeasurement(this);
-    if (!this._layoutDraft) return null;
-    if (this._layoutDraftNeedsRebind) return this._layoutDraftState();
-    if (this._layoutDraft.index + 1 < this._layoutDraft.history.length) this._layoutDraft.index++;
-    return evaluate ? this._layoutDraftState() : null;
-  }
-
-  _rebindLayoutDraft() {
-    cancelLayoutTextMeasurement(this);
-    if (!this._layoutDraft) return null;
-    let current = null;
-    try { current = JSON.stringify(this._config); } catch (_) {}
-    if (current === null) { this._layoutDraftNeedsRebind = true; return this._layoutDraftState(); }
-    this._layoutConfigFingerprint = current;
-    this._layoutDraftNeedsRebind = false;
-    return this._layoutDraftState();
-  }
-
-  _discardLayoutDraft() { return this._beginLayoutDraft(); }
-
-  _applyLayoutDraft() {
-    const job=layoutTextMeasurementJobs.get(this);
-    if (job?.pending && job.current?.(job.generation))
-      return {status:'pending',errors:[{code:'text-measurement-pending',path:'layout'}]};
-    if (job?.ready) {
-      if (!job.current?.(job.generation) || !job.receipt?.consume?.() ||
-          !job.current?.(job.generation) || layoutTextMeasurementJobs.get(this)!==job) {
-        if (layoutTextMeasurementJobs.get(this)===job) cancelLayoutTextMeasurement(this);
-        return {status:'unsupported',errors:[{code:'text-measurement-invalidated',path:'layout'}]};
-      }
-      const copy=value=>Array.isArray(value)?value.map(copy):layoutObject(value)
-        ? Object.fromEntries(Object.entries(value).map(([key,item])=>[key,copy(item)])) : value;
-      const previous=this._config,draft=this._layoutDraft,layout=draft.history[draft.index];
-      this._config={...previous,layout:copy(layout)};this._layoutDraft=null;job.applying=true;
-      try {
-        this._fire();job.receipt.seal();
-        if(layoutTextMeasurementJobs.get(this)===job) {layoutTextMeasurementJobs.delete(this);job.cleanup();}
-        return {status:'applied'};
-      } catch(error) {
-        job.applying=false;
-        if(layoutTextMeasurementJobs.get(this)===job) {
-          this._config=previous;this._layoutDraft=draft;job.receipt.rollback();
-          layoutTextMeasurementJobs.delete(this);job.cleanup();
-        }
-        throw error;
-      }
-    }
-    if (job) cancelLayoutTextMeasurement(this);
-    const state = this._layoutDraftState();
-    if (!state || state.status !== 'rendered-candidate') return state;
-    // Give the emitted configuration its own mutable data, separate from the
-    // frozen history. A successful apply is the only draft operation to emit.
-    const copy = value => Array.isArray(value) ? value.map(copy) : layoutObject(value)
-      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copy(item)])) : value;
-    const previous = this._config, draft = this._layoutDraft;
-    this._config = { ...previous, layout: copy(state.layout) };
-    this._layoutDraft = null;
-    try { this._fire(); }
-    catch (error) { this._config = previous; this._layoutDraft = draft; throw error; }
-    return { status: 'applied' };
-  }
-
   setConfig(config) {
-    cancelLayoutTextMeasurement(this);
-    this._endLayoutDrag(true);
-    // HA supplies no stable card ID. Never silently transfer an unsaved draft
-    // to changed configuration, even if the card type happens to match.
-    const previousConfig = this._config;
     const c = { ...config };
     if (Array.isArray(c.fuehler)) c.fuehler = c.fuehler.map((f) => (Array.isArray(f) ? aufraeumen({ name: f[0], entity: f[1], hoehe: f[2] }) : { ...f }));
     if (c.weiche === true) c.weiche = { anzeigen: true };
@@ -6812,80 +2685,17 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       delete c.trennung;
     }
     const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',') + `|${!!c.verteiler}`;
-    // Capture the accepted value, not a reference to caller-owned nested data:
-    // HA can mutate the original object before passing it back to setConfig.
-    let fingerprint = null;
-    try { fingerprint = JSON.stringify(c); } catch (_) {}
-    if (previousConfig && this._layoutDraft) {
-      const changed = fingerprint === null || this._layoutConfigFingerprint === null || fingerprint !== this._layoutConfigFingerprint;
-      if (changed) {
-        if (this._layoutDraft.history.length > 1) this._layoutDraftNeedsRebind = true;
-        else this._layoutDraft = null;
-      }
-    }
-    this._layoutConfigFingerprint = fingerprint;
-    this._layoutRawConfig = { ...config };
     this._config = c;
     if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
-    if (this._layoutPanel) { if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); }
-    this._refreshSavedLayoutNotice();
   }
 
   set hass(hass) {
-    const job=layoutTextMeasurementJobs.get(this),unchanged=!!job && layoutRelevantHassKey(job.card,hass)===job.hassKey;
-    if (job && !unchanged) cancelLayoutTextMeasurement(this);
     const first = !this._hass;
     this._hass = hass;
     if (this._forms) this._forms.forEach((f) => { f.hass = hass; });
     if (first && this._config) this._build();
-    else if (this._layoutPanel && !unchanged) this._refreshLayoutUI({ preserveFocusedInput: true });
-    if (!unchanged) this._refreshSavedLayoutNotice();
-  }
-
-  _refreshSavedLayoutNotice() {
-    if (!this._config || !this._layoutNoticeContainer) return;
-    const hasLayout = Object.prototype.hasOwnProperty.call(this._config, 'layout');
-    if (!hasLayout) {
-      if (this._layoutNotice) this._layoutNotice.hidden = true;
-      if (this._removeLayoutButton) this._removeLayoutButton.hidden = true;
-      return;
-    }
-    if (!this._layoutNotice) {
-      this._layoutNotice = document.createElement('p');
-      this._layoutNotice.setAttribute('role', 'status'); this._layoutNotice.setAttribute('aria-live', 'polite');
-      this._layoutNoticeContainer.appendChild(this._layoutNotice);
-      this._removeLayoutButton = document.createElement('button'); this._removeLayoutButton.type = 'button';
-      this._removeLayoutButton.addEventListener('click', () => this._removeSavedLayout());
-      this._layoutNoticeContainer.appendChild(this._removeLayoutButton);
-    }
-    const de = sprache(this._config, this._hass) === 'de';
-    const result = preflightLayoutRender(this._config, this._config.layout, this._hass, this);
-    this._layoutNotice.textContent = savedLayoutNotice(result, de ? 'de' : 'en', true);
-    this._layoutNotice.hidden = !this._layoutNotice.textContent;
-    this._removeLayoutButton.textContent = de ? 'Gespeichertes Layout entfernen' : 'Remove saved layout';
-    this._removeLayoutButton.hidden = false;
-  }
-
-  _removeSavedLayout() {
-    if (!this._config || !Object.prototype.hasOwnProperty.call(this._config, 'layout')) return;
-    this._endLayoutDrag(true);
-    const previous = this._config, previousRaw = this._layoutRawConfig, previousBinding = this._layoutDraftNeedsRebind;
-    const previousDraft = this._layoutDraft, previousFingerprint = this._layoutConfigFingerprint;
-    const config = { ...(previousRaw || previous) }; delete config.layout;
-    this._config = { ...previous }; delete this._config.layout;
-    this._layoutRawConfig = config;
-    try { this._layoutConfigFingerprint = JSON.stringify(this._config); } catch (_) { this._layoutConfigFingerprint = null; }
-    if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
-    else { this._layoutDraft = null; this._layoutDraftNeedsRebind = false; }
-    try {
-      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config }, bubbles: true, composed: true }));
-    } catch (error) {
-      this._config = previous; this._layoutRawConfig = previousRaw; this._layoutDraftNeedsRebind = previousBinding;
-      this._layoutDraft = previousDraft; this._layoutConfigFingerprint = previousFingerprint; throw error;
-    }
-    this._refreshSavedLayoutNotice();
-    if (this._layoutPanel) { if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); }
+    else if (this._preview) { this._preview.hass = hass; this._layoutHighlight(); }
   }
 
   _L() { return LBL[sprache(this._config, this._hass)]; }
@@ -6936,35 +2746,195 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     return f;
   }
 
-  _sync() { this._forms.forEach((f) => { f.data = f._getData(); }); }
+  _sync() { this._forms.forEach((f) => { f.data = f._getData(); }); this._layoutPreview(); }
+
+  /* ---------- Experimentelles Layout ---------- */
+  _layoutDe() { return sprache(this._config, this._hass) === 'de'; }
+  // Build a detached card to check a layout exactly as the card would draw it.
+  _layoutProbe(config) {
+    if (!this._hass) return { status: 'unsupported', code: 'no-hass' };
+    const card = new WarmwasserSchemaCard();
+    try { card.setConfig(config); card._hass = this._hass; card._renderWithLayout(); }
+    catch (_) { return { status: 'invalid', code: 'invalid-configuration' }; }
+    return { ...(card._layoutResult || { status: 'none' }), keys: layoutKeys(card._cfg, card._baseModel), card };
+  }
+  _layoutWith(key, x, y) {
+    const layout = { ...(this._config.layout || {}), version: 1 };
+    if (x || y) layout[key] = { ...(layout[key] || {}), x, y }; else delete layout[key];
+    return Object.keys(layout).length > 1 ? layout : null;
+  }
+  _layoutConfig(layout) {
+    const config = { ...this._config };
+    if (layout) config.layout = layout; else delete config.layout;
+    return config;
+  }
+  _layoutPreview(config = this._config) {
+    if (!this._preview || !this._hass) return;
+    this._preview.setConfig(config);
+    this._preview.hass = this._hass;
+    this._layoutControls();
+  }
+  // Commit a validated layout; an invalid one keeps the last valid position.
+  _layoutSet(layout, record = true) {
+    const result = this._layoutProbe(this._layoutConfig(layout));
+    if (layout && result.status !== 'applied' && result.status !== 'none') {
+      this._layoutPreview();
+      this._layoutMessage(this._layoutReason(result.code));
+      return false;
+    }
+    if (record) { this._undo.push(this._config.layout ? JSON.parse(JSON.stringify(this._config.layout)) : null); this._redo.length = 0; }
+    this._config = this._layoutConfig(layout);
+    this._layoutPreview();
+    this._fire();
+    return true;
+  }
+  _layoutReason(code) {
+    const de = this._layoutDe();
+    return code === 'collision' ? (de ? 'Bauteile würden sich überlappen. Letzte gültige Position bleibt.' : 'Components would overlap. The last valid position is kept.')
+      : code === 'label-overflow' ? (de ? 'Ein Anzeigewert ist für diese Anordnung zu lang.' : 'A displayed value is too long for this arrangement.')
+      : (de ? 'Kein freier Rohrweg gefunden. Letzte gültige Position bleibt.' : 'No clear pipe route found. The last valid position is kept.');
+  }
+  _layoutMessage(text) { if (this._layoutStatus) this._layoutStatus.textContent = text; }
+  _layoutCurrent(key) { return layoutOffset(this._config.layout, key); }
+  _layoutControls() {
+    if (!this._layoutStatus) return;
+    const de = this._layoutDe(), names = LAYOUT_LABELS[de ? 'de' : 'en'];
+    const probe = this._preview?._cfg ? { keys: layoutKeys(this._preview._cfg, this._preview._baseModel), result: this._preview._layoutResult } : { keys: [], result: null };
+    const keys = probe.keys;
+    if (this._selected && !keys.includes(this._selected)) this._selected = null;
+    const select = this._componentSelect;
+    select.replaceChildren(...['', ...keys].map((key) => {
+      const option = document.createElement('option');
+      option.value = key; option.textContent = key ? (key === 'speicher' && this._config.speicher?.typ !== 'getrennt' ? names.tank : names[key]) : '–';
+      return option;
+    }));
+    select.value = this._selected || '';
+    for (const b of this._moveButtons) b.disabled = !this._selected;
+    this._undoButton.disabled = !this._undo.length;
+    this._redoButton.disabled = !this._redo.length;
+    this._resetButton.disabled = !this._config.layout;
+    this._layoutStatus.textContent = !keys.length
+      ? (de ? 'Für diese Anlagenkonfiguration ist das Verschieben noch nicht verfügbar.' : 'Moving is not yet available for this system configuration.')
+      : probe.result && !['applied', 'none'].includes(probe.result.status) ? this._layoutReason(probe.result.code)
+      : this._selected ? `${select.selectedOptions[0]?.textContent}: x ${this._layoutCurrent(this._selected).x}, y ${this._layoutCurrent(this._selected).y}`
+      : (de ? 'Bauteil in der Vorschau ziehen oder auswählen.' : 'Drag a component in the preview or select it.');
+    this._layoutHighlight();
+  }
+  // Outline the selected component in the preview (editor-only markup).
+  _layoutHighlight() {
+    const svg = this._preview?.shadowRoot?.querySelector('svg'), model = this._preview?._drawnModel;
+    svg?.querySelector('[data-layout-highlight]')?.remove();
+    if (!svg || !model || !this._selected) return;
+    const ns = 'http://www.w3.org/2000/svg', g = document.createElementNS(ns, 'g');
+    g.setAttribute('data-layout-highlight', ''); g.setAttribute('pointer-events', 'none');
+    for (const id of layoutComponentIds(this._preview._cfg, this._selected)) {
+      const b = model.components[id], r = document.createElementNS(ns, 'rect');
+      for (const [k, v] of Object.entries({ x: b.origin.x - 4, y: b.origin.y - 4, width: b.bounds.width + 8, height: b.bounds.height + 8, rx: 10, fill: 'none', stroke: 'var(--primary-color,#03a9f4)', 'stroke-width': 2, 'stroke-dasharray': '6 4' })) r.setAttribute(k, v);
+      g.appendChild(r);
+    }
+    svg.appendChild(g);
+  }
+  // Map a pointer position to a movable layout key using the drawn model.
+  _layoutHit(ev) {
+    const svg = this._preview?.shadowRoot?.querySelector('svg'), model = this._preview?._drawnModel, matrix = svg?.getScreenCTM();
+    if (!svg || !model || !matrix) return null;
+    const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(matrix.inverse());
+    const keys = layoutKeys(this._preview._cfg, this._preview._baseModel).filter((k) => k !== 'speicher' || this._config.speicher?.typ !== 'getrennt');
+    for (const key of keys) for (const id of layoutComponentIds(this._preview._cfg, key)) {
+      const members = Object.values(model.components).filter((b) => { let r = b; while (r.parent) r = model.components[r.parent]; return r.id === id && !b.boundary; });
+      if (members.some((b) => p.x >= b.origin.x && p.x <= b.origin.x + b.bounds.width && p.y >= b.origin.y && p.y <= b.origin.y + b.bounds.height)) return { key, matrix };
+    }
+    return null;
+  }
+  _layoutEditor(host) {
+    const de = this._layoutDe();
+    this._undo ||= []; this._redo ||= [];
+    const box = document.createElement('details');
+    box.className = 'layout-editor'; box.open = true;
+    box.innerHTML = `<summary>${de ? 'Anlagenbild anordnen (Beta)' : 'Arrange diagram (beta)'}</summary>` +
+      `<p>${de ? 'Bauteile mit der Maus ziehen oder auswählen und mit den Pfeilen verschieben (5er-Raster). Leitungen werden automatisch geführt.' : 'Drag components with the mouse, or select them and use the arrows (5-unit grid). Pipes are routed automatically.'}</p>` +
+      `<div class="preview"></div><label>${de ? 'Komponente' : 'Component'} <select class="component-select"></select></label><div class="layout-status" role="status" aria-live="polite"></div>` +
+      `<div class="layout-buttons"><button type="button" data-cmd="left" aria-label="${de ? 'Nach links' : 'Move left'}">←</button><button type="button" data-cmd="right" aria-label="${de ? 'Nach rechts' : 'Move right'}">→</button>` +
+      `<button type="button" data-cmd="up" aria-label="${de ? 'Nach oben' : 'Move up'}">↑</button><button type="button" data-cmd="down" aria-label="${de ? 'Nach unten' : 'Move down'}">↓</button>` +
+      `<button type="button" data-cmd="undo">${de ? 'Rückgängig' : 'Undo'}</button><button type="button" data-cmd="redo">${de ? 'Wiederholen' : 'Redo'}</button><button type="button" data-cmd="reset">${de ? 'Zurücksetzen' : 'Reset'}</button></div>`;
+    host.appendChild(box);
+    const tag = String(this._config.type || 'custom:warmwasser-schema-card').replace(/^custom:/, '');
+    this._preview = document.createElement(customElements.get(tag) ? tag : 'warmwasser-schema-card');
+    box.querySelector('.preview').appendChild(this._preview);
+    this._layoutStatus = box.querySelector('.layout-status');
+    this._componentSelect = box.querySelector('.component-select');
+    this._componentSelect.addEventListener('change', () => { this._selected = this._componentSelect.value || null; this._layoutControls(); });
+    this._moveButtons = ['left', 'right', 'up', 'down'].map((cmd) => box.querySelector(`[data-cmd="${cmd}"]`));
+    this._undoButton = box.querySelector('[data-cmd="undo"]');
+    this._redoButton = box.querySelector('[data-cmd="redo"]');
+    this._resetButton = box.querySelector('[data-cmd="reset"]');
+    box.addEventListener('click', (ev) => {
+      const cmd = ev.target.closest?.('button')?.dataset.cmd;
+      if (!cmd) return;
+      const step = { left: [-5, 0], right: [5, 0], up: [0, -5], down: [0, 5] }[cmd];
+      if (step && this._selected) {
+        const p = this._layoutCurrent(this._selected);
+        this._layoutSet(this._layoutWith(this._selected, p.x + step[0], p.y + step[1]));
+      } else if (cmd === 'reset' && this._config.layout) this._layoutSet(null);
+      else if (cmd === 'undo' && this._undo.length) {
+        const current = this._config.layout || null;
+        if (this._layoutSet(this._undo.at(-1), false)) { this._undo.pop(); this._redo.push(current); this._layoutControls(); }
+      } else if (cmd === 'redo' && this._redo.length) {
+        const current = this._config.layout || null;
+        if (this._layoutSet(this._redo.at(-1), false)) { this._redo.pop(); this._undo.push(current); this._layoutControls(); }
+      }
+    });
+    let dragging = false;
+    this._preview.addEventListener('pointermove', (ev) => { if (!dragging) this._preview.style.cursor = this._layoutHit(ev) ? 'grab' : ''; });
+    this._preview.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0 || dragging) return;
+      const hit = this._layoutHit(ev);
+      ev.preventDefault(); ev.stopPropagation();
+      if (!hit) return;
+      this._selected = hit.key;
+      const { key, matrix } = hit, origin = this._layoutCurrent(key), startX = ev.clientX, startY = ev.clientY, pointer = ev.pointerId;
+      let last = { ...origin }, frame = null, pending = null;
+      try { this._preview.setPointerCapture(pointer); } catch (_) { /* best effort */ }
+      dragging = true; this._preview.style.cursor = 'grabbing';
+      this._layoutControls();
+      const paint = () => {
+        frame = null; if (!pending) return;
+        const x = Math.round((origin.x + (pending.x - startX) / matrix.a) / 5) * 5, y = Math.round((origin.y + (pending.y - startY) / matrix.d) / 5) * 5;
+        pending = null;
+        if (x === last.x && y === last.y) return;
+        // Follow the pointer only through valid positions; otherwise stay put.
+        const config = this._layoutConfig(this._layoutWith(key, x, y)), result = this._layoutProbe(config);
+        if (result.status === 'applied' || result.status === 'none') { last = { x, y }; this._layoutPreview(config); }
+        else this._layoutMessage(this._layoutReason(result.code));
+      };
+      const move = (e) => { if (e.pointerId !== pointer) return; pending = { x: e.clientX, y: e.clientY }; if (frame === null) frame = requestAnimationFrame(paint); };
+      const finish = (e, commit) => {
+        if (e.pointerId !== pointer) return;
+        if (frame !== null) cancelAnimationFrame(frame);
+        if (commit && pending) paint();
+        for (const [name, fn] of handlers) this._preview.removeEventListener(name, fn);
+        dragging = false; this._preview.style.cursor = 'grab';
+        if (commit && (last.x !== origin.x || last.y !== origin.y)) this._layoutSet(this._layoutWith(key, last.x, last.y));
+        else this._layoutPreview();
+      };
+      const handlers = [['pointermove', move], ['pointerup', (e) => finish(e, true)], ['pointercancel', (e) => finish(e, false)]];
+      for (const [name, fn] of handlers) this._preview.addEventListener(name, fn);
+    }, true);
+    // The preview must not open more-info dialogs or toggle devices.
+    this._preview.addEventListener('click', (ev) => { ev.stopPropagation(); ev.preventDefault(); }, true);
+    this._layoutPreview();
+  }
 
   _fire() {
     const cfg = aufraeumen({ ...this._config });
     // YAML-only in this step: unrelated editor changes must preserve the exact
     // distributor data, including optional and unknown values.
-    for (const key of ['verteiler', 'layout']) {
-      if (Object.prototype.hasOwnProperty.call(this._config, key)) cfg[key] = this._config[key];
-    }
+    if (Object.prototype.hasOwnProperty.call(this._config, 'verteiler')) cfg.verteiler = this._config.verteiler;
     if (cfg.weiche && cfg.weiche.anzeigen && Object.keys(cfg.weiche).length === 1) cfg.weiche = true;
     if (cfg.fm && cfg.fm.anzeigen && Object.keys(cfg.fm).length === 1) cfg.fm = true;
-    for (const k of ['fuehler', 'heizkreise', 'energie']) if (Array.isArray(this._config[k])) {
-      const list = this._listen().find((item) => item.key === k);
-      if (!list) { cfg[k] = this._config[k]; continue; }
-      const fields = formFelder(list.schema);
-      cfg[k] = this._config[k].map((item) => {
-        const cleaned = aufraeumen(item);
-        if (item && typeof item === 'object' && !Array.isArray(item)) {
-          for (const [key, value] of Object.entries(item)) if (!fields.has(key)) cleaned[key] = value;
-        }
-        return cleaned;
-      });
-    }
+    for (const k of ['fuehler', 'heizkreise', 'energie']) if (Array.isArray(this._config[k])) cfg[k] = this._config[k].map((x) => aufraeumen(x));
     cfg.type = this._config.type || 'custom:warmwasser-schema-card';
-    if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
-    this._layoutRawConfig = cfg;
     this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
-    this._refreshSavedLayoutNotice();
-    if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
   }
 
   _setList(key, arr) {
@@ -6972,473 +2942,11 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(this._config[k]) ? this._config[k].length : 0)).join(',') + `|${!!this._config.verteiler}`;
   }
 
-  // Deliberately closed until full scope, interaction and painted-envelope
-  // checks are complete. No YAML value or user setting opens this gate.
-  _visualLayoutEditorEnabled() { return false; }
-
-  _buildLayoutUI(parent) {
-    if (!this._layoutDraft) this._beginLayoutDraft();
-    const panel = document.createElement('section'); panel.className = 'layout-editor';
-    const de = sprache(this._config, this._hass) === 'de';
-    const label = (deText, enText) => de ? deText : enText;
-    const heading = document.createElement('h3'); heading.textContent = label('Layout-Entwurf', 'Layout draft'); panel.appendChild(heading);
-    const selectLabel = document.createElement('label'); selectLabel.textContent = label('Komponente ', 'Component ');
-    const select = document.createElement('select'); select.setAttribute('aria-label', label('Komponente', 'Component')); selectLabel.appendChild(select); panel.appendChild(selectLabel);
-    const controls = document.createElement('div'); controls.className = 'layout-controls';
-    const inputs = {};
-    for (const axis of ['x', 'y']) {
-      const wrapper = document.createElement('label'); wrapper.textContent = axis.toUpperCase() + ' ';
-      const input = document.createElement('input'); input.type = 'number'; input.step = '1'; input.inputMode = 'decimal'; input.setAttribute('aria-label', axis.toUpperCase());
-      input.addEventListener('change', () => {
-        if (input.value.trim() === '' || !Number.isFinite(Number(input.value))) { this._refreshLayoutUI(); return; }
-        const position = this._layoutUIPosition(); if (!position) return;
-        this._setLayoutUIPosition({ ...position, [axis]: Number(input.value) });
-      });
-      wrapper.appendChild(input); controls.appendChild(wrapper); inputs[axis] = input;
-    }
-    const button = (text, action, aria) => {
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = text;
-      if (aria) b.setAttribute('aria-label', aria); b.addEventListener('click', action); controls.appendChild(b); return b;
-    };
-    const move = (dx, dy) => { const p = this._layoutUIPosition(); if (p) this._setLayoutUIPosition({ x: p.x + dx, y: p.y + dy }); };
-    for (const [text, dx, dy, name] of [['←', -1, 0, label('Links', 'Left')], ['↑', 0, -1, label('Hoch', 'Up')], ['↓', 0, 1, label('Runter', 'Down')], ['→', 1, 0, label('Rechts', 'Right')]]) button(text, () => move(dx, dy), name);
-    const portControls = {};
-    for (const [group, deName, enName] of [['tank', 'Speicher-Frischwasser', 'Tank / fresh water'], ['fm', 'Frischwasser-Anschlüsse', 'Fresh water ports'], ['upper', 'Speicher-Wärmepumpe', 'Tank / heat pump'], ['lower', 'Puffer-Anschlüsse', 'Buffer ports'], ['wp', 'Wärmepumpe-Anschlüsse', 'Heat pump ports']]) {
-      const wrapper = document.createElement('label'); wrapper.textContent = label(deName, enName) + ' ';
-      const portSelect = document.createElement('select'); portSelect.setAttribute('aria-label', label(deName, enName));
-      for (const [value, text] of [['default', label('Standard', 'Default')], ['auto', label('Automatisch', 'Auto')], ['left', label('Links', 'Left')], ['right', label('Rechts', 'Right')]]) {
-        const option = document.createElement('option'); option.value = value; option.textContent = text; portSelect.appendChild(option);
-      }
-      portSelect.addEventListener('change', () => this._setLayoutUIPort(group, portSelect.value));
-      wrapper.appendChild(portSelect); controls.appendChild(wrapper); portControls[group] = wrapper; portControls[`${group}Select`] = portSelect;
-    }
-    const valveLabel = document.createElement('label'); valveLabel.textContent = label('Ventildrehung', 'Valve rotation') + ' ';
-    const valveSelect = document.createElement('select'); valveSelect.setAttribute('aria-label', label('Ventildrehung', 'Valve rotation'));
-    for (const angle of [0, 90, 180, 270]) { const option = document.createElement('option'); option.value = String(angle); option.textContent = `${angle}°`; valveSelect.appendChild(option); }
-    valveSelect.addEventListener('change', () => this._setLayoutUIRotation(Number(valveSelect.value)));
-    valveLabel.appendChild(valveSelect); controls.appendChild(valveLabel);
-    const undo = button(label('Rückgängig', 'Undo'), () => { this._endLayoutDrag(true); this._undoLayoutDraft(false); this._refreshLayoutUI(); });
-    const redo = button(label('Wiederholen', 'Redo'), () => { this._endLayoutDrag(true); this._redoLayoutDraft(false); this._refreshLayoutUI(); });
-    const apply = button(label('Anwenden', 'Apply'), () => { this._endLayoutDrag(true); this._applyLayoutDraft(); if (!this._layoutDraft) this._beginLayoutDraft(); this._refreshLayoutUI(); });
-    const rebind = button(label('Für diese Karte weiterbearbeiten', 'Continue on this card'), () => { this._rebindLayoutDraft(); this._refreshLayoutUI(); });
-    const discard = button(label('Entwurf verwerfen', 'Discard draft'), () => { this._endLayoutDrag(true); this._discardLayoutDraft(); this._refreshLayoutUI(); });
-    panel.appendChild(controls);
-    const status = document.createElement('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.appendChild(status);
-    const viewport = document.createElement('div'); viewport.className = 'layout-viewport';
-    const preview = document.createElement('div'); preview.className = 'layout-preview'; preview.tabIndex = 0;
-    preview.setAttribute('aria-label', label('Layout-Vorschau; Pfeiltasten bewegen die Komponente', 'Layout preview; arrow keys move the component'));
-    const previewRoot = preview.attachShadow({ mode: 'open' }); viewport.appendChild(preview);
-    const overlay = document.createElement('div'); overlay.className = 'layout-drag-overlay';
-    const marker = document.createElement('div'); marker.className = 'layout-draft-marker';
-    marker.textContent = label('Ungeprüft', 'Unchecked'); overlay.appendChild(marker);
-    overlay.setAttribute('aria-hidden', 'true'); viewport.appendChild(overlay); panel.appendChild(viewport);
-    overlay.addEventListener('pointerdown', event => this._startLayoutDrag(event));
-    overlay.addEventListener('pointermove', event => this._moveLayoutDrag(event));
-    overlay.addEventListener('pointerup', event => this._finishLayoutDrag(event));
-    overlay.addEventListener('pointercancel', event => { if (this._layoutDrag?.pointerId === event.pointerId) this._endLayoutDrag(true); });
-    overlay.addEventListener('lostpointercapture', event => { if (this._layoutDrag?.pointerId === event.pointerId) this._endLayoutDrag(true); });
-    select.addEventListener('change', () => { this._endLayoutDrag(true); this._refreshLayoutUI(); });
-    panel.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && this._layoutDrag) { event.preventDefault(); this._endLayoutDrag(true); return; }
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
-        event.preventDefault(); this._endLayoutDrag(true); if (event.shiftKey) this._redoLayoutDraft(false); else this._undoLayoutDraft(false); this._refreshLayoutUI(); return;
-      }
-      if (event.target !== preview || event.ctrlKey || event.metaKey || event.altKey) return;
-      const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
-      if (direction) { event.preventDefault(); const step = event.shiftKey ? 10 : 1; move(direction[0] * step, direction[1] * step); }
-    });
-    this._layoutPanel = { panel, select, inputs, portControls, valveLabel, valveSelect, undo, redo, apply, rebind, discard, status, preview, previewRoot, viewport, overlay, marker };
-    parent.appendChild(panel); this._refreshLayoutUI(); this._observeLayoutViewport();
-  }
-
-  connectedCallback() {
-    if (this._layoutPanel) {
-      this._observeLayoutViewport();
-      if (this._layoutDraft) this._refreshLayoutUI();
-    }
-  }
-
-  disconnectedCallback() {
-    this._heatingProbeController?.abort(); this._heatingProbeController=null;
-    cancelLayoutTextMeasurement(this);
-    this._endLayoutDrag(true);
-    // An editor instance may be reattached to a different card without a
-    // distinguishable setConfig call. Require explicit confirmation on reuse.
-    if (this._layoutDraft?.history.length > 1) this._layoutDraftNeedsRebind = true;
-    this._layoutResizeObserver?.disconnect();
-    this._layoutResizeObserver = null;
-  }
-
-  _observeLayoutViewport() {
-    if (this._layoutResizeObserver || !this._layoutPanel || typeof ResizeObserver === 'undefined') return;
-    const ui = this._layoutPanel, size = () => {
-      const rect = ui.viewport.getBoundingClientRect(); return [rect.width, rect.height];
-    };
-    let last = size();
-    const observer = new ResizeObserver(() => {
-      if (this._layoutPanel !== ui || this._layoutResizeObserver !== observer) return;
-      const next = size();
-      if (next[0] === last[0] && next[1] === last[1]) return;
-      last = next;
-      // Screen-to-SVG transforms are frozen during a gesture. Resizing makes
-      // that transform stale, so cancel the gesture before repositioning.
-      this._endLayoutDrag(true);
-      this._positionLayoutOverlay();
-    });
-    this._layoutResizeObserver = observer;
-    observer.observe(ui.viewport);
-  }
-
-  _positionLayoutOverlay() {
-    const ui = this._layoutPanel;
-    if (!ui) return;
-    const svg = ui.previewRoot.querySelector('svg');
-    if (!svg || !this._layoutUIPosition()) { ui.overlay.style.display = 'none'; return; }
-    const rect = svg.getBoundingClientRect(), parent = ui.viewport.getBoundingClientRect();
-    if (!this._layoutDrag) Object.assign(ui.overlay.style, { display: 'block', left: `${rect.left - parent.left + ui.viewport.scrollLeft}px`,
-      top: `${rect.top - parent.top + ui.viewport.scrollTop}px`, width: `${rect.width}px`, height: `${rect.height}px` });
-    ui.marker.style.display = 'none';
-    const draft = this._layoutDraft?.history[this._layoutDraft.index], proposed = draft?.components?.[ui.select.value];
-    const box = ui.hitBoxes?.find(item => item.id === ui.select.value), m = svg.getScreenCTM?.();
-    if (!this._layoutDrag) {
-      for (const handle of ui.handles || []) handle.remove?.();
-      ui.handles = [];
-      if (m && [m.a,m.b,m.c,m.d,m.e,m.f].every(Number.isFinite)) for (const hit of ui.hitBoxes || []) {
-        const corners = [[hit.x,hit.y],[hit.x+hit.width,hit.y],[hit.x,hit.y+hit.height],[hit.x+hit.width,hit.y+hit.height]]
-          .map(([x,y])=>({x:m.a*x+m.c*y+m.e-rect.left,y:m.b*x+m.d*y+m.f-rect.top}));
-        const xs=corners.map(p=>p.x), ys=corners.map(p=>p.y), left=Math.min(...xs), top=Math.min(...ys);
-        if (![...xs,...ys].every(Number.isFinite)) continue;
-        const handle=document.createElement('div'); handle.className='layout-device-hit';
-        Object.assign(handle.style,{left:`${left}px`,top:`${top}px`,width:`${Math.max(...xs)-left}px`,height:`${Math.max(...ys)-top}px`});
-        ui.overlay.appendChild(handle); ui.handles.push(handle);
-      }
-    }
-    if (ui.unchecked && !this._layoutDraftNeedsRebind && box && layoutObject(proposed) &&
-        Number.isFinite(proposed.x) && Number.isFinite(proposed.y) && m && m.a > 0 && m.d > 0 && m.b === 0 && m.c === 0) {
-      Object.assign(ui.marker.style, { display: 'block', left: `${m.a * proposed.x + m.e - rect.left}px`,
-        top: `${m.d * proposed.y + m.f - rect.top}px`, width: `${m.a * box.width}px`, height: `${m.d * box.height}px` });
-    }
-  }
-
-  _layoutUIPosition() {
-    const ui = this._layoutPanel, draft = this._layoutDraft;
-    if (!ui || !draft || !ui.select.value) return null;
-    const layout = draft.history[draft.index], id = ui.select.value;
-    const existing = layoutObject(layout?.components) && layout.components[id];
-    if (layoutObject(existing) && Number.isFinite(existing.x) && Number.isFinite(existing.y)) return { x: existing.x, y: existing.y };
-    try {
-      const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
-      const origin = card._model.components[ui.modelIds?.[id] || id]?.origin;
-      return origin ? { x: origin.x, y: origin.y } : null;
-    } catch (_) { return null; }
-  }
-
-  _setLayoutUIPosition(position, coalesce = false) {
-    if (!coalesce && this._layoutDrag) this._endLayoutDrag(true);
-    const ui = this._layoutPanel, draft = this._layoutDraft;
-    if (!ui || !draft || this._layoutDraftNeedsRebind || !ui.select.value || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
-    const current = draft.history[draft.index];
-    // Do not silently replace malformed or unknown data with a fresh layout.
-    if (!layoutObject(current) || current.version !== 2 || (current.components !== undefined && !layoutObject(current.components))) return;
-    const existing = current.components?.[ui.select.value];
-    const next = { ...current, components: { ...(current.components || {}),
-      [ui.select.value]: { ...(layoutObject(existing) ? existing : {}), ...position } } };
-    if (coalesce && this._layoutDrag?.edited) draft.history[draft.index] = snapshotLayout(next);
-    else { this._editLayoutDraft(next, false); if (coalesce && this._layoutDrag) this._layoutDrag.edited = true; }
-    this._refreshLayoutUI();
-  }
-
-  _setLayoutUIPort(group, value) {
-    const draft = this._layoutDraft;
-    if (!draft || this._layoutDraftNeedsRebind || !['tank', 'fm', 'upper', 'lower', 'wp'].includes(group) || !['default', 'auto', 'left', 'right'].includes(value)) return;
-    this._endLayoutDrag(true);
-    const current = draft.history[draft.index];
-    if (!layoutObject(current) || current.version !== 2 || (current.ports !== undefined && !layoutObject(current.ports))) return;
-    const names = { tank: ['tank.fm-supply', 'tank.fm-return'], fm: ['fm.supply', 'fm.return'],
-      upper: ['tank.wp-supply', 'tank.wp-return'], lower: ['buffer.lower-supply', 'buffer.lower-return'],
-      wp: ['wp.lower-supply', 'wp.return'] }[group];
-    const ports = { ...(current.ports || {}) };
-    for (const name of names) {
-      if (value === 'default') { delete ports[name]; continue; }
-      if (ports[name] !== undefined && !layoutObject(ports[name])) return;
-      const entry = { ...(ports[name] || {}), mode: value === 'auto' ? 'auto' : 'manual' };
-      if (value === 'auto') delete entry.side; else entry.side = value;
-      ports[name] = entry;
-    }
-    this._editLayoutDraft({ ...current, ports }, false); this._refreshLayoutUI();
-  }
-
-  _setLayoutUIRotation(rotation) {
-    const draft = this._layoutDraft;
-    if (!draft || this._layoutDraftNeedsRebind || ![0, 90, 180, 270].includes(rotation)) return;
-    this._endLayoutDrag(true);
-    const current = draft.history[draft.index];
-    if (!layoutObject(current) || current.version !== 2 || (current.components !== undefined && !layoutObject(current.components))) return;
-    const components = { ...(current.components || {}) }, previous = components.valve;
-    if (previous !== undefined && !layoutObject(previous)) return;
-    components.valve = { ...(previous || {}), rotation };
-    this._editLayoutDraft({ ...current, components }, false); this._refreshLayoutUI();
-  }
-
-  _startLayoutDrag(event) {
-    const ui = this._layoutPanel, draft = this._layoutDraft;
-    if (!ui || !draft || this._layoutDraftNeedsRebind || this._layoutDrag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
-    const svg = ui.previewRoot.querySelector('svg');
-    const matrix = svg?.getScreenCTM();
-    if (!svg || !matrix) return;
-    let inverse;
-    try { inverse = matrix.inverse(); ui.overlay.setPointerCapture(event.pointerId); }
-    catch (_) { return; }
-    if (![inverse.a, inverse.b, inverse.c, inverse.d, inverse.e, inverse.f].every(Number.isFinite)) {
-      try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return;
-    }
-    const point = (x, y) => ({ x: inverse.a * x + inverse.c * y + inverse.e, y: inverse.b * x + inverse.d * y + inverse.f });
-    const start = point(event.clientX, event.clientY);
-    const hits = (ui.hitBoxes || []).filter(box => start.x >= box.x && start.x <= box.x + box.width && start.y >= box.y && start.y <= box.y + box.height);
-    // Empty or ambiguous space must not move an arbitrary component.
-    if (hits.length !== 1) { try { ui.overlay.releasePointerCapture(event.pointerId); } catch (_) {} return; }
-    // A pending measurement must not outlive the start of a drag.
-    cancelLayoutTextMeasurement(this);
-    const hit = hits[0]; ui.select.value = hit.id;
-    ui.preview.focus?.({ preventScroll: true });
-    this._layoutDrag = { pointerId: event.pointerId, point, start, position: { x: hit.originX, y: hit.originY },
-      id: hit.id, viewBox: svg.getAttribute('viewBox'), history: [...draft.history], index: draft.index,
-      viewport: ui.previewRoot.querySelector('[data-layout-viewport]') ? layoutCandidateViewport(svg) : null,
-      inverseSnapshot: [inverse.a,inverse.b,inverse.c,inverse.d,inverse.e,inverse.f], frame: null, pending: null, edited: false };
-    const doc=ui.viewport.ownerDocument || document, view=doc?.defaultView || globalThis.window;
-    const cancel=()=>this._endLayoutDrag(true), second=ev=>{if(ev.pointerType==='touch' && ev.pointerId!==event.pointerId) cancel();};
-    doc?.addEventListener?.('pointerdown',second,true); doc?.addEventListener?.('scroll',cancel,true);
-    view?.addEventListener?.('resize',cancel); view?.visualViewport?.addEventListener?.('resize',cancel);
-    view?.visualViewport?.addEventListener?.('scroll',cancel);
-    this._layoutDrag.cleanup=()=>{doc?.removeEventListener?.('pointerdown',second,true);doc?.removeEventListener?.('scroll',cancel,true);
-      view?.removeEventListener?.('resize',cancel);view?.visualViewport?.removeEventListener?.('resize',cancel);view?.visualViewport?.removeEventListener?.('scroll',cancel);};
-    this._refreshLayoutUI(); event.preventDefault();
-  }
-
-  _layoutDragMatrixStable(drag) {
-    try {
-      const inverse=this._layoutPanel?.previewRoot.querySelector('svg')?.getScreenCTM()?.inverse();
-      return !!inverse && [inverse.a,inverse.b,inverse.c,inverse.d,inverse.e,inverse.f]
-        .every((n,i)=>Number.isFinite(n) && Math.abs(n-drag.inverseSnapshot[i])<1e-8);
-    } catch (_) { return false; }
-  }
-
-  _moveLayoutDrag(event) {
-    const drag = this._layoutDrag;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (!this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
-    drag.pending = { x: event.clientX, y: event.clientY };
-    if (drag.frame === null) drag.frame = requestAnimationFrame(() => {
-      if (this._layoutDrag !== drag) return;
-      drag.frame = null; this._paintLayoutDrag(drag);
-    });
-    event.preventDefault();
-  }
-
-  _paintLayoutDrag(drag) {
-    if (this._layoutDrag !== drag || !drag.pending || this._layoutPanel?.select.value !== drag.id) return;
-    if (drag.inverseSnapshot && !this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
-    const point = drag.point(drag.pending.x, drag.pending.y); drag.pending = null;
-    // Match the editor's one-unit controls. Whole SVG units also avoid
-    // introducing unproven fractional transform quantization during drag.
-    const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
-    const x = dx === 0 ? drag.position.x : Math.round(drag.position.x + dx);
-    const y = dy === 0 ? drag.position.y : Math.round(drag.position.y + dy);
-    if (Number.isFinite(x) && Number.isFinite(y)) {
-      drag.finalPosition = { x, y };
-      if (x !== drag.position.x || y !== drag.position.y || drag.edited)
-        this._setLayoutUIPosition({ x, y }, true);
-    }
-  }
-
-  _finishLayoutDrag(event) {
-    const drag = this._layoutDrag;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (!this._layoutDragMatrixStable(drag)) { this._endLayoutDrag(true); return; }
-    drag.pending = { x: event.clientX, y: event.clientY };
-    if (drag.frame !== null) { cancelAnimationFrame(drag.frame); drag.frame = null; }
-    this._paintLayoutDrag(drag);
-    // Returning to the original position is a no-op, including for a draft
-    // that had no explicit position. Preserve its existing redo branch.
-    const unchanged = drag.finalPosition && drag.finalPosition.x === drag.position.x && drag.finalPosition.y === drag.position.y;
-    this._endLayoutDrag(unchanged); event.preventDefault();
-  }
-
-  _endLayoutDrag(restore) {
-    const drag = this._layoutDrag;
-    if (!drag) return;
-    this._layoutDrag = null;
-    drag.cleanup?.();
-    if (drag.frame !== null) cancelAnimationFrame(drag.frame);
-    if (restore && this._layoutDraft) { this._layoutDraft.history = drag.history; this._layoutDraft.index = drag.index; }
-    try { this._layoutPanel?.overlay.releasePointerCapture(drag.pointerId); } catch (_) {}
-    // A measurement started while painting the drag is tied to a temporary
-    // preview. Discard it before refresh so the settled draft starts a fresh
-    // measurement against the final connected viewport.
-    cancelLayoutTextMeasurement(this);
-    if (this._layoutPanel && this._layoutDraft) this._refreshLayoutUI();
-  }
-
-  // Internal diagnostic only: the live editor still cannot apply or save a
-  // heating candidate. Draft/state changes abort the connected target probe.
-  async _probeHeatingDraft() {
-    const fail=reason=>({status:'unsupported',reason});
-    const ui=this._layoutPanel,draft=this._layoutDraft;let controller;
-    try {
-      if(!ui || !draft || this._layoutDraftNeedsRebind || !this.isConnected || !this._hass?.states || !globalThis.AbortController)
-        return fail('heating-editor-probe-unavailable');
-      const layout=draft.history[draft.index],card=new WarmwasserSchemaCard();card.setConfig(this._config);card._hass=this._hass;
-      const candidate=resolveLayoutCandidate(this._config,card._cfg,layout);
-      if(candidate.status!=='heating-candidate')return fail(candidate.errors?.[0]?.code||'heating-editor-probe-unavailable');
-      card._model=candidate.model;
-      const rendered=renderInternalWpHeatingCandidate(card,candidate.routes,candidate.policy);
-      if(rendered.reason!=='complete-card-text-shadow-paint-validation-required')return fail(rendered.reason||'heating-editor-probe-unavailable');
-      const match=rendered.html.match(/<svg viewBox="([^"]+)"/),viewport=layoutCandidateViewport({getAttribute:()=>match?.[1]});
-      const previous=card._model;let baseline;
-      try{card._model=diagramModel(card._cfg);baseline=card._render();}finally{card._model=previous;}
-      const wrapped=renderLayoutViewport(baseline,viewport);if(!wrapped)return fail('heating-editor-probe-unavailable');
-      const key=layoutGeometryKey(this._config,card._cfg,layout),hass=layoutRelevantHassKey(card,this._hass);
-      if(key===null || hass===null)return fail('heating-editor-probe-unavailable');
-      this._heatingProbeController?.abort();controller=new AbortController();this._heatingProbeController=controller;
-      ui.apply.disabled=true;ui.unchecked=true;ui.previewRoot.innerHTML=`<style>${CSS}</style>${wrapped}`;
-      const reference=ui.previewRoot.querySelector('[data-layout-viewport] svg');
-      if(!reference)return fail('heating-editor-probe-unavailable');
-      const result=await probeInternalHeatingTarget(card,candidate,this._config,layout,reference,controller.signal,true);
-      if(this._heatingProbeController!==controller || controller.signal.aborted || this._layoutPanel!==ui || this._layoutDraft!==draft ||
-          draft.history[draft.index]!==layout || layoutGeometryKey(this._config,card._cfg,layout)!==key || layoutRelevantHassKey(card,this._hass)!==hass)
-        return fail('heating-editor-probe-invalidated');
-      return result;
-    }catch(_){return fail('heating-editor-probe-unavailable');}
-    finally{if(this._heatingProbeController===controller)this._heatingProbeController=null;}
-  }
-
-  _refreshLayoutUI({ preserveFocusedInput = false } = {}) {
-    this._heatingProbeController?.abort(); this._heatingProbeController=null;
-    const ui = this._layoutPanel;
-    if (!ui || !this._layoutDraft) return;
-    const previousJob=layoutTextMeasurementJobs.get(this);
-    const currentJob=(previousJob?.pending || previousJob?.ready) && previousJob.current?.(previousJob.generation);
-    const state = currentJob
-      ? {layout:this._layoutDraft.history[this._layoutDraft.index],canUndo:this._layoutDraft.index>0,
-        canRedo:this._layoutDraft.index+1<this._layoutDraft.history.length,status:previousJob.ready?'ready-candidate':'pending',
-        viewport:previousJob.viewport,errors:previousJob.ready?[]:[{code:'text-measurement-pending',path:'layout'}]}
-      : this._layoutDraftState(true), checked = state;
-    let ids = [], hitBoxes = [], modelIds = {}, separated = false;
-    try {
-      const card = new WarmwasserSchemaCard(); card.setConfig(this._config);
-      const cfg = card._cfg, base = card._model;
-      const heatingExperiment=!!cfg.wp && cfg.heizkreise.length===1 && !!cfg.heizkreise[0].pumpe &&
-        ['schicht','trennblech'].includes(cfg.typ) && resolveLegacyWpHeatingIncidences(base).status==='resolved';
-      const supported = (base.routingScope.fm || supportsInternalHeaterExperiment(cfg) || supportsStandaloneAirWp(cfg) || heatingExperiment) && ['schicht', 'trennblech', 'getrennt'].includes(cfg.typ) &&
-        !cfg.weiche && !cfg.energie.length && !layoutIdentityMap(this._config).errors.length;
-      if (supported) {
-        separated = cfg.typ === 'getrennt';
-        modelIds = heatingExperiment ? {wp:'wp'} : { ...(separated && !supportsInternalHeaterExperiment(cfg) ? { tank: 'hot-tank', buffer: 'buffer-tank' } : {}), ...(base.components.fm ? {fm:'fm'} : {}), ...(cfg.wp && !(separated && supportsInternalHeaterExperiment(cfg)) ? { wp: 'wp', ...(separated ? { valve: 'valve' } : {}) } : {}) };
-        ids = Object.keys(modelIds);
-        card._hass=this._hass;
-        const candidate = ['rendered-candidate','ready-candidate'].includes(checked.status) ?
-          (supportsInternalHeaterExperiment(cfg)?prepareInternalHeaterRouteCandidate(card,state.layout).candidate:cachedLayoutCandidate(this, this._config, cfg, state.layout)) : null;
-        if (candidate && !candidate.status) candidate.status='candidate';
-        const shown = ['candidate','heating-candidate'].includes(candidate?.status) ? candidate.model : base;
-        hitBoxes = ids.map(id => {
-          const component = shown.components[modelIds[id]], b = component.bounds;
-          return { id, x: component.origin.x + b.x, y: component.origin.y + b.y, width: b.width, height: b.height,
-            originX: component.origin.x, originY: component.origin.y };
-        });
-      }
-    } catch (_) { /* configuration remains unavailable */ }
-    ui.modelIds = modelIds; ui.hitBoxes = hitBoxes;
-    for (const group of ['tank', 'fm', 'upper', 'lower', 'wp']) {
-      ui.portControls[group].hidden = !separated || (!['tank', 'fm'].includes(group) && !modelIds.wp);
-      const names = { tank: ['tank.fm-supply', 'tank.fm-return'], fm: ['fm.supply', 'fm.return'],
-        upper: ['tank.wp-supply', 'tank.wp-return'], lower: ['buffer.lower-supply', 'buffer.lower-return'],
-        wp: ['wp.lower-supply', 'wp.return'] }[group];
-      const entries = names.map(name => state.layout?.ports?.[name]).filter(Boolean);
-      const manual = [...new Set(entries.filter(entry => entry.mode === 'manual').map(entry => entry.side))];
-      ui.portControls[`${group}Select`].value = manual.length === 1 ? manual[0] : entries.some(entry => entry.mode === 'auto') ? 'auto' : 'default';
-      ui.portControls[`${group}Select`].disabled = this._layoutDraftNeedsRebind;
-    }
-    ui.valveLabel.hidden = !separated || !modelIds.valve;
-    ui.valveSelect.disabled = this._layoutDraftNeedsRebind;
-    ui.valveSelect.value = String(state.layout?.components?.valve?.rotation ?? 0);
-    const selected = ui.select.value;
-    ui.select.replaceChildren();
-    const german = sprache(this._config, this._hass) === 'de';
-    const labels = { tank: german ? 'Warmwasserspeicher' : 'Hot water tank', buffer: german ? 'Pufferspeicher' : 'Buffer tank',
-      fm: this._config.name_fm || 'FM', wp: this._config.name_wp || 'WP', valve: german ? 'Ventil' : 'Valve' };
-    for (const id of ids) { const option = document.createElement('option'); option.value = id; option.textContent = labels[id]; ui.select.appendChild(option); }
-    ui.select.value = ids.includes(selected) ? selected : ids[0] || '';
-    const p = this._layoutUIPosition();
-    for (const axis of ['x', 'y']) {
-      const input = ui.inputs[axis];
-      input.disabled = !p || this._layoutDraftNeedsRebind;
-      // A HA state update can arrive while the user is typing, before change
-      // fires. Leave that field alone until it is committed or cancelled.
-      if (!(preserveFocusedInput && p && this.shadowRoot?.activeElement === input)) input.value = p ? String(p[axis]) : '';
-    }
-    ui.undo.disabled = !state.canUndo; ui.redo.disabled = !state.canRedo; ui.apply.disabled = !['rendered-candidate','ready-candidate'].includes(checked.status);
-    ui.rebind.hidden = !this._layoutDraftNeedsRebind;
-    ui.unchecked = !['rendered-candidate','ready-candidate'].includes(checked.status);
-    const de = sprache(this._config, this._hass) === 'de';
-    const layout = state.layout;
-    const emptyDraft = layoutObject(layout) && layout.version === 2 &&
-      Object.keys(layout).every(key => ['version', 'components', 'ports'].includes(key)) &&
-      ['components', 'ports'].every(key => layout[key] === undefined || (layoutObject(layout[key]) && Object.keys(layout[key]).length === 0));
-    const neutralDefault = emptyDraft && ids.length > 0 && checked.status === 'unsupported' && checked.errors?.[0]?.code !== 'unsupported-configuration';
-    ui.status.textContent = checked.status === 'pending' ? (de ? 'Textprüfung läuft.' : 'Text validation is pending.')
-      : ['rendered-candidate','ready-candidate'].includes(checked.status) ? (de ? 'Entwurf geprüft' : 'Draft validated')
-      : checked.status === 'unbound' ? (de ? 'Die Konfiguration hat sich geändert. Entwurf für diese Karte bestätigen oder verwerfen.' : 'Configuration changed. Confirm this draft for this card or discard it.')
-      : (neutralDefault || checked.errors?.[0]?.code === 'unmoved-candidate') ? (de ? 'Komponente bewegen, um einen Entwurf zu prüfen.' : 'Move a component to validate the draft.')
-      : checked.errors?.[0]?.code === 'label-overflow' ? (de ? 'Ein aktueller Sensorwert passt nicht in die Vorschau.' : 'A current sensor value does not fit the preview.')
-      : ['body-collision', 'body-or-domestic-collision', 'domestic-collision'].includes(checked.errors?.[0]?.code) ? (de ? 'Geräte oder Trinkwasserleitungen überlappen. Bitte eine andere Position wählen.' : 'Devices or domestic water pipes overlap. Choose another position.')
-      : checked.errors?.[0]?.code === 'paired-port-side-conflict' ? (de ? 'Gekoppelte Anschlüsse müssen auf derselben Seite liegen.' : 'Paired ports must use the same side.')
-      : checked.errors?.[0]?.code === 'invalid-side' ? (de ? 'Diese Anschlussseite wird nicht unterstützt.' : 'This port side is not supported.')
-      : checked.errors?.[0]?.code === 'unknown-id' ? (de ? 'Ein gespeichertes Gerät oder ein Anschluss ist nicht verfügbar.' : 'A saved device or port is unavailable.')
-      : checked.errors?.[0]?.code === 'unsupported-version' ? (de ? 'Die gespeicherte Layout-Version wird nicht unterstützt.' : 'The saved layout version is not supported.')
-      : checked.status === 'invalid' ? (de ? 'Der Entwurf ist ungültig. Bitte Positionen oder Einstellungen prüfen.' : 'The draft is invalid. Check its positions or settings.')
-      : (de ? 'Diese Position oder Gerätekonfiguration wird noch nicht unterstützt.' : 'This position or equipment configuration is not supported yet.');
-    let html = checked.status === 'rendered-candidate' ? checked.html : '';
-    if (!html && this._hass && layoutObject(this._hass.states)) {
-      // An invalid draft never reaches the renderer; show the canonical card.
-      try { const card = new WarmwasserSchemaCard(); card.setConfig(this._config); card._hass = this._hass; html = card._render(); }
-      catch (_) { html = ''; }
-    }
-    let viewportRejected=false;
-    const viewport=this._layoutDrag ? this._layoutDrag.viewport : checked.viewport;
-    if (html && viewport) {
-      const wrapped=renderLayoutViewport(html,viewport);
-      if (wrapped) html=wrapped;
-      else {
-        cancelLayoutTextMeasurement(this);ui.apply.disabled=true;ui.unchecked=true;viewportRejected=true;
-        ui.status.textContent=de?'Dieser Viewport wird nicht unterstützt.':'This viewport is not supported.';
-        try {const card=new WarmwasserSchemaCard();card.setConfig(this._config);card._hass=this._hass;html=card._render();}
-        catch (_) {html='';}
-      }
-    }
-    const job=layoutTextMeasurementJobs.get(this),slot=ui.previewRoot.querySelector('[data-layout-viewport]'),reference=slot?.querySelector?.('svg');
-    const preserve=['pending','ready-candidate'].includes(checked.status) && job && job===previousJob && (job.pending || job.ready) &&
-      job.current?.(job.generation) && reference?.isConnected && reference.parentNode===slot && viewport &&
-      reference.getAttribute('viewBox')===viewport.viewBox &&
-      job.viewport?.viewBox===viewport.viewBox && !viewportRejected && !this._layoutDrag;
-    if (!preserve) {
-      if (job && job===previousJob) cancelLayoutTextMeasurement(this);
-      ui.previewRoot.innerHTML = html ? `<style>${CSS}</style>${html}` : '';
-    }
-    const svg = ui.previewRoot.querySelector('svg');
-    if (svg && !viewportRejected && this._layoutDrag?.viewBox) svg.setAttribute('viewBox', this._layoutDrag.viewBox);
-    this._positionLayoutOverlay();
-  }
-
   _build() {
-    cancelLayoutTextMeasurement(this);
-    this._endLayoutDrag(true);
-    this._layoutResizeObserver?.disconnect();
-    this._layoutResizeObserver = null;
     if (!this._config) return;
     const L = this._L();
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
     const root = this.shadowRoot;
-    this._layoutPanel = null;
     root.innerHTML = `<style>
       .sec{margin-top:18px}.kopf{display:flex;align-items:center;gap:8px;font-weight:500;margin-bottom:6px;color:var(--primary-text-color)}
       .item{border:1px solid var(--divider-color,#ddd);border-radius:10px;padding:8px 10px 4px;margin-bottom:8px}
@@ -7446,12 +2954,15 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button{font:inherit;cursor:pointer;border:1px solid var(--divider-color,#ccc);background:var(--card-background-color,#fff);color:var(--primary-text-color);border-radius:8px;padding:6px 12px}
       button.rm{border:none;background:none;color:var(--error-color,#db4437);padding:2px 6px}
       button.add{color:var(--primary-color)}
-      .layout-editor{margin-top:20px;border:1px solid var(--divider-color,#ddd);padding:12px;border-radius:10px}
-      .layout-controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.layout-controls input{width:6em;font:inherit}.layout-viewport{position:relative;width:100%;overflow:auto}.layout-preview{width:100%}.layout-drag-overlay{position:absolute;display:none;pointer-events:none}.layout-device-hit{position:absolute;pointer-events:auto;touch-action:none;cursor:grab}.layout-device-hit:active{cursor:grabbing}.layout-draft-marker{position:absolute;display:none;pointer-events:none;border:2px dashed var(--error-color,#c22);box-sizing:border-box;color:var(--error-color,#c22);font-size:12px;font-weight:bold}
+      button:disabled{opacity:.45;cursor:default}
+      .layout-editor{margin:0 0 16px;border:1px solid var(--divider-color,#ddd);border-radius:10px;padding:10px}
+      .layout-editor summary{cursor:pointer;font-weight:600}.layout-editor p{font-size:13px;color:var(--secondary-text-color)}
+      .layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-status{margin:8px 0;min-height:1.4em}.preview{user-select:none}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
-    this._layoutNoticeContainer = w; this._layoutNotice = null; this._removeLayoutButton = null;
-    this._refreshSavedLayoutNotice();
+    this._preview = null; this._layoutStatus = null;
+    // Hidden beta option; without it the editor is unchanged.
+    if (this._config.layout_editor_beta === true) this._layoutEditor(w);
     if (this._config.verteiler) {
       const note = document.createElement('p');
       note.textContent = sprache(this._config, this._hass) === 'de'
@@ -7472,10 +2983,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         const box = document.createElement('div');
         box.className = 'item';
         box.appendChild(this._form(li.schema, () => (this._config[li.key] || [])[i] || {}, (v) => {
-          const n = [...(this._config[li.key] || [])];
-          const fields = formFelder(li.schema);
-          const preserved = Object.fromEntries(Object.entries(n[i] || {}).filter(([key]) => !fields.has(key)));
-          n[i] = { ...preserved, ...v }; this._config = { ...this._config, [li.key]: n }; this._fire();
+          const n = [...(this._config[li.key] || [])]; n[i] = v; this._config = { ...this._config, [li.key]: n }; this._fire();
         }));
         const row = document.createElement('div');
         row.className = 'row';
@@ -7494,7 +3002,6 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       sec.appendChild(add);
       w.appendChild(sec);
     }
-    if (this._visualLayoutEditorEnabled()) this._buildLayoutUI(w);
   }
 }
 
