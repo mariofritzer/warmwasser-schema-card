@@ -2798,7 +2798,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       c.speicher = { ...(c.speicher || {}), ...(c.trennung === false ? { typ: 'schicht' } : { trennung: c.trennung }) };
       delete c.trennung;
     }
-    const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',') + `|${!!c.verteiler}`;
+    const struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(c[k]) ? c[k].length : 0)).join(',') + `|${!!c.verteiler}|${c.layout_editor_beta === true}`;
     this._config = c;
     if (this._forms && struktur === this._struktur) { this._sync(); this._ventilFelder(); }
     else { this._struktur = struktur; this._build(); }
@@ -3092,7 +3092,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _setList(key, arr) {
     this._config = { ...this._config, [key]: arr };
-    this._struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(this._config[k]) ? this._config[k].length : 0)).join(',') + `|${!!this._config.verteiler}`;
+    this._struktur = ['fuehler', 'heizkreise', 'energie'].map((k) => (Array.isArray(this._config[k]) ? this._config[k].length : 0)).join(',') + `|${!!this._config.verteiler}|${this._config.layout_editor_beta === true}`;
   }
 
   _build() {

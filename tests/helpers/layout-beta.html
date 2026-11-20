@@ -94,6 +94,8 @@
       check('unsupported configuration offers no component', editor._componentSelect.options.length === 1);
       install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 1, fm: { x: 40, y: 60 } } });
       check('without beta option layout is ignored', card._layoutResult === null && !editor._preview);
+      editor.setConfig({ ...config, layout_editor_beta: true });
+      check('enabling the option in YAML shows the editor section', !!editor._preview);
       document.getElementById('result').textContent = 'RESULT ' + out.join(' | ');
     }
     if (new URLSearchParams(location.search).has('selftest')) setTimeout(() => selftest().catch((e) => { document.getElementById('result').textContent = 'RESULT ERROR ' + e.stack; }), 300);
