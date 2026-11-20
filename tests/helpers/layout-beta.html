@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Layout-Editor (Beta) – lokale Testseite</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; background: #1c1c1c; color: #e1e1e1;
+      --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: #444;
+      --card-background-color: #232323; --secondary-background-color: #2a2d33; --primary-color: #03a9f4; }
+    main { display: grid; grid-template-columns: minmax(320px, 520px) minmax(320px, 520px); gap: 16px; align-items: start; }
+    pre { white-space: pre-wrap; font-size: 12px; background: #111; padding: 8px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <!-- Opens the hidden beta editor with mocked Home Assistant data. Drag the
+       components in the editor preview with the mouse; the card on the right
+       receives each emitted configuration like Home Assistant would.
+       `?selftest=1` runs automated pointer checks and prints RESULT. -->
+  <h1>Layout-Editor (Beta)</h1>
+  <p><button id="split">Getrennte Speicher + FM</button> <button id="single">Schichtspeicher + FM</button> <button id="wp">Mit Wärmepumpe (nicht unterstützt)</button></p>
+  <main><div id="editor"></div><div><div id="card"></div><pre id="config"></pre></div></main>
+  <pre id="result"></pre>
+  <script>window.onerror = (m, f, l, c, e) => { document.getElementById('result').textContent += 'RESULT ONERROR ' + m + ' ' + l + ':' + c + ' ' + (e && e.stack); };</script>
+  <script src="../../warmwasser-schema-card.js"></script>
+  <script>
+    const hass = { language: 'de', states: {
+      'sensor.fm_temp': { state: '40.3' }, 'binary_sensor.fm': { state: 'on' }, 'sensor.ww': { state: '42.8' },
+      'sensor.top': { state: '40.5' }, 'sensor.bottom': { state: '36.5' }, 'sensor.wp': { state: '1200' } } };
+    const base = (typ, extra = {}) => ({ type: 'custom:warmwasser-schema-card', titel: 'Editor-Test', sprache: 'de', hersteller: 'M-TEC',
+      speicher: { typ }, fm: { temp: 'sensor.fm_temp', pumpe: 'binary_sensor.fm' }, layout_editor_beta: true,
+      fuehler: [{ name: 'Warmwasser', entity: 'sensor.ww', hoehe: 20 }, { name: 'Puffer oben', entity: 'sensor.top', hoehe: 68 }, { name: 'Puffer unten', entity: 'sensor.bottom', hoehe: 90 }], ...extra });
+    let editor, card, config;
+    function install(next) {
+      config = JSON.parse(JSON.stringify(next));
+      editor = document.createElement('warmwasser-schema-card-editor');
+      card = document.createElement('warmwasser-schema-card');
+      document.getElementById('editor').replaceChildren(editor);
+      document.getElementById('card').replaceChildren(card);
+      editor.addEventListener('config-changed', (ev) => {
+        config = ev.detail.config;
+        document.getElementById('config').textContent = JSON.stringify(config.layout || null, null, 1);
+        card.setConfig(config); editor.setConfig(config);   // synchronous HA echo
+      });
+      editor.setConfig(config); editor.hass = hass;
+      card.setConfig(config); card.hass = hass;
+    }
+    document.getElementById('split').onclick = () => install(base('getrennt'));
+    document.getElementById('single').onclick = () => install(base('schicht'));
+    document.getElementById('wp').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
+    install(base('getrennt', new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":2,"components":{"fm":{"x":380,"y":74},"buffer-tank":{"x":222,"y":203}}}') } : {}));
+
+    // Synthetic mouse drag in SVG units, relative to the component's centre.
+    async function drag(id, dx, dy) {
+      const preview = editor._preview, svg = preview.shadowRoot.querySelector('svg'), m = svg.getScreenCTM();
+      const b = preview._drawnModel.components[id];
+      const sx = b.origin.x + b.bounds.width / 2, sy = b.origin.y + b.bounds.height / 2;
+      const at = (x, y) => new DOMPoint(x, y).matrixTransform(m);
+      const fire = (type, p) => preview.dispatchEvent(new PointerEvent(type, { bubbles: true, composed: true, pointerId: 7, button: 0, isPrimary: true, clientX: p.x, clientY: p.y }));
+      fire('pointerdown', at(sx, sy));
+      for (let i = 1; i <= 10; i++) { fire('pointermove', at(sx + dx * i / 10, sy + dy * i / 10)); await new Promise((r) => setTimeout(r, 30)); }
+      fire('pointerup', at(sx + dx, sy + dy));
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    async function selftest() {
+      const out = [], check = (name, ok, detail = '') => { out.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' ' + detail : ''}`); document.getElementById('result').textContent = 'PROGRESS ' + out.join(' | '); };
+      install(base('getrennt'));
+      const fm = () => config.layout?.components?.fm, layout = () => JSON.stringify(config.layout ?? null);
+      await drag('fm', 40, 60);   // canonical origin (340,14)
+      check('drag fm emits a V2 layout', config.layout?.version === 2 && fm()?.x === 380 && fm()?.y === 74, layout());
+      check('card draws layout', card._layoutResult?.status === 'applied', JSON.stringify(card._layoutResult));
+      check('legend follows fm', card.shadowRoot.innerHTML.includes('x="445" y="182"'));
+      const beforeBuffer = layout();
+      await drag('buffer-tank', 150, 0);
+      check('drag buffer emits layout', config.layout?.components?.['buffer-tank']?.x === 222, layout());
+      const before = layout();
+      // The target (x 50) overlaps the hot-water tank. Intermediate steps may
+      // be valid depending on the window size, so only the end state is fixed.
+      await drag('fm', -330, 0);
+      const afterInvalid = layout(), moved = afterInvalid !== before;
+      check('invalid target keeps the last valid layout', card._layoutResult?.status === 'applied' && fm()?.x !== 50, afterInvalid);
+      editor._undoButton.click();
+      check('undo restores previous layout', layout() === (moved ? before : beforeBuffer), layout());
+      editor._redoButton.click();
+      check('redo reapplies layout', layout() === (moved ? afterInvalid : before), layout());
+      editor._selected = 'fm'; const x0 = fm()?.x ?? 340; editor._moveButtons[1].click();
+      check('arrow moves selected component by 5', fm()?.x === x0 + 5, layout());
+      editor._resetButton.click();
+      check('reset removes layout', config.layout === undefined && card._layoutResult === null, layout());
+      install(base('getrennt'));
+      const zoomIn = editor.shadowRoot.querySelector('[data-cmd="zoom-in"]');
+      zoomIn.click(); zoomIn.click();
+      check('zoom enlarges the preview only', editor._preview.style.width === '150%' && card.style.width === '');
+      await drag('fm', 40, 60);
+      check('drag while zoomed keeps SVG units', fm()?.x === 380 && fm()?.y === 74, layout());
+      editor.shadowRoot.querySelector('[data-cmd="zoom-reset"]').click();
+      check('zoom reset', editor._preview.style.width === '100%');
+      install(base('getrennt', { layout: { version: 1, fm: { x: 40, y: 60 } } }));
+      check('a V1 layout shows the standard diagram with a notice', card._layoutResult?.code === 'legacy-version' && /Version 1/.test(editor._layoutStatus.textContent));
+      await drag('fm', 40, 60);
+      check('moving replaces a V1 layout with V2', config.layout?.version === 2 && fm()?.x === 380, layout());
+      install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
+      check('unsupported configuration offers no component', editor._componentSelect.options.length === 1);
+      install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 2, components: { fm: { x: 380, y: 74 } } } });
+      check('without beta option layout is ignored', card._layoutResult === null && !editor._preview);
+      editor.setConfig({ ...config, layout_editor_beta: true });
+      check('enabling the option in YAML shows the editor section', !!editor._preview);
+      document.getElementById('result').textContent = 'RESULT ' + out.join(' | ');
+    }
+    if (new URLSearchParams(location.search).has('selftest')) setTimeout(() => selftest().catch((e) => { document.getElementById('result').textContent = 'RESULT ERROR ' + e.stack; }), 300);
+  </script>
+</body>
+</html>
