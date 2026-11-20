@@ -2886,6 +2886,13 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     if (!this._preview || !this._hass) return;
     this._preview.setConfig(config);
     this._preview.hass = this._hass;
+    // A zoomed preview may exceed the card's maximum diagram height.
+    const root = this._preview.shadowRoot;
+    if (root && !root.querySelector('style[data-layout-preview]')) {
+      const style = document.createElement('style');
+      style.dataset.layoutPreview = ''; style.textContent = 'svg{max-height:none}';
+      root.appendChild(style);
+    }
     this._layoutControls();
   }
   // Commit a validated layout; an invalid one keeps the last valid position.
@@ -2968,6 +2975,9 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     box.className = 'layout-editor'; box.open = true;
     box.innerHTML = `<summary>${de ? 'Anlagenbild anordnen (Beta)' : 'Arrange diagram (beta)'}</summary>` +
       `<p>${de ? 'Bauteile mit der Maus ziehen oder auswählen und mit den Pfeilen verschieben (5er-Raster). Leitungen werden automatisch geführt.' : 'Drag components with the mouse, or select them and use the arrows (5-unit grid). Pipes are routed automatically.'}</p>` +
+      `<div class="layout-zoom"><button type="button" data-cmd="zoom-out" aria-label="${de ? 'Verkleinern' : 'Zoom out'}">−</button>` +
+      `<button type="button" data-cmd="zoom-reset" class="zoom-level" aria-label="${de ? 'Zoom zurücksetzen' : 'Reset zoom'}"></button>` +
+      `<button type="button" data-cmd="zoom-in" aria-label="${de ? 'Vergrößern' : 'Zoom in'}">+</button></div>` +
       `<div class="preview"></div><label>${de ? 'Komponente' : 'Component'} <select class="component-select"></select></label><div class="layout-status" role="status" aria-live="polite"></div>` +
       `<div class="layout-buttons"><button type="button" data-cmd="left" aria-label="${de ? 'Nach links' : 'Move left'}">←</button><button type="button" data-cmd="right" aria-label="${de ? 'Nach rechts' : 'Move right'}">→</button>` +
       `<button type="button" data-cmd="up" aria-label="${de ? 'Nach oben' : 'Move up'}">↑</button><button type="button" data-cmd="down" aria-label="${de ? 'Nach unten' : 'Move down'}">↓</button>` +
@@ -2983,9 +2993,31 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._undoButton = box.querySelector('[data-cmd="undo"]');
     this._redoButton = box.querySelector('[data-cmd="redo"]');
     this._resetButton = box.querySelector('[data-cmd="reset"]');
+    // Zoom applies to the editor preview only; the card is unchanged.
+    const zooms = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+    this._zoom ||= 1;
+    const zoomLevel = box.querySelector('.zoom-level');
+    const applyZoom = () => {
+      this._preview.style.width = `${this._zoom * 100}%`;
+      zoomLevel.textContent = `${Math.round(this._zoom * 100)} %`;
+      box.querySelector('[data-cmd="zoom-out"]').disabled = this._zoom <= zooms[0];
+      box.querySelector('[data-cmd="zoom-in"]').disabled = this._zoom >= zooms.at(-1);
+    };
+    applyZoom();
     box.addEventListener('click', (ev) => {
       const cmd = ev.target.closest?.('button')?.dataset.cmd;
       if (!cmd) return;
+      if (cmd.startsWith('zoom-')) {
+        const i = zooms.indexOf(this._zoom), scroller = box.querySelector('.preview');
+        const cx = (scroller.scrollLeft + scroller.clientWidth / 2) / scroller.scrollWidth, cy = (scroller.scrollTop + scroller.clientHeight / 2) / scroller.scrollHeight;
+        this._zoom = cmd === 'zoom-reset' ? 1 : zooms[Math.max(0, Math.min(zooms.length - 1, i + (cmd === 'zoom-in' ? 1 : -1)))];
+        applyZoom();
+        // Keep the visible centre in place.
+        scroller.scrollLeft = cx * scroller.scrollWidth - scroller.clientWidth / 2;
+        scroller.scrollTop = cy * scroller.scrollHeight - scroller.clientHeight / 2;
+        this._layoutHighlight();
+        return;
+      }
       const step = { left: [-5, 0], right: [5, 0], up: [0, -5], down: [0, 5] }[cmd];
       if (step && this._selected) {
         const p = this._layoutCurrent(this._selected);
@@ -3078,7 +3110,9 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button:disabled{opacity:.45;cursor:default}
       .layout-editor{margin:0 0 16px;border:1px solid var(--divider-color,#ddd);border-radius:10px;padding:10px}
       .layout-editor summary{cursor:pointer;font-weight:600}.layout-editor p{font-size:13px;color:var(--secondary-text-color)}
-      .layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-status{margin:8px 0;min-height:1.4em}.preview{user-select:none}
+      .layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-status{margin:8px 0;min-height:1.4em}
+      .preview{user-select:none;overflow:auto;max-height:70vh;border-radius:8px}.preview>*{display:block;min-width:0}
+      .layout-zoom{display:flex;gap:6px;justify-content:flex-end;margin-bottom:6px}.layout-zoom button{padding:4px 10px;min-width:36px}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
     this._preview = null; this._layoutStatus = null;

@@ -82,6 +82,14 @@
       check('arrow moves selected component by 5', config.layout?.fm?.x === 45, JSON.stringify(config.layout));
       editor._resetButton.click();
       check('reset removes layout', config.layout === undefined && card._layoutResult === null, JSON.stringify(config.layout));
+      install(base('getrennt'));
+      const zoomIn = editor.shadowRoot.querySelector('[data-cmd="zoom-in"]');
+      zoomIn.click(); zoomIn.click();
+      check('zoom enlarges the preview only', editor._preview.style.width === '150%' && card.style.width === '');
+      await drag('fm', 40, 60);
+      check('drag while zoomed keeps SVG units', config.layout?.fm?.x === 40 && config.layout?.fm?.y === 60, JSON.stringify(config.layout));
+      editor.shadowRoot.querySelector('[data-cmd="zoom-reset"]').click();
+      check('zoom reset', editor._preview.style.width === '100%');
       install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
       check('unsupported configuration offers no component', editor._componentSelect.options.length === 1);
       install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 1, fm: { x: 40, y: 60 } } });

@@ -15,6 +15,8 @@ layout_editor_beta: true
 Im Karteneditor erscheint dann der Bereich **Anlagenbild anordnen (Beta)**. Bauteile
 werden in der Vorschau mit der Maus gezogen oder ausgewählt und mit den Pfeilen im
 5er-Raster verschoben. Rückgängig, Wiederholen und Zurücksetzen stehen zur Verfügung.
+Mit − und + lässt sich die Vorschau zwischen 50 % und 300 % zoomen; die Karte selbst
+bleibt unverändert.
 Die Leitungen zwischen Speicher und Frischwassermodul werden automatisch geführt.
 Eine Position wird nur übernommen, wenn sich keine Bauteile überlappen und ein freier
 Rohrweg existiert; beim Ziehen bleibt das Bauteil sonst an der letzten gültigen
@@ -57,7 +59,8 @@ layout_editor_beta: true
 
 The card editor then shows **Arrange diagram (beta)**. Drag components in the
 preview with the mouse, or select them and use the arrows on a 5-unit grid. Undo,
-redo and reset are available. Pipes between the tanks and the fresh water module are
+redo and reset are available.
+Use − and + to zoom the preview between 50 % and 300 %; the card itself is unchanged. Pipes between the tanks and the fresh water module are
 routed automatically. A position is only accepted when no components overlap and a
 clear pipe route exists; while dragging, the component otherwise stays at its last
 valid position.
