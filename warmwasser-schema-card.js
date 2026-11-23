@@ -772,23 +772,38 @@ function layoutCollision(c, model) {
   for (const [id, b] of Object.entries(model.components)) {
     if (b.boundary) continue;
     const group = groupOf(id);
-    boxes.push({ group, x: b.origin.x + b.bounds.x, y: b.origin.y + b.bounds.y, width: b.bounds.width, height: b.bounds.height });
-    for (const p of Object.values(b.ports)) if (p.stub) boxes.push({ group, x: b.origin.x + p.stub.x, y: b.origin.y + p.stub.y, width: p.stub.width, height: p.stub.height });
+    boxes.push({ group, id, x: b.origin.x + b.bounds.x, y: b.origin.y + b.bounds.y, width: b.bounds.width, height: b.bounds.height });
+    for (const p of Object.values(b.ports)) if (p.stub) boxes.push({ group, id, x: b.origin.x + p.stub.x, y: b.origin.y + p.stub.y, width: p.stub.width, height: p.stub.height });
   }
   const fm = model.components.fm, boundary = model.components['domestic-boundary'];
   if (fm && boundary) {
     const bx = boundary.origin.x, by = boundary.origin.y, bw = boundary.bounds.width;
     // Domestic labels and the vertical domestic pipes above the module.
-    boxes.push({ group: 'fm', x: bx - 60, y: by - 4, width: bw + 120, height: 20 });
-    boxes.push({ group: 'fm', x: bx - 5, y: by, width: 10, height: fm.origin.y - by });
-    boxes.push({ group: 'fm', x: bx + bw - 5, y: by, width: 10, height: fm.origin.y - by });
+    boxes.push({ group: 'fm', id: 'domestic', x: bx - 60, y: by - 4, width: bw + 120, height: 20 });
+    boxes.push({ group: 'fm', id: 'domestic', x: bx - 5, y: by, width: 10, height: fm.origin.y - by });
+    boxes.push({ group: 'fm', id: 'domestic', x: bx + bw - 5, y: by, width: 10, height: fm.origin.y - by });
   }
   if (fm && c.fuehler.length) {
     const d = model.legendOffset || { x: 0, y: 0 };
-    boxes.push({ group: 'fm', x: 362 + d.x, y: 112 + d.y, width: 88, height: 24 });
+    boxes.push({ group: 'fm', id: 'legend', x: 362 + d.x, y: 112 + d.y, width: 88, height: 24 });
   }
-  return boxes.some((a, i) => boxes.slice(i + 1).some((b) => a.group !== b.group &&
-    a.x < b.x + b.width + margin && b.x < a.x + a.width + margin && a.y < b.y + b.height + margin && b.y < a.y + a.height + margin));
+  // The first overlapping pair, as { a, b } with box ids and groups; null if clear.
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const a = boxes[i], b = boxes[j];
+    if (a.group !== b.group && a.x < b.x + b.width + margin && b.x < a.x + a.width + margin && a.y < b.y + b.height + margin && b.y < a.y + a.height + margin)
+      return { a: { id: a.id, group: a.group }, b: { id: b.id, group: b.group } };
+  }
+  return null;
+}
+// Readable name of a collision box, e.g. "Fühlerplatte am Pufferspeicher".
+function layoutPartName(part, de) {
+  const names = LAYOUT_LABELS[de ? 'de' : 'en'], owner = names[part.group] || part.group;
+  if (part.id.startsWith('sensor-')) return de ? `Fühlerplatte am ${owner}` : `sensor plate of the ${owner.toLowerCase()}`;
+  if (/-heater$/.test(part.id)) return de ? `Heizstab im ${owner}` : `heater of the ${owner.toLowerCase()}`;
+  if (part.id === 'tank-feet') return de ? `Füße am ${owner}` : `feet of the ${owner.toLowerCase()}`;
+  if (part.id === 'legend') return de ? 'Temperaturlegende' : 'temperature legend';
+  if (part.id === 'domestic') return de ? 'Trinkwasser-Anschlüsse' : 'domestic water connections';
+  return owner;
 }
 // Content bounds of a moved layout: components, domestic labels, legend and pipes.
 function layoutViewBox(model, routes, legend) {
@@ -820,11 +835,12 @@ function layoutDiagramModel(c) {
   // Ports in `auto` take the sides facing their partner. The other variant is
   // only tried when module and tank overlap horizontally (no clear facing
   // side) or the facing sides fail; the shorter routed variant wins.
-  let best = null, failure = null;
+  let best = null, failure = null, detail = null;
   // With a heat pump the router requires the complete primary batch.
   const routingIds = ['fm-supply', 'fm-return', ...(c.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
   const evaluate = (model) => {
-    if (layoutCollision(c, model)) { failure ??= 'collision'; return; }
+    const overlap = layoutCollision(c, model);
+    if (overlap) { if (!failure) { failure = 'collision'; detail = overlap; } return; }
     const routes = routeDiagramConnections(model, routingIds);
     const bad = Object.values(routes).find((r) => r.status !== 'routed');
     if (bad) { failure ??= bad.code || bad.reason; return; }
@@ -843,7 +859,7 @@ function layoutDiagramModel(c) {
   if (fmFlip) evaluate(layoutVariant(c, parsed, { fm: !preferred.fmLeft }));
   if (wpFlip) evaluate(layoutVariant(c, parsed, { wp: !preferred.wpLeft }));
   if (fmFlip && wpFlip) evaluate(layoutVariant(c, parsed, { fm: !preferred.fmLeft, wp: !preferred.wpLeft }));
-  return best ? { status: 'applied', model: best.model } : { status: 'unsupported', code: failure };
+  return best ? { status: 'applied', model: best.model } : { status: 'unsupported', code: failure, ...(detail ? { detail } : {}) };
 }
 // One candidate model. Without a choice in `flip`, auto ports face their
 // partner: fm and tank fm ports each other, heat pump and tank heat-pump
@@ -851,6 +867,17 @@ function layoutDiagramModel(c) {
 function layoutVariant(c, parsed, flip) {
   const model = diagramModel(c);
   for (const [id, p] of Object.entries(parsed.components)) Object.assign(model.components[id].origin, p);
+  // Without its own position the valve stays between heat pump and tanks: it
+  // follows the heat pump horizontally to its tank-facing side and stays at the
+  // height of the tank returns it connects.
+  const pump = model.components.wp, valve = model.components.valve;
+  if (pump && valve && parsed.components.wp && !parsed.components.valve) {
+    const tank = model.components[c.typ === 'getrennt' ? 'hot-tank' : 'tank'];
+    const gap = pump.baseOrigin.x - (valve.baseOrigin.x + valve.bounds.width);
+    const left = pump.origin.x + pump.bounds.width / 2 < tank.origin.x + tank.bounds.width / 2;
+    valve.origin.x = left ? pump.origin.x + pump.bounds.width + gap : pump.origin.x - gap - valve.bounds.width;
+    valve.origin.y = valve.baseOrigin.y + tank.origin.y - tank.baseOrigin.y;
+  }
   model.layoutRouting = true;
   const split = c.typ === 'getrennt', fm = model.components.fm, hot = model.components[split ? 'hot-tank' : 'tank'];
   const center = (b) => b.origin.x + b.bounds.width / 2, fmCenter = center(fm), wp = model.components.wp;
@@ -2648,7 +2675,7 @@ class WarmwasserSchemaCard extends HTMLElement {
   // with a short notice. The result is kept for the editor (_layoutResult).
   _renderWithLayout() {
     const state = this._layout;
-    this._layoutResult = state ? { status: state.status, code: state.code || null } : null;
+    this._layoutResult = state ? { status: state.status, code: state.code || null, ...(state.detail ? { detail: state.detail } : {}) } : null;
     this._drawnModel = this._baseModel;
     if (state?.status === 'applied') {
       this._model = state.model;
@@ -3045,7 +3072,12 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
   _layoutBase(id) { return this._preview?._baseModel?.components[id]?.baseOrigin || null; }
   _layoutOrigin(id) {
     const base = this._layoutBase(id), layout = this._config.layout, v = layout?.version === 2 && layoutObject(layout.components) ? layout.components[id] : null;
-    return !base ? null : layoutObject(v) && isNum(v.x) && isNum(v.y) ? { x: Math.round(Number(v.x)), y: Math.round(Number(v.y)) } : { ...base };
+    if (!base) return null;
+    if (layoutObject(v) && isNum(v.x) && isNum(v.y)) return { x: Math.round(Number(v.x)), y: Math.round(Number(v.y)) };
+    // A component without its own entry may still be placed by the layout
+    // (the valve follows the heat pump); start from where it is drawn.
+    const drawn = this._preview?._drawnModel?.components[id]?.origin;
+    return drawn ? { x: drawn.x, y: drawn.y } : { ...base };
   }
   _layoutWith(key, x, y) {
     const layout = this._config.layout, current = layout?.version === 2 && layoutObject(layout) ? layout : {};
@@ -3084,7 +3116,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     const result = this._layoutProbe(this._layoutConfig(layout));
     if (layout && result.status !== 'applied' && result.status !== 'none') {
       this._layoutPreview();
-      this._layoutMessage(this._layoutReason(result.code));
+      this._layoutMessage(this._layoutReason(result.code, result.detail));
       return false;
     }
     if (record) { this._undo.push(this._config.layout ? JSON.parse(JSON.stringify(this._config.layout)) : null); this._redo.length = 0; }
@@ -3093,8 +3125,13 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._fire();
     return true;
   }
-  _layoutReason(code) {
+  _layoutReason(code, detail) {
     const de = this._layoutDe();
+    // Name the overlapping parts when known, e.g. a sensor plate and the valve.
+    if (code === 'collision' && detail?.a && detail?.b) {
+      const a = layoutPartName(detail.a, de), b = layoutPartName(detail.b, de);
+      return de ? `${a[0].toUpperCase()}${a.slice(1)} überlappt ${b}. Letzte gültige Position bleibt.` : `${a[0].toUpperCase()}${a.slice(1)} overlaps the ${b.toLowerCase()}. The last valid position is kept.`;
+    }
     return code === 'collision' ? (de ? 'Bauteile würden sich überlappen. Letzte gültige Position bleibt.' : 'Components would overlap. The last valid position is kept.')
       : code === 'label-overflow' ? (de ? 'Ein Anzeigewert ist für diese Anordnung zu lang.' : 'A displayed value is too long for this arrangement.')
       : ['collision', 'label-overflow', 'unsupported-configuration'].includes(code) || !LAYOUT_NOTICE_CODES.includes(code) ? (de ? 'Kein freier Rohrweg gefunden. Letzte gültige Position bleibt.' : 'No clear pipe route found. The last valid position is kept.')
@@ -3170,7 +3207,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._resetButton.disabled = !this._config.layout;
     this._layoutStatus.textContent = !keys.length
       ? (de ? 'Für diese Anlagenkonfiguration ist das Verschieben noch nicht verfügbar.' : 'Moving is not yet available for this system configuration.')
-      : probe.result && !['applied', 'none'].includes(probe.result.status) ? this._layoutReason(probe.result.code)
+      : probe.result && !['applied', 'none'].includes(probe.result.status) ? this._layoutReason(probe.result.code, probe.result.detail)
       : this._selected ? (() => { const o = this._layoutOrigin(layoutComponentIds(this._preview._cfg, this._selected)[0]); return `${select.selectedOptions[0]?.textContent}: x ${o.x}, y ${o.y}`; })()
       : (de ? 'Bauteil in der Vorschau ziehen oder auswählen.' : 'Drag a component in the preview or select it.');
     this._layoutHighlight();
@@ -3293,7 +3330,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
         this._layoutPreview(this._layoutConfig(this._layoutWith(key, x, y)));
         const result = this._preview._layoutResult;
         if (!result || result.status === 'applied' || result.status === 'none') last = { x, y };
-        else { this._layoutPreview(this._layoutConfig(this._layoutWith(key, last.x, last.y))); this._layoutMessage(this._layoutReason(result.code)); }
+        else { this._layoutPreview(this._layoutConfig(this._layoutWith(key, last.x, last.y))); this._layoutMessage(this._layoutReason(result.code, result.detail)); }
       };
       const move = (e) => { if (e.pointerId !== pointer) return; pending = { x: e.clientX, y: e.clientY }; if (frame === null) frame = requestAnimationFrame(paint); };
       const finish = (e, commit) => {

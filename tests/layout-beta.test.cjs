@@ -71,7 +71,10 @@ test('a single tank moves by its model id', () => {
 test('overlapping components fall back to the standard diagram with a notice', () => {
   const standard = render(config()).html;
   const { card, html } = render(config(at({ fm: { x: 40, y: 74 } })));
-  assert.deepEqual(plain(card._layoutResult), { status: 'unsupported', code: 'collision' });
+  assert.equal(card._layoutResult.status, 'unsupported');
+  assert.equal(card._layoutResult.code, 'collision');
+  // The overlapping parts are named for the editor message.
+  assert.deepEqual(plain(card._layoutResult.detail.a.group === 'fm' ? card._layoutResult.detail.b : card._layoutResult.detail.a).group, 'hot-tank');
   assert.ok(html.startsWith(standard));
   assert.match(html, /class="layout-note"/);
 });
@@ -236,4 +239,25 @@ test('pipes keep clear of the heater terminal box', () => {
     const hit = Math.max(a.x, b.x) >= box.x - 5 && Math.min(a.x, b.x) <= box.x + box.width + 5 && Math.max(a.y, b.y) >= box.y - 5 && Math.min(a.y, b.y) <= box.y + box.height + 5;
     assert.ok(!hit, `segment ${JSON.stringify([a, b])} touches the heater terminal`);
   }
+});
+
+test('without its own position the valve follows the heat pump to the tank-facing side', () => {
+  const left = render(withWp({ wp: { x: -260, y: 150 } }));
+  assert.equal(left.card._layoutResult.status, 'applied');
+  const m = left.card._drawnModel, pump = m.components.wp, valve = m.components.valve;
+  assert.ok(valve.origin.x > pump.origin.x + pump.bounds.width, 'valve right of a heat pump on the left');
+  assert.equal(valve.origin.y, valve.baseOrigin.y);
+  assert.equal(valve.ports.wp.side, 'left');
+  // An explicit valve position wins.
+  const fixed = render(withWp({ wp: { x: 450, y: 270 }, valve: { x: 228, y: 428 } }));
+  assert.deepEqual(plain(fixed.card._drawnModel.components.valve.origin), { x: 228, y: 428 });
+});
+
+test('a collision names the overlapping parts', () => {
+  // Heat pump left of the buffer with the valve pinned right: the buffer's
+  // sensor plates move right onto the valve.
+  const { card } = render(withWp({ wp: { x: -200, y: 200 }, valve: { x: 228, y: 268 } }));
+  assert.equal(card._layoutResult.code, 'collision');
+  const parts = [card._layoutResult.detail.a, card._layoutResult.detail.b].map((p) => p.id).sort();
+  assert.deepEqual(plain(parts), ['sensor-1', 'valve']);
 });
