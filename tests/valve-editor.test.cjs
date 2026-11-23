@@ -36,3 +36,39 @@ test('valve fields have German and English labels', () => {
     for (const name of ['ventil_oben', 'ventil_unten', 'ventil_invertieren']) assert.ok(L[name] && L[name] !== name, `${language} ${name}`);
   }
 });
+
+test('the valve position is offered before the valve entity, the returns only with the valve in the supply', () => {
+  const standard = wpFields({ wp: { leistung: 'sensor.p' } });
+  assert.ok(standard.indexOf('ventil_position') > -1 && standard.indexOf('ventil_position') < standard.indexOf('ventil'));
+  assert.ok(!standard.includes('ruecklauf_anbindung'));
+  const supply = wpFields({ wp: { leistung: 'sensor.p', ventil_position: 'vorlauf' } });
+  assert.ok(supply.indexOf('ventil_position') < supply.indexOf('ruecklauf_anbindung') && supply.indexOf('ruecklauf_anbindung') < supply.indexOf('ventil'));
+});
+
+test('the editor updates its valve fields when the valve position changes', () => {
+  const e = new Editor();
+  e._config = { wp: { leistung: 'sensor.p' } };
+  e._hass = { language: 'de' };
+  e._ventilSichtbar = `${e._hatVentil()}|false`;
+  let schemas = 0;
+  e._mainForm = { set schema(value) { schemas++; } };
+  e._ventilFelder();
+  assert.equal(schemas, 0);
+  e._config = { wp: { leistung: 'sensor.p', ventil_position: 'vorlauf' } };
+  e._ventilFelder();
+  assert.equal(schemas, 1);
+});
+
+test('valve position fields have German and English labels and options', () => {
+  for (const language of ['de', 'en']) {
+    const e = new Editor();
+    e._config = { sprache: language };
+    e._hass = { language };
+    for (const name of ['ventil_position', 'ruecklauf_anbindung']) {
+      assert.ok(e._L()[name] && e._L()[name] !== name, `${language} label ${name}`);
+      assert.ok(e._O()[name].length === 2, `${language} options ${name}`);
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(e._O().ventil_position.map(([value]) => value))), ['ruecklauf', 'vorlauf']);
+    assert.deepEqual(JSON.parse(JSON.stringify(e._O().ruecklauf_anbindung.map(([value]) => value))), ['gemeinsam', 'getrennt']);
+  }
+});

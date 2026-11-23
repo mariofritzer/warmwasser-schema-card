@@ -134,6 +134,8 @@ A complete, commented example is in [`beispiel.yaml`](https://github.com/mariofr
 | `betrieb` | Alternative: entity that is `on` while running |
 | `vorlauf`, `ruecklauf` | Flow / return temperature |
 | `waerme`, `wmz`, `cop` | Heat output, heat meter (kWh), COP |
+| `ventil_position` | Where the diverter valve sits: `ruecklauf` (return; default, keeps the previous diagram) or `vorlauf` (supply). With the valve in the supply, the heat pump feeds the valve, which charges the hot-water tank or the buffer; the tank returns lead back to the heat pump. Not yet supported together with heating circuits or `wmz`. |
+| `ruecklauf_anbindung` | With `ventil_position: vorlauf`: `gemeinsam` (combined, default) joins both tank returns in front of the heat pump, `getrennt` (separate) gives each return its own heat pump connection. |
 | `ventil` | Diverter valve: `on`/`off`, 0–100, or text containing e.g. “Warmwasser/DHW” or “Heizung/heating”. Without it, both zones are shown as charging. |
 | `ventil_oben`, `ventil_unten` | Your own `ventil` values for hot water (upper) and heating (lower), e.g. `Charge A` / `Charge B`. Separate several values with commas, case-insensitive. They take precedence over automatic detection. |
 | `ventil_invertieren` | `true` inverts how `ventil` is read, e.g. if the valve reports `on` while charging heating instead of hot water. Default: `false` |
