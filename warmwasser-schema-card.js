@@ -10,7 +10,7 @@
  * Install: copy to /config/www/, add resource /local/warmwasser-schema-card.js (JavaScript module)
  */
 
-const VERSION = '3.1.0';
+const VERSION = '3.2.0';
 
 /* ---------- Texte / Texts ---------- */
 const T = {
