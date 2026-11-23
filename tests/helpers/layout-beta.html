@@ -103,6 +103,24 @@
       install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
       await drag('wp', 120, 120);   // canonical origin (330,150)
       check('drag heat pump routes all pipes', config.layout?.components?.wp?.x === 450 && config.layout.components.wp.y === 270 && card._layoutResult?.status === 'applied', layout());
+      // Port sides: Auto shows the resolved side; a manual side is stored per port.
+      const portSelect = () => editor._portControls.querySelector('select');
+      editor._selected = 'wp'; editor._layoutControls();
+      check('heat pump offers one port group', editor._portControls.querySelectorAll('select').length === 1 && portSelect().value === 'auto' && /Auto \(links\)/.test(portSelect().options[0].textContent));
+      portSelect().value = 'right'; portSelect().dispatchEvent(new Event('change'));
+      check('manual right side is saved for both ports', config.layout?.ports?.['wp.lower-supply']?.side === 'right' && config.layout?.ports?.['wp.return']?.side === 'right' && card._layoutResult?.status === 'applied', layout());
+      portSelect().value = 'auto'; portSelect().dispatchEvent(new Event('change'));
+      check('auto removes the manual sides', !config.layout?.ports, layout());
+      editor._selected = 'hot-tank'; editor._layoutControls();
+      check('hot-water tank offers fresh water and heat pump groups', editor._portControls.querySelectorAll('select').length === 2);
+      const before2 = layout(), fmGroup = editor._portControls.querySelector('select');
+      fmGroup.value = 'left'; fmGroup.dispatchEvent(new Event('change'));
+      // A manual side is either drawn (pipes may go around the tank) or rejected with a reason.
+      const accepted = layout() !== before2;
+      check('a manual tank side is drawn or rejected with a reason', accepted ? card._layoutResult?.status === 'applied' && config.layout?.ports?.['hot-tank.fm-supply']?.side === 'left'
+        : /Rohrweg|überlappen/.test(editor._layoutStatus.textContent), layout() + ' / ' + editor._layoutStatus.textContent);
+      editor._undoButton.click();
+      check('undo restores the previous port sides', layout() === before2, layout());
       install(base('getrennt', { wp: { leistung: 'sensor.wp', wmz: 'sensor.wp' } }));
       check('unsupported configuration offers no component', editor._componentSelect.options.length === 1);
       install({ ...base('getrennt'), layout_editor_beta: undefined, layout: { version: 2, components: { fm: { x: 380, y: 74 } } } });
@@ -111,6 +129,8 @@
       check('enabling the option in YAML shows the editor section', !!editor._preview);
       document.getElementById('result').textContent = 'RESULT ' + out.join(' | ');
     }
+    // ?select=<key> preselects a component (for screenshots).
+    if (new URLSearchParams(location.search).has('select')) setTimeout(() => { editor._selected = new URLSearchParams(location.search).get('select'); editor._layoutControls(); }, 200);
     if (new URLSearchParams(location.search).has('selftest')) setTimeout(() => selftest().catch((e) => { document.getElementById('result').textContent = 'RESULT ERROR ' + e.stack; }), 300);
   </script>
 </body>

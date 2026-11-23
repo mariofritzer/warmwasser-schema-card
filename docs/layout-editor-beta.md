@@ -16,7 +16,10 @@ Im Karteneditor erscheint dann der Bereich **Anlagenbild anordnen (Beta)**. Baut
 werden in der Vorschau mit der Maus gezogen oder ausgewählt und mit den Pfeilen im
 5er-Raster verschoben. Rückgängig, Wiederholen und Zurücksetzen stehen zur Verfügung.
 Mit − und + lässt sich die Vorschau zwischen 50 % und 300 % zoomen; die Karte selbst
-bleibt unverändert.
+bleibt unverändert. Für das gewählte Bauteil lassen sich die Anschlussseiten auf Auto,
+Links oder Rechts stellen (bei den Speichern getrennt für Frischwasser- und
+Wärmepumpen-Anschlüsse); Auto zeigt die berechnete Seite. Eine Seite ohne gültigen
+Rohrweg wird abgelehnt und die bisherige Wahl bleibt.
 Die Leitungen zwischen Speicher und Frischwassermodul werden automatisch geführt.
 Eine Position wird nur übernommen, wenn sich keine Bauteile überlappen und ein freier
 Rohrweg existiert; beim Ziehen bleibt das Bauteil sonst an der letzten gültigen
@@ -82,7 +85,10 @@ layout_editor_beta: true
 The card editor then shows **Arrange diagram (beta)**. Drag components in the
 preview with the mouse, or select them and use the arrows on a 5-unit grid. Undo,
 redo and reset are available.
-Use − and + to zoom the preview between 50 % and 300 %; the card itself is unchanged. Pipes between the tanks and the fresh water module are
+Use − and + to zoom the preview between 50 % and 300 %; the card itself is unchanged.
+For the selected component the port sides can be set to Auto, Left or Right (for the
+tanks separately for fresh water and heat pump ports); Auto shows the resolved side. A
+side without a valid pipe route is rejected and the previous choice is kept. Pipes between the tanks and the fresh water module are
 routed automatically. A position is only accepted when no components overlap and a
 clear pipe route exists; while dragging, the component otherwise stays at its last
 valid position.

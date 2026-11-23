@@ -3101,6 +3101,51 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       : layoutNotice(code, de);
   }
   _layoutMessage(text) { if (this._layoutStatus) this._layoutStatus.textContent = text; }
+  // Port groups of the selected component whose sides are declared in the
+  // model. Ports of one group (e.g. supply and return) always share a side.
+  _layoutPortGroups(key) {
+    const model = this._preview?._baseModel, de = this._layoutDe();
+    if (!model || !key || key === 'tanks') return [];
+    const comp = model.components[key];
+    if (!comp) return [];
+    const refs = Object.entries(comp.ports).filter(([, port]) => port.sides).map(([name]) => `${key}.${name}`);
+    if (!['hot-tank', 'buffer-tank', 'tank'].includes(key)) return refs.length ? [{ label: de ? 'Anschlüsse' : 'Ports', refs }] : [];
+    const fm = refs.filter((ref) => ref.split('.')[1].startsWith('fm-')), wp = refs.filter((ref) => !fm.includes(ref));
+    return [...(fm.length ? [{ label: de ? 'Frischwasser-Anschlüsse' : 'Fresh water ports', refs: fm }] : []),
+      ...(wp.length ? [{ label: de ? 'Wärmepumpen-Anschlüsse' : 'Heat pump ports', refs: wp }] : [])];
+  }
+  _layoutPortValue(refs) {
+    const ports = this._config.layout?.version === 2 && layoutObject(this._config.layout.ports) ? this._config.layout.ports : {};
+    const sides = refs.map((ref) => ports[ref]?.mode === 'manual' ? ports[ref].side : 'auto');
+    return sides.every((side) => side === sides[0]) ? sides[0] : 'mixed';
+  }
+  _layoutWithPorts(refs, side) {
+    const layout = this._config.layout, current = layout?.version === 2 && layoutObject(layout) ? layout : {};
+    const ports = { ...(layoutObject(current.ports) ? current.ports : {}) };
+    for (const ref of refs) { if (side === 'auto') delete ports[ref]; else ports[ref] = { mode: 'manual', side }; }
+    const next = { version: 2, ...(layoutObject(current.components) && Object.keys(current.components).length ? { components: current.components } : {}),
+      ...(Object.keys(ports).length ? { ports } : {}) };
+    return Object.keys(next).length > 1 ? next : null;
+  }
+  _layoutPortControls() {
+    const host = this._portControls;
+    if (!host) return;
+    const de = this._layoutDe(), drawn = this._preview?._drawnModel, names = { left: de ? 'Links' : 'Left', right: de ? 'Rechts' : 'Right' };
+    host.replaceChildren(...this._layoutPortGroups(this._selected).map(({ label, refs }) => {
+      const wrapper = document.createElement('label'), select = document.createElement('select');
+      wrapper.textContent = `${label} `;
+      // Auto shows the side it resolved to in the current preview.
+      const [id, name] = refs[0].split('.'), resolved = drawn?.components[id]?.ports[name]?.side;
+      const value = this._layoutPortValue(refs);
+      const options = [['auto', `Auto${resolved ? ` (${names[resolved].toLowerCase()})` : ''}`], ['left', names.left], ['right', names.right], ...(value === 'mixed' ? [['mixed', de ? 'Gemischt' : 'Mixed']] : [])];
+      for (const [v, text] of options) { const o = document.createElement('option'); o.value = v; o.textContent = text; o.disabled = v === 'mixed'; select.appendChild(o); }
+      select.value = value;
+      // A side without a valid route is rejected; _layoutSet keeps the previous choice and explains why.
+      select.addEventListener('change', () => this._layoutSet(this._layoutWithPorts(refs, select.value)));
+      wrapper.appendChild(select);
+      return wrapper;
+    }));
+  }
   _layoutCurrent(key) {
     const id = layoutComponentIds(this._preview?._cfg, key)[0], base = this._layoutBase(id), origin = this._layoutOrigin(id);
     return base ? { x: origin.x - base.x, y: origin.y - base.y } : { x: 0, y: 0 };
@@ -3119,6 +3164,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     }));
     select.value = this._selected || '';
     for (const b of this._moveButtons) b.disabled = !this._selected;
+    this._layoutPortControls();
     this._undoButton.disabled = !this._undo.length;
     this._redoButton.disabled = !this._redo.length;
     this._resetButton.disabled = !this._config.layout;
@@ -3166,7 +3212,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       `<div class="layout-zoom"><button type="button" data-cmd="zoom-out" aria-label="${de ? 'Verkleinern' : 'Zoom out'}">−</button>` +
       `<button type="button" data-cmd="zoom-reset" class="zoom-level" aria-label="${de ? 'Zoom zurücksetzen' : 'Reset zoom'}"></button>` +
       `<button type="button" data-cmd="zoom-in" aria-label="${de ? 'Vergrößern' : 'Zoom in'}">+</button></div>` +
-      `<div class="preview"></div><label>${de ? 'Komponente' : 'Component'} <select class="component-select"></select></label><div class="layout-status" role="status" aria-live="polite"></div>` +
+      `<div class="preview"></div><label>${de ? 'Komponente' : 'Component'} <select class="component-select"></select></label><div class="layout-ports"></div><div class="layout-status" role="status" aria-live="polite"></div>` +
       `<div class="layout-buttons"><button type="button" data-cmd="left" aria-label="${de ? 'Nach links' : 'Move left'}">←</button><button type="button" data-cmd="right" aria-label="${de ? 'Nach rechts' : 'Move right'}">→</button>` +
       `<button type="button" data-cmd="up" aria-label="${de ? 'Nach oben' : 'Move up'}">↑</button><button type="button" data-cmd="down" aria-label="${de ? 'Nach unten' : 'Move down'}">↓</button>` +
       `<button type="button" data-cmd="undo">${de ? 'Rückgängig' : 'Undo'}</button><button type="button" data-cmd="redo">${de ? 'Wiederholen' : 'Redo'}</button><button type="button" data-cmd="reset">${de ? 'Zurücksetzen' : 'Reset'}</button></div>`;
@@ -3176,6 +3222,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     box.querySelector('.preview').appendChild(this._preview);
     this._layoutStatus = box.querySelector('.layout-status');
     this._componentSelect = box.querySelector('.component-select');
+    this._portControls = box.querySelector('.layout-ports');
     this._componentSelect.addEventListener('change', () => { this._selected = this._componentSelect.value || null; this._layoutControls(); });
     this._moveButtons = ['left', 'right', 'up', 'down'].map((cmd) => box.querySelector(`[data-cmd="${cmd}"]`));
     this._undoButton = box.querySelector('[data-cmd="undo"]');
@@ -3298,7 +3345,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       button:disabled{opacity:.45;cursor:default}
       .layout-editor{margin:0 0 16px;border:1px solid var(--divider-color,#ddd);border-radius:10px;padding:10px}
       .layout-editor summary{cursor:pointer;font-weight:600}.layout-editor p{font-size:13px;color:var(--secondary-text-color)}
-      .layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-status{margin:8px 0;min-height:1.4em}
+      .layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-ports{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}.layout-status{margin:8px 0;min-height:1.4em}
       .preview{user-select:none;overflow:auto;max-height:70vh;border-radius:8px}.preview>*{display:block;min-width:0}
       .layout-zoom{display:flex;gap:6px;justify-content:flex-end;margin-bottom:6px}.layout-zoom button{padding:4px 10px;min-width:36px}
     </style><div id="w"></div>`;
