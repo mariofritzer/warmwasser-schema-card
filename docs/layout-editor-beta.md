@@ -78,7 +78,8 @@ layout:
 Unterstützt sind Anlagen mit Frischwassermodul, optional mit einer einfachen
 Luft-Wärmepumpe (ohne Wärmemengenzähler, SG Ready und Quellentemperaturen) und
 optional mit Heizstäben. Nicht unterstützt sind Heizkreise, Zusatzwärme, Solar,
-Zirkulation, Trinkwasser- und Legionellenanzeige; dort bietet der Editor keine
+Zirkulation, Trinkwasser- und Legionellenanzeige sowie das Umschaltventil im Vorlauf
+(`wp.ventil_position: vorlauf`); dort bietet der Editor keine
 verschiebbaren Bauteile an. Kann eine gespeicherte Anordnung nicht dargestellt werden,
 zeigt die Karte die Standardansicht mit einem kurzen Hinweis; die gespeicherten Werte
 bleiben erhalten.
@@ -161,7 +162,8 @@ layout:
 Supported are systems with a fresh water module, optionally with a simple air heat
 pump (no heat meter, SG Ready or source temperatures) and optionally with heaters. Not
 supported are heating circuits, additional heat, solar, circulation, domestic water and
-legionella display; there the editor offers no movable components. If a saved
+legionella display, as well as the diverter valve in the supply
+(`wp.ventil_position: vorlauf`); there the editor offers no movable components. If a saved
 arrangement cannot be drawn, the card shows the standard diagram with a short notice
 and keeps the saved values.
 
