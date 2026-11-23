@@ -1556,8 +1556,12 @@ function sequentialLayoutRoutes(candidates, obstacles) {
       // ports stay clear. With crossings: placed pipes may be bridged (not
       // followed), their leads are fixed, and only pending leads stay clear.
       const others = crossing ? order.slice(order.indexOf(candidate) + 1) : candidates.filter((other) => other !== candidate);
-      const leads = others.flatMap((other) => [lead(other.endpoints.from, crossing ? 16 : 22, crossing ? other.endpoints.from.owner : undefined),
-        lead(other.endpoints.to, crossing ? 16 : 22, crossing ? other.endpoints.to.owner : undefined)]);
+      // A pending port keeps its real escape lead (from the first, independent
+      // routing; it clears the port's own stub) plus a little extra.
+      const escapeLead = (port, first, second) => Math.max(crossing ? 16 : 22, Math.abs(first.x - second.x) + Math.abs(first.y - second.y) + (crossing ? 0 : 6));
+      const leads = others.flatMap((other) => [
+        lead(other.endpoints.from, escapeLead(other.endpoints.from, other.points[0], other.points[1]), crossing ? other.endpoints.from.owner : undefined),
+        lead(other.endpoints.to, escapeLead(other.endpoints.to, other.points.at(-1), other.points.at(-2)), crossing ? other.endpoints.to.owner : undefined)]);
       const routed = routeOrthogonalConnection({ from, to, vias: candidate.endpoints.vias, obstacles: [...obstacles, ...extra, ...leads], crossable, clearance:13, lead:16, astar: true });
       if (routed.status !== 'routed') return { failed: candidate.id };
       placed.push({ ...candidate, points: routed.points });

@@ -82,7 +82,7 @@ test('buffer sensor plates may not overlap the hot-water tank', () => {
 });
 
 test('a position without a clear route falls back instead of throwing', () => {
-  const { card, html } = render(config(at({ fm: { x: 140, y: -146 } })));
+  const { card, html } = render(config(at({ fm: { x: 0, y: -120 } })));
   assert.equal(card._layoutResult.status, 'unsupported');
   assert.notEqual(card._layoutResult.code, 'collision');
   assert.match(html, /class="layout-note"/);
@@ -180,7 +180,7 @@ test('moving the heat pump routes all primary pipes with bridges where they cros
 
 test('the valve turns to face a heat pump on its left', () => {
   // Valve right of the heat pump: its side port faces left, the motor moves right.
-  const { card, html } = render(withWp({ valve: { x: 420, y: 360 }, wp: { x: 330, y: 420 } }));
+  const { card, html } = render(withWp({ valve: { x: 380, y: 320 }, wp: { x: 330, y: 420 } }));
   assert.equal(card._layoutResult.status, 'applied');
   const v = card._drawnModel.components.valve;
   assert.equal(v.ports.wp.side, 'left');
