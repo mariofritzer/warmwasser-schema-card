@@ -311,12 +311,42 @@ function buildFreshWaterSection(builder, geometry, hot, tank) {
   }
 }
 
+// Diverter valve in the heat pump supply (wp.ventil_position: vorlauf): the heat
+// pump feeds the valve, which charges the hot-water tank (upper) or the buffer
+// (lower). The tank returns join at a junction (combined) or enter the heat pump
+// separately (wp.ruecklauf_anbindung: getrennt).
+function buildSupplyValve(c, builder, geometry, tank, w, v, ws) {
+  const { p, junction, connection } = builder;
+  const { hk, ym, bu } = geometry;
+  if (hk) throw new Error('wp.ventil_position: vorlauf wird mit Heizkreisen noch nicht unterstützt / is not supported with heating circuits yet.');
+  if (c.wp.wmz) throw new Error('wp.ventil_position: vorlauf wird mit Wärmemengenzähler (wmz) noch nicht unterstützt / is not supported with a heat meter yet.');
+  const separate = c.wp.ruecklauf_anbindung === 'getrennt', yr = ym + 26, ys = ym + 44;
+  if (yr + 24 > bu) throw new Error('wp.ventil_position: vorlauf passt nicht bei dieser Trennung (speicher.trennung zu hoch) / does not fit this tank split (speicher.trennung too high).');
+  const wr = p(w, 'return', 326, yr, 'left', 'return', [322, yr - 6, 10, 12], 'heating-water', 'left');
+  const wr2 = separate ? p(w, 'return-lower', 326, ys, 'left', 'return', [322, ys - 6, 10, 12], 'heating-water', 'left') : null;
+  const vo = p(v, 'upper', 262, ym - 14, 'top', 'supply');
+  const vu = p(v, 'lower', 262, ym + 14, 'bottom', 'supply');
+  const vw = p(v, 'wp', 277, ym, 'right', 'supply');
+  connection('wp-valve-supply', ws, vw);
+  connection('wp-upper-supply', vo, tank.wpSupply);
+  connection('wp-lower-supply', vu, tank.lowerSupply);
+  if (separate) {
+    connection('wp-upper-return', tank.wpReturn, wr);
+    connection('wp-lower-return', tank.lowerReturn, wr2);
+  } else {
+    const rj = junction('return-junction', 310, yr);
+    connection('wp-upper-return', tank.wpReturn, rj);
+    connection('wp-lower-return', tank.lowerReturn, rj);
+    connection('wp-return', rj, wr);
+  }
+}
 function buildHeatPumpSection(c, builder, geometry, tank) {
   const { component, p, junction, connection, connections } = builder;
   const { wp, hk, ym, ru, bu } = geometry;
   if (wp) {
     const w = component('wp', 330, 150, 120, 222), v = component('valve', 228, ym - 14, 49, 28);
     const ws = p(w, 'upper-supply', 350, 146, 'top', 'supply', [344, 142, 12, 10], 'heating-water', 'top');
+    if (c.wp.ventil_position === 'vorlauf') { buildSupplyValve(c, builder, geometry, tank, w, v, ws); return; }
     const wl = p(w, 'lower-supply', 326, ru, 'left', 'supply', [322, ru - 6, 10, 12], 'heating-water', 'left');
     const wr = p(w, 'return', 326, ym, 'left', 'return', [322, ym - 6, 10, 12], 'heating-water', 'left');
     const vo = p(v, 'upper', 262, ym - 14, 'top', 'return');
@@ -639,7 +669,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   declarePortSides(components);
-  const fmScope = (heaters) => fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (heaters || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
+  const fmScope = (heaters) => fm && (!wp || (c.wp.typ === 'luft' && c.wp.ventil_position !== 'vorlauf' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (heaters || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
     // layoutFm: the same scope with heaters, for experimental layouts only.
     routingScope: { fm: fmScope(false), layoutFm: fmScope(true) } };
@@ -1772,7 +1802,10 @@ function renderHeatPump({ WP, W, model, portStub, openComponent, closeComponent,
   let o = '';
   const b = model.components.wp, { x, y } = b.origin, { width, height } = b.bounds;
   o += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="url(#wwRed)" filter="url(#wwShadow)"/><rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="url(#wwBox)"/>`;
-  o += portStub(model.connections['wp-upper-supply'].from) + portStub(model.connections['wp-lower-supply'].from) + portStub(model.connections['wp-valve-return'].to);
+  o += c.wp.ventil_position === 'vorlauf'
+    ? portStub(model.connections['wp-valve-supply'].from) + (model.connections['wp-return'] ? portStub(model.connections['wp-return'].to)
+      : portStub(model.connections['wp-upper-return'].to) + portStub(model.connections['wp-lower-return'].to))
+    : portStub(model.connections['wp-upper-supply'].from) + portStub(model.connections['wp-lower-supply'].from) + portStub(model.connections['wp-valve-return'].to);
   o += openComponent('wp');
   o += `<text x="342" y="168" font-size="9" class="wt" letter-spacing="2" fill="#fff" opacity=".9">${esc(c.hersteller)}</text>`;
   if (W.cop) o += `<text x="438" y="168" font-size="9" class="we wt wx" data-more="${esc(W.cop)}" fill="#fff">${wpCopText}</text>`;
@@ -1832,6 +1865,46 @@ function heatPumpState(c, L, F, S, ON, NUM) {
   return { W, WP, wp, wp_sperre, wp_abtau, kuehl, wp_on, CW, CK, QT, vb, wpO, wpU, tO, tU };
 }
 
+// Heat source pipes (brine/water): independent of the valve position.
+function renderSourcePipes({ model, point, F, W, ON, QT, wp_on }) {
+  let o = '';
+    const qon = sourcePumpState(W, wp_on, ON);
+    const ia = point(model.connections['source-in'].from), ib = point(model.connections['source-in'].to);
+    const oa = point(model.connections['source-out'].from), ob = point(model.connections['source-out'].to);
+    if (QT === 'sole') {
+      const ground = model.connections['source-ground-loop'], gs = point(ground.from), ge = point(ground.to);
+      const toGround = gs.x !== ib.x || gs.y !== ib.y ? `H${gs.x}V${gs.y}` : '';
+      const fromGround = ge.x !== oa.x || ge.y !== oa.y ? `H${oa.x}V${oa.y}` : '';
+      o += rohr(`M${ia.x} ${ia.y}V381A9 9 0 0 1 400 399V${ib.y}${ib.x !== 400 ? `H${ib.x}` : ''}${toGround}Q${gs.x} ${gs.y + 12} ${(gs.x + ge.x) / 2} ${gs.y + 12}Q${ge.x} ${ge.y + 12} ${ge.x} ${ge.y}${fromGround}V399A9 9 0 0 1 430 381V${ob.y}${ob.x !== 430 ? `H${ob.x}` : ''}`, F.quelle, qon);
+    }
+    else o += rohr(`M${ib.x} ${ib.y}V399A9 9 0 0 0 400 381V${ia.y}${ia.x !== 400 ? `H${ia.x}` : ''}`, F.quelle, qon) + rohr(`M${ob.x} ${ob.y}V381A9 9 0 0 1 430 399V${oa.y}${oa.x !== 430 ? `H${oa.x}` : ''}`, F.quelle, qon);
+  return o;
+}
+
+// Pipes of a heat pump with the diverter valve in the supply. Paths run in flow
+// direction. The supply to the hot-water tank crosses the fresh-water return and
+// the tank return; the supply to the valve crosses the combined return.
+function renderSupplyValvePipes({ primaryPipe, FM, model, point, SPLIT, y_bo, y_bu, y_ro, y_ru, CK, CW, wpO, tO, wpU, tU, wp_on }) {
+  let o = '';
+  const k = model.connections, separate = !k['wp-return'], y_m = model.geometry.ym;
+  const upperReturn = point(k['wp-upper-return'].to), lowerReturn = point(k['wp-lower-return'].to);
+  // Tank returns: down (hot-water tank) or up (buffer) to the heat pump return.
+  o += primaryPipe('wp-upper-return', `M206 ${y_bo}H302Q310 ${y_bo} 310 ${y_bo + 8}V${upperReturn.y}${separate ? 'H326' : ''}`, CK, wpO, tO);
+  o += primaryPipe('wp-lower-return', separate
+    ? `M206 ${y_bu}H312Q320 ${y_bu} 320 ${y_bu - 8}V${lowerReturn.y}H326`
+    : `M206 ${y_bu}H302Q310 ${y_bu} 310 ${y_bu - 8}V${lowerReturn.y}`, CK, wpU, tU);
+  if (!separate) o += primaryPipe('wp-return', `M310 ${upperReturn.y}H326`, CK, wp_on);
+  // Valve to the hot-water tank (upper): bridges over the fresh-water return and the tank return.
+  const fmY = FM && SPLIT ? point(k['fm-return'].to).y : y_bo - 14;
+  const crossings = [...(FM && SPLIT ? [fmY] : []), y_bo].filter(y => y > y_ro + 8 && y < y_m - 18).sort((a, b) => b - a);
+  o += primaryPipe('wp-upper-supply', `M262 ${y_m - 14}H258Q250 ${y_m - 14} 250 ${y_m - 22}` + crossings.map(y => `V${y + 4}A4 4 0 0 0 250 ${y - 4}`).join('') + `V${y_ro + 8}Q250 ${y_ro} 242 ${y_ro}H206`, CW, wpO, tO);
+  // Valve to the buffer (lower).
+  o += primaryPipe('wp-lower-supply', `M262 ${y_m + 14}H225V${y_ru}H206`, CW, wpU, tU);
+  // Heat pump to the valve: the bridge crosses the blue return without joining it.
+  o += primaryPipe('wp-valve-supply', `M350 146V136Q350 128 342 128H333Q325 128 325 136V${y_m}H315A5 5 0 0 0 305 ${y_m}H277`, CW, wp_on);
+  return o;
+}
+
 function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT }) {
   let o = '';
   if (FM) {
@@ -1842,7 +1915,8 @@ function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SP
     // while shared tanks retain the bottom connection.
     const radius = Math.min(8, Math.max(0, (ft.y - fr.y) / 2));
     const simpleReturn = WP && ft.y > 108 && ft.y <= 147 && !c.wp.wmz;
-    const returnX = simpleReturn ? 280 : WP && (ft.y > 108 || c.wp.wmz) ? 322 : 315;
+    // With the valve in the supply the heat pump supply runs down at x=325; keep clear of it.
+    const returnX = WP && c.wp.ventil_position === 'vorlauf' ? 300 : simpleReturn ? 280 : WP && (ft.y > 108 || c.wp.wmz) ? 322 : 315;
     // Near the charging-pipe corner, cross its straight leg instead. With a
     // meter on that leg, carry the return below the crossing and back up.
     const returnDetour = WP && ft.y <= 147 && !!c.wp.wmz;
@@ -1854,7 +1928,10 @@ function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SP
       : `M${fr.x} ${fr.y}H458Q466 90 466 98V382Q466 390 458 390H${ft.x + 8}Q${ft.x} 390 ${ft.x} 382V${ft.y}`;
     o += primaryPipe('fm-return', fmRuecklauf, F.kalt, fm_on);
   }
-  if (WP) {
+  if (WP && c.wp.ventil_position === 'vorlauf') {
+    o += renderSupplyValvePipes({ primaryPipe, FM, model, point, SPLIT, y_bo, y_bu, y_ro, y_ru, CK, CW, wpO, tO, wpU, tU, wp_on });
+    if (QS) o += renderSourcePipes({ model, point, F, W, ON, QT, wp_on });
+  } else if (WP) {
     const returnTee = HK ? model.junctions[model.connections['wp-lower-return'].via[0]] : null;
     const wo = point(model.connections['wp-upper-return'].from), wv = point(model.connections['wp-upper-return'].to);
     const wu = point(model.connections['wp-lower-return'].from), wvu = point(model.connections['wp-lower-return'].to);
@@ -1881,18 +1958,7 @@ function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SP
     // record incidence without changing the legacy SVG paint order.
     const lowerBridge = FM && SPLIT ? 'H268A6 6 0 0 0 256' : 'H270A8 8 0 0 0 254';
     o += primaryPipe('wp-lower-supply', `M${wl.x} ${wl.y}${sj && sj.y !== wl.y ? `V${sj.y}` : ''}${lowerBridge} ${sj ? sj.y : y_ru}H${wlt.x}${wlt.y !== (sj ? sj.y : y_ru) ? `V${wlt.y}` : ''}`, CW, wpU, tU);
-    if (QS) {
-      const qon = sourcePumpState(W, wp_on, ON);
-      const ia = point(model.connections['source-in'].from), ib = point(model.connections['source-in'].to);
-      const oa = point(model.connections['source-out'].from), ob = point(model.connections['source-out'].to);
-      if (QT === 'sole') {
-        const ground = model.connections['source-ground-loop'], gs = point(ground.from), ge = point(ground.to);
-        const toGround = gs.x !== ib.x || gs.y !== ib.y ? `H${gs.x}V${gs.y}` : '';
-        const fromGround = ge.x !== oa.x || ge.y !== oa.y ? `H${oa.x}V${oa.y}` : '';
-        o += rohr(`M${ia.x} ${ia.y}V381A9 9 0 0 1 400 399V${ib.y}${ib.x !== 400 ? `H${ib.x}` : ''}${toGround}Q${gs.x} ${gs.y + 12} ${(gs.x + ge.x) / 2} ${gs.y + 12}Q${ge.x} ${ge.y + 12} ${ge.x} ${ge.y}${fromGround}V399A9 9 0 0 1 430 381V${ob.y}${ob.x !== 430 ? `H${ob.x}` : ''}`, F.quelle, qon);
-      }
-      else o += rohr(`M${ib.x} ${ib.y}V399A9 9 0 0 0 400 381V${ia.y}${ia.x !== 400 ? `H${ia.x}` : ''}`, F.quelle, qon) + rohr(`M${ob.x} ${ob.y}V381A9 9 0 0 1 430 399V${oa.y}${oa.x !== 430 ? `H${oa.x}` : ''}`, F.quelle, qon);
-    }
+    if (QS) o += renderSourcePipes({ model, point, F, W, ON, QT, wp_on });
   }
   return o;
 }
@@ -2379,9 +2445,10 @@ function renderHeatingCircuits({ W8, c, model, more, S, openComponent, closeComp
   return o;
 }
 
-function renderValve({ WP, W, model, more, mischer, CK, CW, vb }) {
+function renderValve({ WP, W, model, more, mischer, CK, CW, vb, supply }) {
   if (!WP) return '';
   // A layout may turn the valve so that its side port faces left.
+  if (supply) CK = CW;   // in the supply the valve takes the supply colour
   const v = model.components.valve, d = v.ports.wp.side === 'left' ? -1 : 1;
   const vx = v.origin.x + (d > 0 ? 34 : v.bounds.width - 34), vy = v.origin.y + v.bounds.height / 2;
   return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK, d)}</g>` : mischer(vx, vy, CK, null, CW, CK, d);
@@ -2595,6 +2662,8 @@ class WarmwasserSchemaCard extends HTMLElement {
     c.heizstab_unten = hasEnt(config.heizstab_unten) ? { ...config.heizstab_unten } : null;
     const wpc = config.wp || (config.wp_leistung ? { leistung: config.wp_leistung, schwelle: config.wp_schwelle } : null);
     c.wp = hasEnt(wpc) ? { schwelle: 100, typ: 'luft', ...wpc } : null;
+    // `ventil` is an entity id; a boolean is not one and must not become a click target.
+    if (c.wp && typeof c.wp.ventil === 'boolean') c.wp.ventil = '';
     const kz = config.zusatzwaerme || config.kamin;
     c.kamin = hasEnt(kz) ? { warm: 30, feuer: 35, ...kz, typ: ZUSATZ_ICON[kz.typ] ? kz.typ : 'kamin' } : null;
     c.solar = hasEnt(config.solar) ? { ...config.solar } : null;
@@ -2848,7 +2917,8 @@ class WarmwasserSchemaCard extends HTMLElement {
     if (distributorSlots) o += renderDistributor(model, distributorSlots, distributorState, { pumpe, more, CW, CK, F, language: sprache(c, h) });
 
     /* Umschaltventil WP + T-Stücke */
-    o += renderValve({ WP, W, model, more, mischer, CK, CW, vb });
+    o += renderValve({ WP, W, model, more, mischer, CK, CW, vb, supply: WP && c.wp.ventil_position === 'vorlauf' });
+    if (WP && model.junctions['return-junction']) o += tee(model.junctions['return-junction'].x, model.junctions['return-junction'].y);
     if (HK && WP) {
       const a = model.junctions[model.connections['wp-lower-supply'].via[0]], b = model.junctions[model.connections['wp-lower-return'].via[0]];
       o += tee(a.x, a.y) + tee(b.x, b.y);
@@ -2918,7 +2988,7 @@ const LBL = {
     zirkulationspumpe: 'Zirkulationspumpe', speicher: 'Speicher', typ: 'Typ', volumen: 'Volumen (l)', volumen_ww: 'Volumen Warmwasser (l)',
     trennung: 'Trennung / Boilerhöhe (%)', wp: 'Wärmepumpe', leistung: 'Leistung', schwelle: 'Schwelle (W)', betrieb: 'Betrieb',
     vorlauf: 'Vorlauf', ruecklauf: 'Rücklauf', waerme: 'Wärmeleistung', cop: 'COP', sperre: 'EVU-Sperre', abtauen: 'Abtauen',
-    kuehlen: 'Kühlbetrieb', sg_ready: 'SG-Ready', ventil: 'Umschaltventil', ventil_oben: 'Ventilwert für Warmwasser (oben)', ventil_unten: 'Ventilwert für Heizung (unten)', ventil_invertieren: 'Umschaltventil umkehren (oben ↔ unten)', quelle_ein: 'Quelle ein', quelle_aus: 'Quelle aus',
+    kuehlen: 'Kühlbetrieb', sg_ready: 'SG-Ready', ventil: 'Umschaltventil', ventil_position: 'Umschaltventil im', ruecklauf_anbindung: 'Rückläufe (bei Ventil im Vorlauf)', ventil_oben: 'Ventilwert für Warmwasser (oben)', ventil_unten: 'Ventilwert für Heizung (unten)', ventil_invertieren: 'Umschaltventil umkehren (oben ↔ unten)', quelle_ein: 'Quelle ein', quelle_aus: 'Quelle aus',
     quelle_pumpe: 'Quellenpumpe', wmz: 'Wärmemengenzähler (kWh)', heizstab_oben: 'Heizstab oben', heizstab_unten: 'Heizstab unten',
     name: 'Name', stufe: 'Stufe', temp: 'Temperatur', kamin: 'Zusatzwärme', pumpe: 'Pumpe', modus: 'Pumpenmodus (input_select)',
     brenner: 'Brenner / Betrieb', warm: 'Glut ab (°C)', feuer: 'Feuer ab (°C)', trend: 'Trend', abgas: 'Abgastemperatur',
@@ -2935,7 +3005,7 @@ const LBL = {
     zirkulationspumpe: 'Circulation pump', speicher: 'Storage tank', typ: 'Type', volumen: 'Volume (l)', volumen_ww: 'Hot water volume (l)',
     trennung: 'Separation / boiler height (%)', wp: 'Heat pump', leistung: 'Power', schwelle: 'Threshold (W)', betrieb: 'Running',
     vorlauf: 'Flow', ruecklauf: 'Return', waerme: 'Heat output', cop: 'COP', sperre: 'Grid lock', abtauen: 'Defrost',
-    kuehlen: 'Cooling', sg_ready: 'SG Ready', ventil: 'Diverter valve', ventil_oben: 'Valve value for hot water (upper)', ventil_unten: 'Valve value for heating (lower)', ventil_invertieren: 'Invert diverter valve (upper ↔ lower)', quelle_ein: 'Source in', quelle_aus: 'Source out',
+    kuehlen: 'Cooling', sg_ready: 'SG Ready', ventil: 'Diverter valve', ventil_position: 'Diverter valve location', ruecklauf_anbindung: 'Returns (when valve is in supply)', ventil_oben: 'Valve value for hot water (upper)', ventil_unten: 'Valve value for heating (lower)', ventil_invertieren: 'Invert diverter valve (upper ↔ lower)', quelle_ein: 'Source in', quelle_aus: 'Source out',
     quelle_pumpe: 'Source pump', wmz: 'Heat meter (kWh)', heizstab_oben: 'Heater top', heizstab_unten: 'Heater bottom',
     name: 'Name', stufe: 'Step', temp: 'Temperature', kamin: 'Additional heat source', pumpe: 'Pump', modus: 'Pump mode (input_select)',
     brenner: 'Burner / running', warm: 'Embers from (°C)', feuer: 'Fire from (°C)', trend: 'Trend', abgas: 'Flue gas temperature',
@@ -2952,6 +3022,8 @@ const OPT = {
     sprache: [['auto', 'Automatisch'], ['de', 'Deutsch'], ['en', 'English']],
     speicher: [['trennblech', 'Trennblech (2 Kammern)'], ['schicht', 'Schichtspeicher'], ['kombi', 'Kombispeicher (Tank-in-Tank)'], ['hygiene', 'Hygienespeicher (Wellrohr)'], ['getrennt', 'Warmwasser + Puffer getrennt']],
     wp: [['luft', 'Luft'], ['sole', 'Sole / Erdsonde'], ['wasser', 'Wasser / Brunnen']],
+    ventil_position: [['ruecklauf', 'Rücklauf'], ['vorlauf', 'Vorlauf']],
+    ruecklauf_anbindung: [['gemeinsam', 'Gemeinsam'], ['getrennt', 'Getrennt']],
     kamin: [['kamin', 'Kaminofen'], ['holzvergaser', 'Holzvergaser'], ['pellet', 'Pellets'], ['gas', 'Gas'], ['oel', 'Öl'], ['fernwaerme', 'Fernwärme'], ['bhkw', 'BHKW']],
     hk: [['', '–'], ['fussboden', 'Fußbodenheizung'], ['heizkoerper', 'Heizkörper']],
   },
@@ -2959,6 +3031,8 @@ const OPT = {
     sprache: [['auto', 'Automatic'], ['de', 'Deutsch'], ['en', 'English']],
     speicher: [['trennblech', 'Baffle plate (2 zones)'], ['schicht', 'Stratified tank'], ['kombi', 'Combi tank (tank-in-tank)'], ['hygiene', 'Hygienic tank (coil)'], ['getrennt', 'Separate hot water + buffer']],
     wp: [['luft', 'Air'], ['sole', 'Brine / ground probe'], ['wasser', 'Water / well']],
+    ventil_position: [['ruecklauf', 'Return'], ['vorlauf', 'Supply']],
+    ruecklauf_anbindung: [['gemeinsam', 'Combined'], ['getrennt', 'Separate']],
     kamin: [['kamin', 'Stove'], ['holzvergaser', 'Wood boiler'], ['pellet', 'Pellets'], ['gas', 'Gas'], ['oel', 'Oil'], ['fernwaerme', 'District heating'], ['bhkw', 'CHP']],
     hk: [['', '–'], ['fussboden', 'Floor heating'], ['heizkoerper', 'Radiators']],
   },
@@ -3009,9 +3083,11 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
 
   _L() { return LBL[sprache(this._config, this._hass)]; }
   _hatVentil() { return !!(this._config && this._config.wp && this._config.wp.ventil); }
+  // Which valve fields are shown: valve entity set, valve in the supply
+  _ventilZustand() { return `${this._hatVentil()}|${!!(this._config && this._config.wp && this._config.wp.ventil_position === 'vorlauf')}`; }
   // Ventilfelder ein-/ausblenden, ohne den Editor neu aufzubauen (aufgeklappte Bereiche bleiben offen)
   _ventilFelder() {
-    const hat = this._hatVentil();
+    const hat = this._ventilZustand();
     if (this._mainForm && hat !== this._ventilSichtbar) { this._ventilSichtbar = hat; this._mainForm.schema = this._mainSchema(); }
   }
   _O() { return OPT[sprache(this._config, this._hass)]; }
@@ -3022,7 +3098,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       { type: 'grid', name: '', schema: [F_('titel', sel.txt), F_('hersteller', sel.txt), F_('name_wp', sel.txt), F_('name_fm', sel.txt), F_('sprache', sel.opt(O.sprache)), F_('hs_stufen', sel.num(1, 12)), F_('t_min', sel.num(0, 90)), F_('t_max', sel.num(0, 95))] },
       ...E_('aussen', 'pv', 'zirkulationspumpe'),
       { type: 'expandable', name: 'speicher', title: L.speicher, icon: 'mdi:water-boiler', schema: [F_('typ', sel.opt(O.speicher)), { type: 'grid', name: '', schema: [F_('volumen', sel.num(0, 100000)), F_('volumen_ww', sel.num(0, 100000)), F_('trennung', sel.num(35, 70))] }] },
-      { type: 'expandable', name: 'wp', title: L.wp, icon: 'mdi:heat-pump', schema: [F_('typ', sel.opt(O.wp)), ...E_('leistung'), F_('schwelle', sel.num(0, 10000)), ...E_('betrieb', 'vorlauf', 'ruecklauf', 'waerme', 'wmz', 'cop', 'ventil'), ...(this._hatVentil() ? [{ type: 'grid', name: '', schema: [F_('ventil_oben', sel.txt), F_('ventil_unten', sel.txt)] }, F_('ventil_invertieren', sel.bool)] : []), ...E_('kuehlen', 'sperre', 'abtauen', 'sg_ready', 'quelle_ein', 'quelle_aus', 'quelle_pumpe')] },
+      { type: 'expandable', name: 'wp', title: L.wp, icon: 'mdi:heat-pump', schema: [F_('typ', sel.opt(O.wp)), ...E_('leistung'), F_('schwelle', sel.num(0, 10000)), ...E_('betrieb', 'vorlauf', 'ruecklauf', 'waerme', 'wmz', 'cop'), F_('ventil_position', sel.opt(O.ventil_position)), ...(this._config && this._config.wp && this._config.wp.ventil_position === 'vorlauf' ? [F_('ruecklauf_anbindung', sel.opt(O.ruecklauf_anbindung))] : []), ...E_('ventil'), ...(this._hatVentil() ? [{ type: 'grid', name: '', schema: [F_('ventil_oben', sel.txt), F_('ventil_unten', sel.txt)] }, F_('ventil_invertieren', sel.bool)] : []), ...E_('kuehlen', 'sperre', 'abtauen', 'sg_ready', 'quelle_ein', 'quelle_aus', 'quelle_pumpe')] },
       { type: 'expandable', name: 'heizstab_oben', title: L.heizstab_oben, icon: 'mdi:heating-coil', schema: [F_('name', sel.txt), ...E_('stufe', 'leistung', 'temp')] },
       { type: 'expandable', name: 'heizstab_unten', title: L.heizstab_unten, icon: 'mdi:heating-coil', schema: [F_('name', sel.txt), ...E_('stufe', 'leistung', 'temp')] },
       { type: 'expandable', name: 'kamin', title: L.kamin, icon: 'mdi:fireplace', schema: [F_('typ', sel.opt(O.kamin)), F_('name', sel.txt), ...E_('temp', 'trend', 'pumpe', 'modus', 'brenner', 'leistung', 'leistung_el', 'wmz', 'abgas', 'zuluft'), { type: 'grid', name: '', schema: [F_('warm', sel.num(0, 100)), F_('feuer', sel.num(0, 100))] }] },
@@ -3414,7 +3490,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       w.appendChild(note);
     }
     this._forms = [];
-    this._ventilSichtbar = this._hatVentil();
+    this._ventilSichtbar = this._ventilZustand();
     this._mainForm = this._form(this._mainSchema(), () => this._config, (v) => { this._config = { ...this._config, ...v }; this._ventilFelder(); this._fire(); });
     w.appendChild(this._mainForm);
     for (const li of this._listen()) {
