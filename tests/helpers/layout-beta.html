@@ -90,12 +90,20 @@
       check('reset removes layout', config.layout === undefined && card._layoutResult === null, layout());
       install(base('getrennt'));
       const zoomIn = editor.shadowRoot.querySelector('[data-cmd="zoom-in"]');
-      zoomIn.click(); zoomIn.click();
-      check('zoom enlarges the preview only', editor._preview.style.width === '150%' && card.style.width === '');
+      const frame = () => editor._preview.shadowRoot.getElementById('c').getBoundingClientRect();
+      const frameBefore = frame(), svgBefore = editor._preview.shadowRoot.querySelector('svg').getBoundingClientRect().width;
+      zoomIn.click(); zoomIn.click();   // 150 %
+      check('zoom scales the drawing, not the frame', Math.abs(frame().width - frameBefore.width) < 1 && Math.abs(frame().height - frameBefore.height) < 2 &&
+        editor._preview.shadowRoot.querySelector('svg').getBoundingClientRect().width > svgBefore * 1.4 && card.shadowRoot.querySelector('style[data-layout-zoom]') === null,
+        JSON.stringify([frameBefore.width, frame().width, frameBefore.height, frame().height]));
       await drag('fm', 40, 60);
       check('drag while zoomed keeps SVG units', fm()?.x === 380 && fm()?.y === 74, layout());
+      const zoomOut = editor.shadowRoot.querySelector('[data-cmd="zoom-out"]');
       editor.shadowRoot.querySelector('[data-cmd="zoom-reset"]').click();
-      check('zoom reset', editor._preview.style.width === '100%');
+      const frameAt100 = frame(); zoomOut.click();   // 75 %
+      check('zoom out keeps the frame', Math.abs(frame().width - frameAt100.width) < 1 && Math.abs(frame().height - frameAt100.height) < 2, JSON.stringify([frameAt100.height, frame().height]));
+      editor.shadowRoot.querySelector('[data-cmd="zoom-reset"]').click();
+      check('zoom reset', editor._layoutApplyZoom() === undefined && editor._preview.shadowRoot.querySelector('style[data-layout-zoom]').textContent === '');
       install(base('getrennt', { layout: { version: 1, fm: { x: 40, y: 60 } } }));
       check('a V1 layout shows the standard diagram with a notice', card._layoutResult?.code === 'legacy-version' && /Version 1/.test(editor._layoutStatus.textContent));
       await drag('fm', 40, 60);
@@ -129,6 +137,9 @@
       check('enabling the option in YAML shows the editor section', !!editor._preview);
       document.getElementById('result').textContent = 'RESULT ' + out.join(' | ');
     }
+    // ?zoom=<steps> clicks + (positive) or − (negative) (for screenshots).
+    if (new URLSearchParams(location.search).has('zoom')) setTimeout(() => { const n = Number(new URLSearchParams(location.search).get('zoom'));
+      for (let i = 0; i < Math.abs(n); i++) editor.shadowRoot.querySelector(`[data-cmd="zoom-${n > 0 ? 'in' : 'out'}"]`).click(); }, 300);
     // ?select=<key> preselects a component (for screenshots).
     if (new URLSearchParams(location.search).has('select')) setTimeout(() => { editor._selected = new URLSearchParams(location.search).get('select'); editor._layoutControls(); }, 200);
     if (new URLSearchParams(location.search).has('selftest')) setTimeout(() => selftest().catch((e) => { document.getElementById('result').textContent = 'RESULT ERROR ' + e.stack; }), 300);

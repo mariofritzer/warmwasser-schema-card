@@ -3109,6 +3109,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       style.dataset.layoutPreview = ''; style.textContent = 'svg{max-height:none}';
       root.appendChild(style);
     }
+    this._layoutApplyZoom();
     this._layoutControls();
   }
   // Commit a validated layout; an invalid one keeps the last valid position.
@@ -3138,6 +3139,18 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       : layoutNotice(code, de);
   }
   _layoutMessage(text) { if (this._layoutStatus) this._layoutStatus.textContent = text; }
+  // Zoom scales only the drawing inside the preview card. The card frame keeps
+  // the size it had at 100 % and the drawing scrolls within it.
+  _layoutApplyZoom() {
+    const root = this._preview?.shadowRoot, frame = root?.getElementById('c');
+    if (!root) return;
+    let style = root.querySelector('style[data-layout-zoom]');
+    if (!style) { style = document.createElement('style'); style.dataset.layoutZoom = ''; root.appendChild(style); }
+    if (this._zoom === 1) { style.textContent = ''; this._zoomFrame = null; return; }
+    if (!this._zoomFrame && frame) this._zoomFrame = Math.round(frame.getBoundingClientRect().height);
+    style.textContent = `#c{overflow:auto;${this._zoomFrame ? `height:${this._zoomFrame}px;` : ''}}` +
+      `#c svg{width:${this._zoom * 100}%;max-width:none;margin:0 auto}`;
+  }
   // Port groups of the selected component whose sides are declared in the
   // model. Ports of one group (e.g. supply and return) always share a side.
   _layoutPortGroups(key) {
@@ -3270,7 +3283,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
     this._zoom ||= 1;
     const zoomLevel = box.querySelector('.zoom-level');
     const applyZoom = () => {
-      this._preview.style.width = `${this._zoom * 100}%`;
+      this._layoutApplyZoom();
       zoomLevel.textContent = `${Math.round(this._zoom * 100)} %`;
       box.querySelector('[data-cmd="zoom-out"]').disabled = this._zoom <= zooms[0];
       box.querySelector('[data-cmd="zoom-in"]').disabled = this._zoom >= zooms.at(-1);
@@ -3280,13 +3293,16 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       const cmd = ev.target.closest?.('button')?.dataset.cmd;
       if (!cmd) return;
       if (cmd.startsWith('zoom-')) {
-        const i = zooms.indexOf(this._zoom), scroller = box.querySelector('.preview');
-        const cx = (scroller.scrollLeft + scroller.clientWidth / 2) / scroller.scrollWidth, cy = (scroller.scrollTop + scroller.clientHeight / 2) / scroller.scrollHeight;
+        const i = zooms.indexOf(this._zoom), scroller = this._preview.shadowRoot?.getElementById('c');
+        const cx = scroller ? (scroller.scrollLeft + scroller.clientWidth / 2) / scroller.scrollWidth : 0.5;
+        const cy = scroller ? (scroller.scrollTop + scroller.clientHeight / 2) / scroller.scrollHeight : 0.5;
         this._zoom = cmd === 'zoom-reset' ? 1 : zooms[Math.max(0, Math.min(zooms.length - 1, i + (cmd === 'zoom-in' ? 1 : -1)))];
         applyZoom();
         // Keep the visible centre in place.
-        scroller.scrollLeft = cx * scroller.scrollWidth - scroller.clientWidth / 2;
-        scroller.scrollTop = cy * scroller.scrollHeight - scroller.clientHeight / 2;
+        if (scroller) {
+          scroller.scrollLeft = cx * scroller.scrollWidth - scroller.clientWidth / 2;
+          scroller.scrollTop = cy * scroller.scrollHeight - scroller.clientHeight / 2;
+        }
         this._layoutHighlight();
         return;
       }
@@ -3383,7 +3399,7 @@ class WarmwasserSchemaCardEditor extends HTMLElement {
       .layout-editor{margin:0 0 16px;border:1px solid var(--divider-color,#ddd);border-radius:10px;padding:10px}
       .layout-editor summary{cursor:pointer;font-weight:600}.layout-editor p{font-size:13px;color:var(--secondary-text-color)}
       .layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-ports{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}.layout-status{margin:8px 0;min-height:1.4em}
-      .preview{user-select:none;overflow:auto;max-height:70vh;border-radius:8px}.preview>*{display:block;min-width:0}
+      .preview{user-select:none}.preview>*{display:block;min-width:0}
       .layout-zoom{display:flex;gap:6px;justify-content:flex-end;margin-bottom:6px}.layout-zoom button{padding:4px 10px;min-width:36px}
     </style><div id="w"></div>`;
     const w = root.getElementById('w');
