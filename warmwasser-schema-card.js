@@ -639,8 +639,10 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   declarePortSides(components);
+  const fmScope = (heaters) => fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (heaters || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
-    routingScope: { fm: fm && (!wp || (c.wp.typ === 'luft' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && !c.heizstab_oben && !c.heizstab_unten && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20 } };
+    // layoutFm: the same scope with heaters, for experimental layouts only.
+    routingScope: { fm: fmScope(false), layoutFm: fmScope(true) } };
 
 }
 
@@ -730,7 +732,7 @@ const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-l
 // Editable keys: model component ids, plus `tanks` for both separate tanks.
 function layoutKeys(c, model) {
   // routingScope.fm already limits a heat pump to the simple air-source case.
-  if (!model.routingScope?.fm) return [];
+  if (!model.routingScope?.layoutFm) return [];
   return [...(c.typ === 'getrennt' ? ['hot-tank', 'buffer-tank', 'tanks'] : ['tank']), 'fm', ...(c.wp ? ['wp', 'valve'] : [])];
 }
 function layoutComponentIds(c, key) { return key === 'tanks' ? ['hot-tank', 'buffer-tank'] : [key]; }
@@ -863,13 +865,18 @@ function layoutVariant(c, parsed, flip) {
     const ref = `${id}.${name}`;
     setPortSide(model, ref, parsed.ports[ref] || auto(id, name));
   }
+  // Heaters sit inside their tank; only the terminal box protrudes on the
+  // right (x 198..214 around the heater axis), which pipes must avoid.
+  for (const id of ['upper-heater', 'lower-heater']) if (model.components[id]) model.components[id].routingAreas = [{ x: 92, y: 2, width: 16, height: 22 }];
   // Sensor plates block only their painted plate and connector line. They sit
-  // on the tank side with fewer module ports; on the buffer, away from the module.
+  // on the tank side with fewer module ports; on the buffer, away from the
+  // module. A tank with a heater keeps them on the left (the heater is right).
   for (const [id, b] of Object.entries(model.components)) {
     if (!id.startsWith('sensor-')) continue;
     const tank = model.components[b.parent], sides = Object.values(tank.ports).filter((p) => p.sides).map((p) => p.side);
-    const right = sides.length ? sides.filter((s) => s === 'left').length > sides.filter((s) => s === 'right').length
-      : fmCenter < tank.origin.x + tank.bounds.width / 2;
+    const heater = Object.values(model.components).some((h) => /-heater$/.test(h.id) && h.parent === tank.id);
+    const right = !heater && (sides.length ? sides.filter((s) => s === 'left').length > sides.filter((s) => s === 'right').length
+      : fmCenter < tank.origin.x + tank.bounds.width / 2);
     const dx = right ? tank.origin.x + tank.bounds.width - b.origin.x : 0;   // right plates start at the tank edge
     if (right) { b.side = 'right'; b.bounds = { ...b.bounds, x: dx }; }
     b.routingAreas = [{ x: dx - 1, y: 0, width: 76, height: 30 }];
@@ -1519,7 +1526,7 @@ function routeDiagramConnections(model, ids, options = {}) {
     if (edge.routingPolicy !== 'external') { result[id] = { status:'unsupported', reason:'connection-policy' }; continue; }
     if (!resolved[0].direction || !resolved.at(-1).direction) { result[id] = { status:'unsupported', reason:'direction-required' }; continue; }
     if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).length) { result[id] = { status:'failed', code:'invalid-options' }; continue; }
-    if (model.routingScope && !model.routingScope.fm) { result[id] = { status:'unsupported', reason:'unsupported-configuration' }; continue; }
+    if (model.routingScope && !(model.layoutRouting ? model.routingScope.layoutFm : model.routingScope.fm)) { result[id] = { status:'unsupported', reason:'unsupported-configuration' }; continue; }
     const routed = routeOrthogonalConnection({ from: resolved[0], to: resolved.at(-1), vias: resolved.slice(1,-1).map(p => ({ id:p.ref, x:p.x, y:p.y })), obstacles, clearance:13, lead:16, ...(model.layoutRouting ? { astar: true } : {}) });
     if (routed.status !== 'routed') { result[id] = routed; continue; }
     const role = resolved[0].role === 'supply' && resolved.at(-1).role === 'supply' ? 'supply' : 'neutral';

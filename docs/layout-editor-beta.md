@@ -53,9 +53,11 @@ gespeichert. Das frühere Format `version: 1` wird mit einem Hinweis abgelehnt
 Fehlercode gemeldet.
 
 Unterstützt sind zunächst Anlagen mit Frischwassermodul, optional mit einer einfachen
-Luft-Wärmepumpe (ohne Wärmemengenzähler, SG Ready und Quellentemperaturen), ohne
-Heizkreise, Zusatzwärme, Solar, Heizstäbe, Zirkulation, Trinkwasser- und
-Legionellenanzeige – also die Konfigurationen, die der vorhandene Router abdeckt. Für andere
+Luft-Wärmepumpe (ohne Wärmemengenzähler, SG Ready und Quellentemperaturen) und
+optional mit Heizstäben, ohne Heizkreise, Zusatzwärme, Solar, Zirkulation,
+Trinkwasser- und Legionellenanzeige – also die Konfigurationen, die der vorhandene
+Router abdeckt. Heizstäbe wandern mit ihrem Speicher; Leitungen halten Abstand zu
+ihrem Anschlusskasten, und Fühlerplatten bleiben an einem Speicher mit Heizstab links. Für andere
 Anlagen zeigt der Editor keine verschiebbaren Bauteile. Kann eine gespeicherte
 Anordnung nicht dargestellt werden, zeigt die Karte die Standardansicht mit einem
 kurzen Hinweis; die gespeicherten Werte bleiben erhalten.
@@ -114,9 +116,11 @@ is rejected with a notice (reset or rearrange in the editor); invalid entries ar
 reported with their error code.
 
 The first scope covers systems with a fresh water module, optionally with a simple
-air heat pump (no heat meter, SG Ready or source temperatures), without heating
-circuits, additional heat, solar, heaters, circulation, domestic water and legionella
-display, i.e. the configurations the existing router covers. For
+air heat pump (no heat meter, SG Ready or source temperatures) and optionally with
+heaters, without heating circuits, additional heat, solar, circulation, domestic water
+and legionella display, i.e. the configurations the existing router covers. Heaters
+move with their tank; pipes keep clear of their terminal box, and sensor plates stay
+on the left of a tank with a heater. For
 other systems the editor offers no movable components. If a saved arrangement cannot
 be drawn, the card shows the standard diagram with a short notice and keeps the saved
 values.

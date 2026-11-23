@@ -205,3 +205,35 @@ test('moving the valve down keeps the module pipes on the facing sides', () => {
   assert.equal(card._drawnModel.fmLeft, false);
   assert.equal(card._drawnModel.components['hot-tank'].ports['fm-supply'].side, 'right');
 });
+
+// Heaters belong to their tank; only the terminal box protrudes on the right.
+const withHeaters = (extra, components) => config({ heizstab_oben: { leistung: 'sensor.wp' }, heizstab_unten: { leistung: 'sensor.wp' }, ...extra, ...at(components) });
+
+test('cards with heaters are movable and heaters follow their tank', () => {
+  const { card, html } = render(withHeaters({}, { 'hot-tank': { x: 32, y: 14 }, fm: { x: 380, y: 54 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  const m = card._drawnModel;
+  assert.equal(m.components['upper-heater'].origin.x, 66);
+  assert.ok(m.components['upper-heater'].routingAreas.length === 1);
+  assert.match(html, /Heizstab oben/);
+  const wp = render(withHeaters({ wp: { leistung: 'sensor.wp' } }, { wp: { x: 450, y: 270 } }));
+  assert.equal(wp.card._layoutResult.status, 'applied');
+});
+
+test('a tank with a heater keeps its sensor plates on the left', () => {
+  const { card } = render(withHeaters({}, { fm: { x: -200, y: 14 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(card._drawnModel.components['hot-tank'].ports['fm-supply'].side, 'left');
+  for (const id of ['sensor-0', 'sensor-1', 'sensor-2']) assert.notEqual(card._drawnModel.components[id].side, 'right');
+});
+
+test('pipes keep clear of the heater terminal box', () => {
+  const { card } = render(withHeaters({ wp: { leistung: 'sensor.wp' } }, { wp: { x: 450, y: 270 } }));
+  const m = card._drawnModel, h = m.components['upper-heater'], area = h.routingAreas[0];
+  const box = { x: h.origin.x + area.x, y: h.origin.y + area.y, width: area.width, height: area.height };
+  for (const route of Object.values(m.layoutRoutes)) for (let i = 1; i < route.points.length; i++) {
+    const a = route.points[i - 1], b = route.points[i];
+    const hit = Math.max(a.x, b.x) >= box.x - 5 && Math.min(a.x, b.x) <= box.x + box.width + 5 && Math.max(a.y, b.y) >= box.y - 5 && Math.min(a.y, b.y) <= box.y + box.height + 5;
+    assert.ok(!hit, `segment ${JSON.stringify([a, b])} touches the heater terminal`);
+  }
+});

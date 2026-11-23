@@ -17,7 +17,7 @@
        receives each emitted configuration like Home Assistant would.
        `?selftest=1` runs automated pointer checks and prints RESULT. -->
   <h1>Layout-Editor (Beta)</h1>
-  <p><button id="split">Getrennte Speicher + FM</button> <button id="single">Schichtspeicher + FM</button> <button id="wp">Mit Luft-Wärmepumpe</button> <button id="wp-meter">WP mit Wärmemengenzähler (nicht unterstützt)</button></p>
+  <p><button id="split">Getrennte Speicher + FM</button> <button id="single">Schichtspeicher + FM</button> <button id="wp">Mit Luft-Wärmepumpe</button> <button id="hs">Mit Heizstäben</button> <button id="wp-meter">WP mit Wärmemengenzähler (nicht unterstützt)</button></p>
   <main><div id="editor"></div><div><div id="card"></div><pre id="config"></pre></div></main>
   <pre id="result"></pre>
   <script>window.onerror = (m, f, l, c, e) => { document.getElementById('result').textContent += 'RESULT ONERROR ' + m + ' ' + l + ':' + c + ' ' + (e && e.stack); };</script>
@@ -25,7 +25,7 @@
   <script>
     const hass = { language: 'de', states: {
       'sensor.fm_temp': { state: '40.3' }, 'binary_sensor.fm': { state: 'on' }, 'sensor.ww': { state: '42.8' },
-      'sensor.top': { state: '40.5' }, 'sensor.bottom': { state: '36.5' }, 'sensor.wp': { state: '1200' } } };
+      'sensor.top': { state: '40.5' }, 'sensor.bottom': { state: '36.5' }, 'sensor.wp': { state: '1200' }, 'sensor.hs': { state: '1500' }, 'sensor.hs2': { state: '0' } } };
     const base = (typ, extra = {}) => ({ type: 'custom:warmwasser-schema-card', titel: 'Editor-Test', sprache: 'de', hersteller: 'M-TEC',
       speicher: { typ }, fm: { temp: 'sensor.fm_temp', pumpe: 'binary_sensor.fm' }, layout_editor_beta: true,
       fuehler: [{ name: 'Warmwasser', entity: 'sensor.ww', hoehe: 20 }, { name: 'Puffer oben', entity: 'sensor.top', hoehe: 68 }, { name: 'Puffer unten', entity: 'sensor.bottom', hoehe: 90 }], ...extra });
@@ -47,8 +47,9 @@
     document.getElementById('split').onclick = () => install(base('getrennt'));
     document.getElementById('single').onclick = () => install(base('schicht'));
     document.getElementById('wp').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp' } }));
+    document.getElementById('hs').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp' }, heizstab_oben: { leistung: 'sensor.hs' }, heizstab_unten: { leistung: 'sensor.hs2' } }));
     document.getElementById('wp-meter').onclick = () => install(base('getrennt', { wp: { leistung: 'sensor.wp', wmz: 'sensor.wp' } }));
-    install(base('getrennt', { ...(new URLSearchParams(location.search).has('wp') ? { wp: { leistung: 'sensor.wp' } } : {}), ...(new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":2,"components":{"fm":{"x":380,"y":74},"buffer-tank":{"x":222,"y":203}}}') } : {}) }));
+    install(base('getrennt', { ...(new URLSearchParams(location.search).has('wp') ? { wp: { leistung: 'sensor.wp' } } : {}), ...(new URLSearchParams(location.search).has('hs') ? { heizstab_oben: { leistung: 'sensor.hs' }, heizstab_unten: { leistung: 'sensor.hs2' } } : {}), ...(new URLSearchParams(location.search).has('demo') ? { layout: JSON.parse(new URLSearchParams(location.search).get('demo') || '{"version":2,"components":{"fm":{"x":380,"y":74},"buffer-tank":{"x":222,"y":203}}}') } : {}) }));
 
     // Synthetic mouse drag in SVG units, relative to the component's centre.
     async function drag(id, dx, dy) {
