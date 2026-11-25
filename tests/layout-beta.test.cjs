@@ -261,3 +261,74 @@ test('a collision names the overlapping parts', () => {
   const parts = [card._layoutResult.detail.a, card._layoutResult.detail.b].map((p) => p.id).sort();
   assert.deepEqual(plain(parts), ['sensor-1', 'valve']);
 });
+
+// Brine and water heat pumps with a heat source. Canonical: heat pump (330,150),
+// heat source (382,404); its pipes leave the heat pump at the bottom.
+const withSource = (typ, components, wp = {}) => config({ wp: { leistung: 'sensor.wp', typ, quelle_ein: 'sensor.fm_temp', quelle_aus: 'sensor.fm_temp', ...wp }, ...at(components) });
+
+test('brine and water heat pumps offer the heat source; air heat pumps do not', () => {
+  for (const typ of ['sole', 'wasser']) {
+    const { card } = render(withSource(typ, { 'heat-source': { x: 560, y: 330 } }));
+    assert.equal(card._layoutResult.status, 'applied', typ);
+    assert.deepEqual(plain(card._drawnModel.components['heat-source'].origin), { x: 560, y: 330 });
+  }
+  assert.equal(render(withWp({ 'heat-source': { x: 560, y: 330 } })).card._layoutResult.code, 'unknown-id');
+  const meter = render(withSource('sole', { wp: { x: 450, y: 270 } }, { wmz: 'sensor.wp' }));
+  assert.equal(meter.card._layoutResult.code, 'unsupported-configuration');
+});
+
+test('without its own position the heat source follows the heat pump and its pipes run straight', () => {
+  for (const typ of ['sole', 'wasser']) {
+    const { card } = render(withSource(typ, { wp: { x: 450, y: 270 } }));
+    assert.equal(card._layoutResult.status, 'applied', typ);
+    const m = card._drawnModel;
+    assert.deepEqual(plain(m.components['heat-source'].origin), { x: 502, y: 524 });
+    // Nine pipes: two for the module, five for the heat pump, two for the source.
+    assert.equal(Object.keys(m.layoutRoutes).length, 9);
+    for (const id of ['source-in', 'source-out']) {
+      const route = m.layoutRoutes[id];
+      assert.equal(route.status, 'routed');
+      assert.ok(route.points.every((point) => point.x === route.points[0].x), `${typ} ${id} is a straight vertical line`);
+    }
+  }
+});
+
+test('brine draws the ground loop, well water reverses the flow animation', () => {
+  const sole = render(withSource('sole', { wp: { x: 450, y: 270 } }));
+  // The loop joins the source ports (520,660) and (550,660) and dips by 12 units.
+  assert.ok(sole.html.includes('M520 660Q520 672 535 672Q550 672 550 660'), 'ground loop');
+  assert.ok(!sole.html.includes('animation-direction:reverse'));
+  const water = render(withSource('wasser', { wp: { x: 450, y: 270 } }));
+  assert.ok(!water.html.includes('M520 660Q520 672'));
+  assert.ok(water.html.includes('animation-direction:reverse'), 'well water flows against the connection direction');
+});
+
+test('an explicit heat source position wins and the pipes route around the heat pump', () => {
+  const { card } = render(withSource('wasser', { 'heat-source': { x: 560, y: 330 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.ok(card._drawnModel.layoutRoutes['source-in'].points.length > 2);
+  assert.deepEqual(plain(card._drawnModel.components.wp.origin), { x: 330, y: 150 });
+});
+
+test('the heat pump and its source can move to the left of the tanks', () => {
+  for (const typ of ['sole', 'wasser']) {
+    const { card } = render(withSource(typ, { wp: { x: -260, y: 150 } }));
+    assert.equal(card._layoutResult.status, 'applied', typ);
+    const m = card._drawnModel;
+    assert.equal(m.components['heat-source'].origin.x, -208);
+    assert.equal(m.components.valve.ports.wp.side, 'left');
+  }
+});
+
+test('an overlap with the heat source names it', () => {
+  const { card } = render(withSource('sole', { 'buffer-tank': { x: 382, y: 390 } }));
+  assert.equal(card._layoutResult.code, 'collision');
+  const ids = [card._layoutResult.detail.a.id, card._layoutResult.detail.b.id];
+  assert.ok(ids.includes('heat-source'), JSON.stringify(plain(ids)));
+});
+
+test('cards with a source but without layout are drawn as before', () => {
+  const standard = render(config({ wp: { leistung: 'sensor.wp', typ: 'sole', quelle_ein: 'sensor.fm_temp' } })).html;
+  assert.equal(render(config({ wp: { leistung: 'sensor.wp', typ: 'sole', quelle_ein: 'sensor.fm_temp' }, layout_editor_beta: true })).html, standard);
+  assert.match(standard, /V381A9 9 0 0 1 400 399/);   // the fixed legacy source pipe
+});

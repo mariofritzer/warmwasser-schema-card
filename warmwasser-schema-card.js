@@ -658,7 +658,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
   }
   // Routing areas are local painted exclusion zones, separate from reference bounds.
   if (fm) {
-    for (const id of new Set([hot.id, buffer.id, 'fm', ...(wp ? ['wp', 'valve'] : [])])) {
+    for (const id of new Set([hot.id, buffer.id, 'fm', ...(wp ? ['wp', 'valve'] : []), ...(components['heat-source'] ? ['heat-source'] : [])])) {
       const b = components[id].bounds;
       components[id].routingAreas = [{ ...b }];
       for (const port of Object.values(components[id].ports)) if (port.stub)
@@ -669,9 +669,10 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   declarePortSides(components);
-  const fmScope = (heaters) => fm && (!wp || (c.wp.typ === 'luft' && c.wp.ventil_position !== 'vorlauf' && !c.wp.wmz && !c.wp.sg_ready && !c.wp.quelle_ein && !c.wp.quelle_aus && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (heaters || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
+  const fmScope = (layout) => fm && (!wp || ((c.wp.typ === 'luft' ? !c.wp.quelle_ein && !c.wp.quelle_aus : layout && ['sole', 'wasser'].includes(c.wp.typ)) && c.wp.ventil_position !== 'vorlauf' && !c.wp.wmz && !c.wp.sg_ready && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (layout || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
-    // layoutFm: the same scope with heaters, for experimental layouts only.
+    // layoutFm: the same scope with heaters and brine/water heat pumps with a
+    // source, for experimental layouts only.
     routingScope: { fm: fmScope(false), layoutFm: fmScope(true) } };
 
 }
@@ -754,8 +755,8 @@ function diagramStub(model, reference) {
  * rendering is unchanged. First scope: configurations whose fresh-water pipes
  * the router already covers. */
 const LAYOUT_LABELS = {
-  de: { tanks: 'Beide Speicher', tank: 'Speicher', 'hot-tank': 'Warmwasserspeicher', 'buffer-tank': 'Pufferspeicher', fm: 'Frischwassermodul', wp: 'Wärmepumpe', valve: 'Umschaltventil' },
-  en: { tanks: 'Both tanks', tank: 'Tank', 'hot-tank': 'Hot-water tank', 'buffer-tank': 'Buffer tank', fm: 'Fresh water module', wp: 'Heat pump', valve: 'Diverter valve' },
+  de: { tanks: 'Beide Speicher', tank: 'Speicher', 'hot-tank': 'Warmwasserspeicher', 'buffer-tank': 'Pufferspeicher', fm: 'Frischwassermodul', wp: 'Wärmepumpe', valve: 'Umschaltventil', 'heat-source': 'Wärmequelle' },
+  en: { tanks: 'Both tanks', tank: 'Tank', 'hot-tank': 'Hot-water tank', 'buffer-tank': 'Buffer tank', fm: 'Fresh water module', wp: 'Heat pump', valve: 'Diverter valve', 'heat-source': 'Heat source' },
 };
 const LAYOUT_LIMIT = 600;
 const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-layout', 'unknown-id', 'unknown-port', 'invalid-position', 'invalid-mode', 'invalid-side', 'out-of-range'];
@@ -763,7 +764,7 @@ const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-l
 function layoutKeys(c, model) {
   // routingScope.fm already limits a heat pump to the simple air-source case.
   if (!model.routingScope?.layoutFm) return [];
-  return [...(c.typ === 'getrennt' ? ['hot-tank', 'buffer-tank', 'tanks'] : ['tank']), 'fm', ...(c.wp ? ['wp', 'valve'] : [])];
+  return [...(c.typ === 'getrennt' ? ['hot-tank', 'buffer-tank', 'tanks'] : ['tank']), 'fm', ...(c.wp ? ['wp', 'valve'] : []), ...(model.components['heat-source'] ? ['heat-source'] : [])];
 }
 function layoutComponentIds(c, key) { return key === 'tanks' ? ['hot-tank', 'buffer-tank'] : [key]; }
 const layoutObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -867,7 +868,8 @@ function layoutDiagramModel(c) {
   // side) or the facing sides fail; the shorter routed variant wins.
   let best = null, failure = null, detail = null;
   // With a heat pump the router requires the complete primary batch.
-  const routingIds = ['fm-supply', 'fm-return', ...(c.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  const routingIds = ['fm-supply', 'fm-return', ...(c.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : []),
+    ...(c.wp && ['sole', 'wasser'].includes(c.wp.typ) ? ['source-in', 'source-out'] : [])];
   const evaluate = (model) => {
     const overlap = layoutCollision(c, model);
     if (overlap) { if (!failure) { failure = 'collision'; detail = overlap; } return; }
@@ -909,6 +911,14 @@ function layoutVariant(c, parsed, flip) {
     valve.origin.y = valve.baseOrigin.y + tank.origin.y - tank.baseOrigin.y;
   }
   model.layoutRouting = true;
+  // The heat source belongs to the heat pump: without its own position it moves
+  // along (same offset), keeping the pipes between them straight.
+  const sourcePart = model.components['heat-source'], pumpPart = model.components.wp;
+  if (sourcePart && pumpPart && parsed.components.wp && !parsed.components['heat-source']) {
+    sourcePart.origin.x = sourcePart.baseOrigin.x + pumpPart.origin.x - pumpPart.baseOrigin.x;
+    sourcePart.origin.y = sourcePart.baseOrigin.y + pumpPart.origin.y - pumpPart.baseOrigin.y;
+  }
+  if (sourcePart) for (const id of ['source-in', 'source-out']) model.connections[id].routingPolicy = 'external';
   const split = c.typ === 'getrennt', fm = model.components.fm, hot = model.components[split ? 'hot-tank' : 'tank'];
   const center = (b) => b.origin.x + b.bounds.width / 2, fmCenter = center(fm), wp = model.components.wp;
   model.fmLeft = flip.fm ?? fmCenter < center(hot);          // tank fm ports on the left
@@ -1544,8 +1554,10 @@ function resolveLegacyWpHeatingIncidences(model) {
 function routeDiagramConnections(model, ids, options = {}) {
   const result = {}, candidates = [];
   const primary = ['fm-supply', 'fm-return', 'wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'];
+  // The source pipes may accompany the primary batch (layouts only).
+  const sourceIds = ['source-in', 'source-out'], batch = ids.filter(id => !sourceIds.includes(id));
   if (model.components.wp && model.components.fm && ids.some(id => primary.includes(id)) &&
-      (ids.length !== primary.length || primary.some(id => !ids.includes(id)))) {
+      (batch.length !== primary.length || primary.some(id => !ids.includes(id)))) {
     for (const id of ids) result[id] = { status:'unsupported', reason:'incomplete-batch' };
     return result;
   }
@@ -1663,7 +1675,8 @@ function sequentialLayoutRoutes(candidates, obstacles) {
 
 // Select and validate the complete routed batch before drawing any pipe.
 function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
-  const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : [])];
+  const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : []),
+    ...(model.layoutRouting && WP && model.connections['source-in'] ? ['source-in', 'source-out'] : [])];
   const movedRouting = FM && (model.layoutRouting || [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; }));
   const routes = movedRouting ? (model.layoutRoutes || routeDiagramConnections(model, routingIds)) : null;
   if (routes) for (const [id, route] of Object.entries(routes)) if (route.status !== 'routed') {
@@ -1866,11 +1879,20 @@ function heatPumpState(c, L, F, S, ON, NUM) {
 }
 
 // Heat source pipes (brine/water): independent of the valve position.
-function renderSourcePipes({ model, point, F, W, ON, QT, wp_on }) {
+function renderSourcePipes({ model, point, F, W, ON, QT, wp_on, primaryPipe }) {
   let o = '';
     const qon = sourcePumpState(W, wp_on, ON);
     const ia = point(model.connections['source-in'].from), ib = point(model.connections['source-in'].to);
     const oa = point(model.connections['source-out'].from), ob = point(model.connections['source-out'].to);
+    if (model.layoutRouting && primaryPipe) {
+      // Layouts: both connections are routed with the other pipes. Brine flows
+      // down the first pipe, through the loop and back up; well water flows the
+      // other way, against the direction of the connections.
+      const reverse = QT === 'wasser';
+      o += primaryPipe('source-in', '', F.quelle, qon, 1, reverse) + primaryPipe('source-out', '', F.quelle, qon, 1, reverse);
+      if (QT === 'sole') o += rohr(`M${ib.x} ${ib.y}Q${ib.x} ${ib.y + 12} ${(ib.x + oa.x) / 2} ${ib.y + 12}Q${oa.x} ${oa.y + 12} ${oa.x} ${oa.y}`, F.quelle, qon);
+      return o;
+    }
     if (QT === 'sole') {
       const ground = model.connections['source-ground-loop'], gs = point(ground.from), ge = point(ground.to);
       const toGround = gs.x !== ib.x || gs.y !== ib.y ? `H${gs.x}V${gs.y}` : '';
@@ -1930,7 +1952,7 @@ function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SP
   }
   if (WP && c.wp.ventil_position === 'vorlauf') {
     o += renderSupplyValvePipes({ primaryPipe, FM, model, point, SPLIT, y_bo, y_bu, y_ro, y_ru, CK, CW, wpO, tO, wpU, tU, wp_on });
-    if (QS) o += renderSourcePipes({ model, point, F, W, ON, QT, wp_on });
+    if (QS) o += renderSourcePipes({ model, point, F, W, ON, QT, wp_on, primaryPipe });
   } else if (WP) {
     const returnTee = HK ? model.junctions[model.connections['wp-lower-return'].via[0]] : null;
     const wo = point(model.connections['wp-upper-return'].from), wv = point(model.connections['wp-upper-return'].to);
@@ -1958,7 +1980,7 @@ function renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SP
     // record incidence without changing the legacy SVG paint order.
     const lowerBridge = FM && SPLIT ? 'H268A6 6 0 0 0 256' : 'H270A8 8 0 0 0 254';
     o += primaryPipe('wp-lower-supply', `M${wl.x} ${wl.y}${sj && sj.y !== wl.y ? `V${sj.y}` : ''}${lowerBridge} ${sj ? sj.y : y_ru}H${wlt.x}${wlt.y !== (sj ? sj.y : y_ru) ? `V${wlt.y}` : ''}`, CW, wpU, tU);
-    if (QS) o += renderSourcePipes({ model, point, F, W, ON, QT, wp_on });
+    if (QS) o += renderSourcePipes({ model, point, F, W, ON, QT, wp_on, primaryPipe });
   }
   return o;
 }
@@ -2397,9 +2419,9 @@ function additionalHeatStatus(kTyp, kFeuerTyp, k_feuer, k_glut, L) {
 }
 
 /* ---------- Zustandsfreie SVG-Bausteine / Stateless SVG primitives ---------- */
-const rohr = (d, cl, f = false, t = 1) =>
+const rohr = (d, cl, f = false, t = 1, reverse = false) =>
   `<path d="${d}" class="w0"/><path d="${d}" class="w1" style="stroke:${cl}"/><path d="${d}" class="w2"/>` +
-  (f ? `<path d="${d}" class="w3"${t !== 1 ? ` style="animation-duration:${r2(t)}s"` : ''}/>` : '');
+  (f ? `<path d="${d}" class="w3"${t !== 1 || reverse ? ` style="${[t !== 1 ? `animation-duration:${r2(t)}s` : '', reverse ? 'animation-direction:reverse' : ''].filter(Boolean).join(';')}"` : ''}/>` : '');
 const tee = (x, y) => `<circle cx="${x}" cy="${y}" r="5.5" class="wn"/><circle cx="${x - 1.5}" cy="${y - 1.5}" r="1.6" fill="#fff" opacity=".45"/>`;
 const stub = (x, y, w, hh) => `<rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="2" class="wk"/>`;
 const zaehlerSym = (x, y) => `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" rx="2" fill="#2b2f35" stroke="#cfd4da"/><circle cx="${x}" cy="${y}" r="2.6" fill="none" stroke="#cfd4da"/>`;
@@ -2894,8 +2916,8 @@ class WarmwasserSchemaCard extends HTMLElement {
     /* ---------- Rohre ---------- */
     const routes = layoutRoutes !== undefined ? layoutRoutes : preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
     const primaryPipes = {};
-    const primaryPipe = (id, legacyPath, color, on, duration) => {
-      const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration);
+    const primaryPipe = (id, legacyPath, color, on, duration, reverse) => {
+      const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration, reverse);
       if (routes) { primaryPipes[id] = svg; return ''; }
       return svg;
     };
