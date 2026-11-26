@@ -85,9 +85,15 @@ Wärmepumpe und optional mit Heizstäben. Die Wärmepumpe darf Luft-, Sole- oder
 Wasser-Wärmepumpe sein, jeweils ohne Wärmemengenzähler und SG Ready. Bei Luft sind
 zusätzlich keine Quellentemperaturen (`quelle_ein`, `quelle_aus`) erlaubt; bei Sole
 und Wasser sind Quellentemperaturen und Quellenpumpe möglich. Nicht unterstützt sind Heizkreise, Zusatzwärme, Solar,
-Zirkulation, Trinkwasser- und Legionellenanzeige sowie das Umschaltventil im Vorlauf
-(`wp.ventil_position: vorlauf`); dort bietet der Editor keine
-verschiebbaren Bauteile an. Kann eine gespeicherte Anordnung nicht dargestellt werden,
+Zirkulation, Trinkwasser- und Legionellenanzeige; dort bietet der Editor keine
+verschiebbaren Bauteile an. Das Umschaltventil im Vorlauf (`wp.ventil_position:
+vorlauf`) wird mit beiden Rücklauf-Anbindungen geroutet. Bei `kombiniert` liegt der
+Abzweig der Rückläufe vor dem WP-Rücklauf, an der nächsten freien Stelle. Im Layout
+speist der seitliche WP-Ausgang das Ventil gerade; das mitlaufende Ventil sitzt davor.
+Liegt der Puffer höher als der Warmwasserspeicher, versorgt der obere Ventilausgang den
+Puffer; die Stellungsanzeige des Ventils dreht mit.
+Zwischen Ventil und Speicher braucht es Platz für die Rohre; Anordnungen mit Rohren um
+andere Bauteile herum werden abgelehnt. Kann eine gespeicherte Anordnung nicht dargestellt werden,
 zeigt die Karte die Standardansicht mit einem kurzen Hinweis; die gespeicherten Werte
 bleiben erhalten.
 
@@ -179,8 +185,13 @@ each without heat meter and SG Ready. For air, source temperatures (`quelle_ein`
 `quelle_aus`) are not allowed; for brine and water, source temperatures and the source
 pump are possible. Not
 supported are heating circuits, additional heat, solar, circulation, domestic water and
-legionella display, as well as the diverter valve in the supply
-(`wp.ventil_position: vorlauf`); there the editor offers no movable components. If a saved
+legionella display; there the editor offers no movable components. The diverter
+valve in the supply (`wp.ventil_position: vorlauf`) is routed with both return
+connections. With `kombiniert` the returns join at a tee in front of the heat pump
+return, at the nearest free place. In layouts the heat pump's side outlet feeds the
+valve straight; a following valve sits in front of it. With the buffer above the
+hot-water tank, the valve's upper outlet feeds the buffer; the valve indicator follows. Valve and tanks need room for
+the pipes between them; arrangements with pipes around other components are rejected. If a saved
 arrangement cannot be drawn, the card shows the standard diagram with a short notice
 and keeps the saved values.
 

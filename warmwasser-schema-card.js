@@ -669,7 +669,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
     }
   }
   declarePortSides(components);
-  const fmScope = (layout) => fm && (!wp || ((c.wp.typ === 'luft' ? !c.wp.quelle_ein && !c.wp.quelle_aus : layout && ['sole', 'wasser'].includes(c.wp.typ)) && c.wp.ventil_position !== 'vorlauf' && !c.wp.wmz && !c.wp.sg_ready && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (layout || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
+  const fmScope = (layout) => fm && (!wp || ((c.wp.typ === 'luft' ? !c.wp.quelle_ein && !c.wp.quelle_aus : layout && ['sole', 'wasser'].includes(c.wp.typ)) && (layout || c.wp.ventil_position !== 'vorlauf') && !c.wp.wmz && !c.wp.sg_ready && String(c.name_wp ?? '').length <= 5 && String(c.text_wp_an ?? '').length <= 12 && String(c.text_wp_aus ?? '').length <= 12)) && !hk && !c.solar && !c.kamin && !c.zirkulationspumpe && !c.trinkwasser && (layout || (!c.heizstab_oben && !c.heizstab_unten)) && !c.legionellen && String(c.hersteller ?? '').length <= 8 && String(c.name_fm ?? '').length <= 3 && c.fuehler.every(f => String(f.name ?? '').length <= 20) && String(c.text_tw_kalt ?? '').length <= 20 && String(c.text_tw_warm ?? '').length <= 20;
   return { components, junctions, connections, geometry: { yt, ro, bo, ru, bu, ym, heaterY },
     // layoutFm: the same scope with heaters and brine/water heat pumps with a
     // source, for experimental layouts only.
@@ -683,7 +683,7 @@ function finishDiagramModel(c, builder, geometry, hot, buffer) {
 const PORT_SIDES = {
   'hot-tank': ['fm-supply', 'fm-return', 'wp-supply', 'wp-return'], 'buffer-tank': ['lower-supply', 'lower-return'],
   tank: ['fm-supply', 'wp-supply', 'wp-return', 'lower-supply', 'lower-return'], fm: ['supply', 'return'],
-  wp: ['lower-supply', 'return'], valve: ['wp'],
+  wp: ['lower-supply', 'return', 'return-lower', 'valve-supply'], valve: ['wp'],
 };
 // The valve symbol is asymmetric: its side port turns the whole symbol, so the
 // top and bottom ports move with it.
@@ -761,6 +761,9 @@ const LAYOUT_LABELS = {
 const LAYOUT_LIMIT = 600;
 const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-layout', 'unknown-id', 'unknown-port', 'invalid-position', 'invalid-mode', 'invalid-side', 'out-of-range'];
 // Editable keys: model component ids, plus `tanks` for both separate tanks.
+// Heat pump pipes of the routed batch. With the valve in the supply the valve
+// is fed by the heat pump (wp-valve-supply) instead of returning to it.
+const wpPrimaryIds = (model) => ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', ...(model.connections['wp-valve-supply'] ? ['wp-valve-supply', ...(model.connections['wp-return'] ? ['wp-return'] : [])] : ['wp-valve-return'])];
 function layoutKeys(c, model) {
   // routingScope.fm already limits a heat pump to the simple air-source case.
   if (!model.routingScope?.layoutFm) return [];
@@ -868,7 +871,7 @@ function layoutDiagramModel(c) {
   // side) or the facing sides fail; the shorter routed variant wins.
   let best = null, failure = null, detail = null;
   // With a heat pump the router requires the complete primary batch.
-  const routingIds = ['fm-supply', 'fm-return', ...(c.wp ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : []),
+  const routingIds = ['fm-supply', 'fm-return', ...(c.wp ? wpPrimaryIds(diagramModel(c)) : []),
     ...(c.wp && ['sole', 'wasser'].includes(c.wp.typ) ? ['source-in', 'source-out'] : [])];
   const evaluate = (model) => {
     const overlap = layoutCollision(c, model);
@@ -877,7 +880,15 @@ function layoutDiagramModel(c) {
     const bad = Object.values(routes).find((r) => r.status !== 'routed');
     if (bad) { failure ??= bad.code || bad.reason; return; }
     let length = 0;
-    for (const r of Object.values(routes)) for (let i = 1; i < r.points.length; i++) length += Math.abs(r.points[i].x - r.points[i - 1].x) + Math.abs(r.points[i].y - r.points[i - 1].y);
+    for (const r of Object.values(routes)) {
+      let own = 0;
+      for (let i = 1; i < r.points.length; i++) own += Math.abs(r.points[i].x - r.points[i - 1].x) + Math.abs(r.points[i].y - r.points[i - 1].y);
+      // A pipe around other components is no readable arrangement (checked
+      // with the valve in the supply, where the room between valve and tanks is short).
+      const a = r.points[0], b = r.points.at(-1);
+      if (model.connections['wp-valve-supply'] && own > Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + 400) { failure ??= 'detour'; return; }
+      length += own;
+    }
     model.layoutRoutes = routes;   // reused by the renderer
     if (!best || length < best.length) best = { model, length };
   };
@@ -903,12 +914,26 @@ function layoutVariant(c, parsed, flip) {
   // follows the heat pump horizontally to its tank-facing side and stays at the
   // height of the tank returns it connects.
   const pump = model.components.wp, valve = model.components.valve;
+  // Valve in the supply (layouts only): the heat pump feeds the valve from its
+  // side outlet at the height of the buffer supply, like the lower supply of
+  // the return variant, instead of over the top.
+  const supplyValve = !!model.connections['wp-valve-supply'];
+  if (supplyValve) {
+    const y = model.geometry.ru - pump.baseOrigin.y;
+    pump.ports['valve-supply'] = { id: 'valve-supply', x: -4, y, direction: 'left', medium: 'heating-water', role: 'supply', stub: { x: -8, y: y - 6, width: 10, height: 12 }, canonicalSide: 'left' };
+    declarePortSides({ wp: pump });
+    model.connections['wp-valve-supply'].from = 'wp.valve-supply';
+  }
   if (pump && valve && parsed.components.wp && !parsed.components.valve) {
     const tank = model.components[c.typ === 'getrennt' ? 'hot-tank' : 'tank'];
-    const gap = pump.baseOrigin.x - (valve.baseOrigin.x + valve.bounds.width);
+    // In the supply the straight feed needs less room, leaving more for the
+    // pipes between valve and tanks.
+    const gap = supplyValve ? 40 : pump.baseOrigin.x - (valve.baseOrigin.x + valve.bounds.width);
     const left = pump.origin.x + pump.bounds.width / 2 < tank.origin.x + tank.bounds.width / 2;
     valve.origin.x = left ? pump.origin.x + pump.bounds.width + gap : pump.origin.x - gap - valve.bounds.width;
     valve.origin.y = valve.baseOrigin.y + tank.origin.y - tank.baseOrigin.y;
+    // In the supply it sits in front of the side outlet (straight feed).
+    if (supplyValve) valve.origin.y = pump.origin.y + pump.ports['valve-supply'].y - valve.ports.wp.y;
   }
   model.layoutRouting = true;
   // The heat source belongs to the heat pump: without its own position it moves
@@ -947,6 +972,55 @@ function layoutVariant(c, parsed, flip) {
     const dx = right ? tank.origin.x + tank.bounds.width - b.origin.x : 0;   // right plates start at the tank edge
     if (right) { b.side = 'right'; b.bounds = { ...b.bounds, x: dx }; }
     b.routingAreas = [{ x: dx - 1, y: 0, width: 76, height: 30 }];
+  }
+  // Valve in the supply: the heat pump feeds the valve, which is routed like
+  // the other primary pipes.
+  if (model.connections['wp-valve-supply']) {
+    model.connections['wp-valve-supply'].routingPolicy = 'external';
+    // A buffer above the hot-water tank takes the valve's upper outlet, so
+    // both supplies leave the valve towards their tank without turning back.
+    const at = (ref) => { const [id, name] = ref.split('.'), b = model.components[id]; return b.origin.y + b.ports[name].y; };
+    const k = model.connections;
+    if (split && at(k['wp-lower-supply'].to) < at(k['wp-upper-supply'].to)) {
+      k['wp-upper-supply'].from = 'valve.lower'; k['wp-lower-supply'].from = 'valve.upper';
+      model.valveSwapped = true;
+    }
+    // Combined returns: both tank returns end at a junction in front of the
+    // heat pump return port, each arriving from its own side; one more pipe
+    // joins the junction to the port.
+    const junction = model.junctions['return-junction'];
+    if (junction) {
+      const port = model.components.wp.ports.return, origin = model.components.wp.origin, toward = port.direction === 'left' ? 'right' : 'left';
+      // In front of the port, or the nearest place beside it where both tank
+      // returns can arrive on free legs (the valve usually sits just above the
+      // port). Each return prefers to arrive from its own tank's side.
+      const vectors = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
+      // Painted areas and the first 24 units in front of every port.
+      const areas = Object.values(model.components).flatMap((b) => [...(b.routingAreas || []).map((r) => ({ x: b.origin.x + r.x, y: b.origin.y + r.y, width: r.width, height: r.height })),
+        ...(b.routingAreas ? Object.values(b.ports).filter((q) => vectors[q.direction] && q !== port).map((q) => {
+          const x = b.origin.x + q.x, y = b.origin.y + q.y, [dx, dy] = vectors[q.direction];
+          return { x: Math.min(x, x + dx * 24), y: Math.min(y, y + dy * 24), width: Math.abs(dx * 24), height: Math.abs(dy * 24) };
+        }) : [])]);
+      const clear = (x0, y0, x1, y1) => areas.every((r) => Math.max(x0, x1) < r.x - 20 || Math.min(x0, x1) > r.x + r.width + 20 || Math.max(y0, y1) < r.y - 20 || Math.min(y0, y1) > r.y + r.height + 20);
+      const px = origin.x + port.x, py = origin.y + port.y, sign = port.direction === 'left' ? -1 : 1, away = port.direction;
+      const end = (id) => { const [owner, name] = model.connections[id].from.split('.'), b = model.components[owner]; return b.origin.y + b.ports[name].y; };
+      const choose = (x, y) => {
+        if (!clear(x, y, x, y)) return null;
+        const open = ['top', 'bottom', away].filter((d) => clear(x, y, x + vectors[d][0] * 40, y + vectors[d][1] * 40));
+        const wish = (dy) => [dy < 0 ? 'top' : 'bottom', away, dy < 0 ? 'bottom' : 'top'].filter((d) => open.includes(d));
+        const upper = wish(end('wp-upper-return') - y), lower = wish(end('wp-lower-return') - y);
+        for (const u of upper) for (const l of lower) if (u !== l) return { x, y, upper: u, lower: l };
+        return null;
+      };
+      const spot = [0, 10, -10, 20, -20, 30, -30, 40, -40, 50, -50, 60, -60].flatMap((dy) => [40, 50, 60].map((dx) => [px + sign * dx, py + dy]))
+        .reduce((found, [x, y]) => found || choose(x, y), null) || { x: px + sign * 40, y: py, upper: 'top', lower: 'bottom' };
+      junction.x = spot.x; junction.y = spot.y;
+      const { upper, lower } = spot;
+      model.connections['wp-upper-return'].endDirection = upper;
+      model.connections['wp-lower-return'].endDirection = lower;
+      model.connections['wp-return'].startDirection = toward;
+      model.connections['wp-return'].routingPolicy = 'external';
+    }
   }
   // The temperature legend belongs to the fresh water module.
   model.legendOffset = { x: fm.origin.x - fm.baseOrigin.x, y: fm.origin.y - fm.baseOrigin.y };
@@ -1553,7 +1627,7 @@ function resolveLegacyWpHeatingIncidences(model) {
 // Resolve model references without mutating geometry or confusing bounds with obstacles.
 function routeDiagramConnections(model, ids, options = {}) {
   const result = {}, candidates = [];
-  const primary = ['fm-supply', 'fm-return', 'wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'];
+  const primary = ['fm-supply', 'fm-return', ...wpPrimaryIds(model)];
   // The source pipes may accompany the primary batch (layouts only).
   const sourceIds = ['source-in', 'source-out'], batch = ids.filter(id => !sourceIds.includes(id));
   if (model.components.wp && model.components.fm && ids.some(id => primary.includes(id)) &&
@@ -1563,7 +1637,7 @@ function routeDiagramConnections(model, ids, options = {}) {
   }
   const resolve = ref => {
     const j = model.junctions[ref];
-    if (j) return { x: j.x, y: j.y, medium: j.medium, ref };
+    if (j) return { x: j.x, y: j.y, medium: j.medium, ref, owner: ref, junction: true };
     const dot = ref.lastIndexOf('.'), owner = ref.slice(0, dot), c = model.components[owner], p = c && c.ports[ref.slice(dot + 1)];
     return p && { x: c.origin.x + p.x, y: c.origin.y + p.y, direction: p.direction, medium: p.medium, role: p.role, owner, ref };
   };
@@ -1586,10 +1660,19 @@ function routeDiagramConnections(model, ids, options = {}) {
     const legend = model.legendOffset || { x: 0, y: 0 };
     if (Object.keys(model.components).some(id => id.startsWith('sensor-'))) obstacles.push({ id:'legend', x: 370 + legend.x, y: 110 + legend.y, width: 90, height: 28 });
   }
+  // Layouts: junctions ending routed pipes (combined returns) keep a small
+  // area, so the pipes arrive straight and other pipes pass at a distance.
+  if (model.layoutRouting) for (const ref of new Set(ids.flatMap(id => model.connections[id] ? [model.connections[id].from, model.connections[id].to] : []))) {
+    const j = model.junctions[ref];
+    if (j) obstacles.push({ id: ref, owner: ref, x: j.x - 6, y: j.y - 6, width: 12, height: 12 });
+  }
   for (const id of ids) {
     const edge = model.connections[id];
     if (!edge) { result[id] = { status:'failed', code:'unknown-reference' }; continue; }
     const refs = [edge.from, ...(edge.via || []), edge.to], resolved = refs.map(resolve);
+    // Layouts: a junction endpoint may take a direction per connection.
+    if (edge.startDirection && resolved[0]) resolved[0] = { ...resolved[0], direction: edge.startDirection };
+    if (edge.endDirection && resolved.at(-1)) resolved[resolved.length - 1] = { ...resolved.at(-1), direction: edge.endDirection };
     if (resolved.some(p => !p)) { result[id] = { status:'failed', code:'unknown-reference' }; continue; }
     if (resolved.some(p => p.medium !== resolved[0].medium)) { result[id] = { status:'failed', code:'medium-mismatch' }; continue; }
     if (edge.routingPolicy !== 'external') { result[id] = { status:'unsupported', reason:'connection-policy' }; continue; }
@@ -1636,8 +1719,9 @@ function sequentialLayoutRoutes(candidates, obstacles) {
       // routing; it clears the port's own stub) plus a little extra.
       const escapeLead = (port, first, second) => Math.max(crossing ? 16 : 22, Math.abs(first.x - second.x) + Math.abs(first.y - second.y) + (crossing ? 0 : 6));
       const leads = others.flatMap((other) => [
-        lead(other.endpoints.from, escapeLead(other.endpoints.from, other.points[0], other.points[1]), crossing ? other.endpoints.from.owner : undefined),
-        lead(other.endpoints.to, escapeLead(other.endpoints.to, other.points.at(-1), other.points.at(-2)), crossing ? other.endpoints.to.owner : undefined)]);
+        // Pipes sharing a junction may always pass its leads.
+        lead(other.endpoints.from, escapeLead(other.endpoints.from, other.points[0], other.points[1]), crossing || other.endpoints.from.junction ? other.endpoints.from.owner : undefined),
+        lead(other.endpoints.to, escapeLead(other.endpoints.to, other.points.at(-1), other.points.at(-2)), crossing || other.endpoints.to.junction ? other.endpoints.to.owner : undefined)]);
       const routed = routeOrthogonalConnection({ from, to, vias: candidate.endpoints.vias, obstacles: [...obstacles, ...extra, ...leads], crossable, clearance:13, lead:16, astar: true });
       if (routed.status !== 'routed') return { failed: candidate.id };
       placed.push({ ...candidate, points: routed.points });
@@ -1675,7 +1759,7 @@ function sequentialLayoutRoutes(candidates, obstacles) {
 
 // Select and validate the complete routed batch before drawing any pipe.
 function preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L }) {
-  const routingIds = ['fm-supply', 'fm-return', ...(WP ? ['wp-upper-supply', 'wp-lower-supply', 'wp-upper-return', 'wp-lower-return', 'wp-valve-return'] : []),
+  const routingIds = ['fm-supply', 'fm-return', ...(WP ? wpPrimaryIds(model) : []),
     ...(model.layoutRouting && WP && model.connections['source-in'] ? ['source-in', 'source-out'] : [])];
   const movedRouting = FM && (model.layoutRouting || [...new Set([tankId, ...(SPLIT ? ['buffer-tank'] : []), 'fm', ...(WP ? ['wp', 'valve'] : [])])].some(id => { const b = model.components[id]; return b.origin.x !== b.baseOrigin.x || b.origin.y !== b.baseOrigin.y; }));
   const routes = movedRouting ? (model.layoutRoutes || routeDiagramConnections(model, routingIds)) : null;
@@ -1915,7 +1999,11 @@ function renderSupplyValvePipes({ primaryPipe, FM, model, point, SPLIT, y_bo, y_
   o += primaryPipe('wp-lower-return', separate
     ? `M206 ${y_bu}H312Q320 ${y_bu} 320 ${y_bu - 8}V${lowerReturn.y}H326`
     : `M206 ${y_bu}H302Q310 ${y_bu} 310 ${y_bu - 8}V${lowerReturn.y}`, CK, wpU, tU);
-  if (!separate) o += primaryPipe('wp-return', `M310 ${upperReturn.y}H326`, CK, wp_on);
+  if (!separate) {
+    // Layouts: the junction sits in front of the heat pump port.
+    const rj = model.junctions['return-junction'], wr = point(k['wp-return'].to);
+    o += primaryPipe('wp-return', model.layoutRouting ? `M${rj.x} ${rj.y}H${wr.x}` : `M310 ${upperReturn.y}H326`, CK, wp_on);
+  }
   // Valve to the hot-water tank (upper): bridges over the fresh-water return and the tank return.
   const fmY = FM && SPLIT ? point(k['fm-return'].to).y : y_bo - 14;
   const crossings = [...(FM && SPLIT ? [fmY] : []), y_bo].filter(y => y > y_ro + 8 && y < y_m - 18).sort((a, b) => b - a);
@@ -2473,6 +2561,8 @@ function renderValve({ WP, W, model, more, mischer, CK, CW, vb, supply }) {
   if (supply) CK = CW;   // in the supply the valve takes the supply colour
   const v = model.components.valve, d = v.ports.wp.side === 'left' ? -1 : 1;
   const vx = v.origin.x + (d > 0 ? 34 : v.bounds.width - 34), vy = v.origin.y + v.bounds.height / 2;
+  // Swapped outlets (layouts): the upper outlet feeds the buffer.
+  if (model.valveSwapped && vb !== null) vb = 1 - vb;
   return W.ventil ? `<g${more(W.ventil)}>${mischer(vx, vy, CK, vb, CW, CK, d)}</g>` : mischer(vx, vy, CK, null, CW, CK, d);
 }
 
@@ -2917,13 +3007,13 @@ class WarmwasserSchemaCard extends HTMLElement {
     const routes = layoutRoutes !== undefined ? layoutRoutes : preparePipeRoutes({ model, FM, WP, SPLIT, tankId, fmTempText, fmFlowText, wpPowerText, wpCopText, wpTemperatures, wpStatus, L });
     const primaryPipes = {};
     const primaryPipe = (id, legacyPath, color, on, duration, reverse) => {
-      const svg = rohr(routes ? routes[id].path : legacyPath, color, on, duration, reverse);
+      const svg = rohr(routes && routes[id] ? routes[id].path : legacyPath, color, on, duration, reverse);
       if (routes) { primaryPipes[id] = svg; return ''; }
       return svg;
     };
     o += renderPrimaryPipes({ primaryPipe, FM, WP, model, point, F, fm_on, c, SPLIT, y_bo, y_bu, CK, wpO, tO, wpU, tU, wp_on, y_ro, y_ru, CW, HK, QS, W, ON, QT });
     // Preserve the compiler's bridge order for whole pipe groups and animation.
-    if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => routes[a].paintOrder - routes[b].paintOrder)) o += primaryPipes[id];
+    if (routes) for (const id of Object.keys(primaryPipes).sort((a,b) => (routes[a]?.paintOrder ?? 1e9) - (routes[b]?.paintOrder ?? 1e9))) o += primaryPipes[id];
     o += renderDomesticPipes({ TW, ZK, model, point, dc, de, dh, dw, F, zirk_on, zapf });
     o += renderDomesticWater({ TW, ZK, c, model, tk, tw, F, zirk_on, zapf, more, zaehlerSym, pumpe, L, TT, FMx, S, NUM, U, ON });
     o += renderAdditionalAndSolarPipes({ K, SO, model, point, F, k_pumpe, so_on });
