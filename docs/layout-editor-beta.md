@@ -77,6 +77,8 @@ layout:
 - Das frühere Format `version: 1` wird mit einem Hinweis abgelehnt („Zurücksetzen“ oder
   neu anordnen). Ungültige Einträge melden ihren Fehlercode (`unknown-id`,
   `invalid-position`, `unknown-port`, `invalid-side`, `invalid-mode`, `out-of-range`).
+  `out-of-range` gilt nur für Koordinaten jenseits von ±5000; zum Umräumen lassen
+  sich Geräte also weit nach außen schieben.
 
 ### Umfang
 
@@ -176,6 +178,8 @@ layout:
 - The former format `version: 1` is rejected with a notice (reset or rearrange).
   Invalid entries report their error code (`unknown-id`, `invalid-position`,
   `unknown-port`, `invalid-side`, `invalid-mode`, `out-of-range`).
+  `out-of-range` applies only to coordinates beyond ±5000, so components can be
+  parked far out while rearranging.
 
 ### Scope
 

@@ -103,7 +103,7 @@ test('invalid entries, versions, ranges and configurations are reported', () => 
   assert.equal(code({ version: 2, extra: {} }), 'invalid-layout');
   assert.equal(code({ version: 2, components: { pump: { x: 1, y: 1 } } }), 'unknown-id');
   assert.equal(code({ version: 2, components: { fm: { x: 'a', y: 1 } } }), 'invalid-position');
-  assert.equal(code({ version: 2, components: { fm: { x: 5000, y: 14 } } }), 'out-of-range');
+  assert.equal(code({ version: 2, components: { fm: { x: 9000, y: 14 } } }), 'out-of-range');
   assert.equal(code({ version: 2, components: { 'sensor-0': { x: 2, y: 80 } } }), 'unsupported-configuration');
   assert.equal(code({ version: 2, ports: { 'fm.cold-water': { mode: 'auto' } } }), 'unknown-port');
   assert.equal(code({ version: 2, ports: { 'fm.supply': { mode: 'manual', side: 'top' } } }), 'invalid-side');
@@ -368,6 +368,13 @@ test('cards with the valve in the supply but without layout are drawn as before'
   const cfg = config({ wp: { leistung: 'sensor.wp', ventil_position: 'vorlauf' } });
   assert.equal(render({ ...cfg, layout_editor_beta: true }).html, render(cfg).html);
   assert.ok(render(cfg).html.includes('M310 '), 'legacy combined return');
+});
+test('components may be parked far out while rearranging', () => {
+  // The bound is absolute (±5000), not relative to the standard position (340,14).
+  const { card } = render(config(at({ fm: { x: 2500, y: 14 } })));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(render(config(at({ fm: { x: 5001, y: 14 } }))).card._layoutResult.code, 'out-of-range');
+  assert.equal(render(config(at({ fm: { x: 340, y: -5001 } }))).card._layoutResult.code, 'out-of-range');
 });
 test('a buffer above the hot-water tank takes the valve outlet on top', () => {
   const layout = { wp: { x: -175, y: 150 }, 'buffer-tank': { x: 120, y: -40 }, 'hot-tank': { x: 380, y: 260 }, fm: { x: 620, y: 200 } };

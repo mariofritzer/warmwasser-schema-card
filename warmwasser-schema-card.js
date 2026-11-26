@@ -758,7 +758,9 @@ const LAYOUT_LABELS = {
   de: { tanks: 'Beide Speicher', tank: 'Speicher', 'hot-tank': 'Warmwasserspeicher', 'buffer-tank': 'Pufferspeicher', fm: 'Frischwassermodul', wp: 'Wärmepumpe', valve: 'Umschaltventil', 'heat-source': 'Wärmequelle' },
   en: { tanks: 'Both tanks', tank: 'Tank', 'hot-tank': 'Hot-water tank', 'buffer-tank': 'Buffer tank', fm: 'Fresh water module', wp: 'Heat pump', valve: 'Diverter valve', 'heat-source': 'Heat source' },
 };
-const LAYOUT_LIMIT = 600;
+// Absolute bound for saved positions: only catches absurd values (typos), so
+// components can be parked far out while others are placed.
+const LAYOUT_LIMIT = 5000;
 const LAYOUT_NOTICE_CODES = ['legacy-version', 'unsupported-version', 'invalid-layout', 'unknown-id', 'unknown-port', 'invalid-position', 'invalid-mode', 'invalid-side', 'out-of-range'];
 // Editable keys: model component ids, plus `tanks` for both separate tanks.
 // Heat pump pipes of the routed batch. With the valve in the supply the valve
@@ -786,7 +788,7 @@ function parseLayout(c, model) {
     if (!movable.has(id)) return fail('unsupported', 'unsupported-configuration');
     if (!layoutObject(value) || !isNum(value.x) || !isNum(value.y)) return fail('invalid', 'invalid-position');
     const base = model.components[id].baseOrigin, x = Math.round(Number(value.x)), y = Math.round(Number(value.y));
-    if (Math.abs(x - base.x) > LAYOUT_LIMIT || Math.abs(y - base.y) > LAYOUT_LIMIT) return fail('invalid', 'out-of-range');
+    if (Math.abs(x) > LAYOUT_LIMIT || Math.abs(y) > LAYOUT_LIMIT) return fail('invalid', 'out-of-range');
     if (x !== base.x || y !== base.y) components[id] = { x, y };
   }
   if (layout.ports !== undefined && !layoutObject(layout.ports)) return fail('invalid', 'invalid-layout');
