@@ -51,11 +51,16 @@ layout:
 ```
 
 - **Komponenten:** `fm`, `hot-tank` und `buffer-tank` (getrennte Speicher) bzw. `tank`,
-  bei einer Luft-Wärmepumpe zusätzlich `wp` und `valve` (Umschaltventil). „Beide
+  bei einer Wärmepumpe zusätzlich `wp` und `valve` (Umschaltventil), bei einer Sole-
+  oder Wasser-Wärmepumpe auch `heat-source` (Wärmequelle: Erdsonde bzw. Brunnen). „Beide
   Speicher“ im Editor schreibt beide Speicher-Einträge. Fühlerplatten, Heizstäbe und
   Füße wandern mit ihrem Speicher. Ohne eigene Position folgt das Ventil der
   Wärmepumpe waagrecht auf die dem Speicher zugewandte Seite und bleibt auf Höhe der
-  Speicher-Rückläufe.
+  Speicher-Rückläufe; die Wärmequelle folgt der Wärmepumpe in beide Richtungen, sodass
+  die beiden Quellenleitungen gerade bleiben. Wird die Quelle einzeln verschoben, werden
+  die Leitungen um die Wärmepumpe herum geführt. Die Quellenleitungen werden wie die
+  übrigen Leitungen geroutet (mit Brücken); der Sondenbogen bei Sole bleibt in der
+  Quelle, und bei Wasser/Brunnen läuft die Fließanimation gegen die Leitungsrichtung.
 - **Anschlüsse:** Erlaubte Seiten sind im Komponentenmodell deklariert. Links oder
   rechts dürfen liegen: `fm.supply`, `fm.return`; am Speicher `fm-supply`,
   `fm-return`, `wp-supply`, `wp-return`, `lower-supply`, `lower-return`;
@@ -72,15 +77,25 @@ layout:
 - Das frühere Format `version: 1` wird mit einem Hinweis abgelehnt („Zurücksetzen“ oder
   neu anordnen). Ungültige Einträge melden ihren Fehlercode (`unknown-id`,
   `invalid-position`, `unknown-port`, `invalid-side`, `invalid-mode`, `out-of-range`).
+  `out-of-range` gilt nur für Koordinaten jenseits von ±5000; zum Umräumen lassen
+  sich Geräte also weit nach außen schieben.
 
 ### Umfang
 
 Unterstützt sind Anlagen mit Frischwassermodul, optional mit einer einfachen
-Luft-Wärmepumpe (ohne Wärmemengenzähler, SG Ready und Quellentemperaturen) und
-optional mit Heizstäben. Nicht unterstützt sind Heizkreise, Zusatzwärme, Solar,
-Zirkulation, Trinkwasser- und Legionellenanzeige sowie das Umschaltventil im Vorlauf
-(`wp.ventil_position: vorlauf`); dort bietet der Editor keine
-verschiebbaren Bauteile an. Kann eine gespeicherte Anordnung nicht dargestellt werden,
+Wärmepumpe und optional mit Heizstäben. Die Wärmepumpe darf Luft-, Sole- oder
+Wasser-Wärmepumpe sein, jeweils ohne Wärmemengenzähler und SG Ready. Bei Luft sind
+zusätzlich keine Quellentemperaturen (`quelle_ein`, `quelle_aus`) erlaubt; bei Sole
+und Wasser sind Quellentemperaturen und Quellenpumpe möglich. Nicht unterstützt sind Heizkreise, Zusatzwärme, Solar,
+Zirkulation, Trinkwasser- und Legionellenanzeige; dort bietet der Editor keine
+verschiebbaren Bauteile an. Das Umschaltventil im Vorlauf (`wp.ventil_position:
+vorlauf`) wird mit beiden Rücklauf-Anbindungen geroutet. Bei `kombiniert` liegt der
+Abzweig der Rückläufe vor dem WP-Rücklauf, an der nächsten freien Stelle. Im Layout
+speist der seitliche WP-Ausgang das Ventil gerade; das mitlaufende Ventil sitzt davor.
+Liegt der Puffer höher als der Warmwasserspeicher, versorgt der obere Ventilausgang den
+Puffer; die Stellungsanzeige des Ventils dreht mit.
+Zwischen Ventil und Speicher braucht es Platz für die Rohre; Anordnungen mit Rohren um
+andere Bauteile herum werden abgelehnt. Kann eine gespeicherte Anordnung nicht dargestellt werden,
 zeigt die Karte die Standardansicht mit einem kurzen Hinweis; die gespeicherten Werte
 bleiben erhalten.
 
@@ -88,8 +103,9 @@ bleiben erhalten.
 
 Repository mit `python3 -m http.server 8000` ausliefern und
 `http://localhost:8000/tests/helpers/layout-beta.html` öffnen. Die Seite simuliert
-Home-Assistant-Daten; Knöpfe laden Varianten mit Luft-Wärmepumpe oder Heizstäben.
-Parameter: `?selftest=1` (automatische Zeigerprüfungen), `?wp=1`, `?hs=1`,
+Home-Assistant-Daten; Knöpfe laden Varianten mit Luft-, Sole- oder Wasser-Wärmepumpe
+oder Heizstäben. Parameter: `?selftest=1` (automatische Zeigerprüfungen), `?wp=1`
+(Luft), `?wp=sole`, `?wp=wasser`, `?hs=1`,
 `?demo=<Layout-JSON>`, `?select=<Bauteil>`, `?zoom=<Schritte>`.
 
 ## English
@@ -139,10 +155,16 @@ layout:
 ```
 
 - **Components:** `fm`, `hot-tank` and `buffer-tank` (separate tanks) or `tank`, and
-  with an air heat pump also `wp` and `valve` (diverter valve). "Both tanks" in the
-  editor writes both tank entries. Sensor plates, heaters and feet move with their
-  tank. Without its own position the valve follows the heat pump horizontally to the
-  side facing the tank and stays at the height of the tank returns.
+  with a heat pump also `wp` and `valve` (diverter valve), and with a brine or water
+  heat pump also `heat-source` (ground probe or well). "Both tanks" in the editor
+  writes both tank entries. Sensor plates, heaters and feet move with their tank.
+  Without its own position the valve follows the heat pump horizontally to the side
+  facing the tank and stays at the height of the tank returns; the heat source follows
+  the heat pump in both directions, so the two source pipes stay straight. When the
+  source is moved on its own, the pipes are routed around the heat pump. The source
+  pipes are routed like the other pipes (with bridges); the probe loop of brine stays
+  inside the source, and for water/well the flow animation runs against the direction
+  of the connections.
 - **Ports:** allowed sides are declared in the component model. Allowed on the left or
   right: `fm.supply`, `fm.return`; on the tanks `fm-supply`, `fm-return`, `wp-supply`,
   `wp-return`, `lower-supply`, `lower-return`; `wp.lower-supply`, `wp.return`;
@@ -156,14 +178,24 @@ layout:
 - The former format `version: 1` is rejected with a notice (reset or rearrange).
   Invalid entries report their error code (`unknown-id`, `invalid-position`,
   `unknown-port`, `invalid-side`, `invalid-mode`, `out-of-range`).
+  `out-of-range` applies only to coordinates beyond ±5000, so components can be
+  parked far out while rearranging.
 
 ### Scope
 
-Supported are systems with a fresh water module, optionally with a simple air heat
-pump (no heat meter, SG Ready or source temperatures) and optionally with heaters. Not
+Supported are systems with a fresh water module, optionally with a simple heat pump
+and optionally with heaters. The heat pump may be an air, brine or water heat pump,
+each without heat meter and SG Ready. For air, source temperatures (`quelle_ein`,
+`quelle_aus`) are not allowed; for brine and water, source temperatures and the source
+pump are possible. Not
 supported are heating circuits, additional heat, solar, circulation, domestic water and
-legionella display, as well as the diverter valve in the supply
-(`wp.ventil_position: vorlauf`); there the editor offers no movable components. If a saved
+legionella display; there the editor offers no movable components. The diverter
+valve in the supply (`wp.ventil_position: vorlauf`) is routed with both return
+connections. With `kombiniert` the returns join at a tee in front of the heat pump
+return, at the nearest free place. In layouts the heat pump's side outlet feeds the
+valve straight; a following valve sits in front of it. With the buffer above the
+hot-water tank, the valve's upper outlet feeds the buffer; the valve indicator follows. Valve and tanks need room for
+the pipes between them; arrangements with pipes around other components are rejected. If a saved
 arrangement cannot be drawn, the card shows the standard diagram with a short notice
 and keeps the saved values.
 
@@ -171,6 +203,7 @@ and keeps the saved values.
 
 Serve the repository with `python3 -m http.server 8000` and open
 `http://localhost:8000/tests/helpers/layout-beta.html`. The page simulates Home
-Assistant data; buttons load variants with an air heat pump or heaters. Parameters:
-`?selftest=1` (automated pointer checks), `?wp=1`, `?hs=1`, `?demo=<layout JSON>`,
+Assistant data; buttons load variants with an air, brine or water heat pump or heaters.
+Parameters: `?selftest=1` (automated pointer checks), `?wp=1` (air), `?wp=sole`,
+`?wp=wasser`, `?hs=1`, `?demo=<layout JSON>`,
 `?select=<component>`, `?zoom=<steps>`.

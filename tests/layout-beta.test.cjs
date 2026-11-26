@@ -103,7 +103,7 @@ test('invalid entries, versions, ranges and configurations are reported', () => 
   assert.equal(code({ version: 2, extra: {} }), 'invalid-layout');
   assert.equal(code({ version: 2, components: { pump: { x: 1, y: 1 } } }), 'unknown-id');
   assert.equal(code({ version: 2, components: { fm: { x: 'a', y: 1 } } }), 'invalid-position');
-  assert.equal(code({ version: 2, components: { fm: { x: 5000, y: 14 } } }), 'out-of-range');
+  assert.equal(code({ version: 2, components: { fm: { x: 9000, y: 14 } } }), 'out-of-range');
   assert.equal(code({ version: 2, components: { 'sensor-0': { x: 2, y: 80 } } }), 'unsupported-configuration');
   assert.equal(code({ version: 2, ports: { 'fm.cold-water': { mode: 'auto' } } }), 'unknown-port');
   assert.equal(code({ version: 2, ports: { 'fm.supply': { mode: 'manual', side: 'top' } } }), 'invalid-side');
@@ -260,4 +260,131 @@ test('a collision names the overlapping parts', () => {
   assert.equal(card._layoutResult.code, 'collision');
   const parts = [card._layoutResult.detail.a, card._layoutResult.detail.b].map((p) => p.id).sort();
   assert.deepEqual(plain(parts), ['sensor-1', 'valve']);
+});
+
+// Brine and water heat pumps with a heat source. Canonical: heat pump (330,150),
+// heat source (382,404); its pipes leave the heat pump at the bottom.
+const withSource = (typ, components, wp = {}) => config({ wp: { leistung: 'sensor.wp', typ, quelle_ein: 'sensor.fm_temp', quelle_aus: 'sensor.fm_temp', ...wp }, ...at(components) });
+
+test('brine and water heat pumps offer the heat source; air heat pumps do not', () => {
+  for (const typ of ['sole', 'wasser']) {
+    const { card } = render(withSource(typ, { 'heat-source': { x: 560, y: 330 } }));
+    assert.equal(card._layoutResult.status, 'applied', typ);
+    assert.deepEqual(plain(card._drawnModel.components['heat-source'].origin), { x: 560, y: 330 });
+  }
+  assert.equal(render(withWp({ 'heat-source': { x: 560, y: 330 } })).card._layoutResult.code, 'unknown-id');
+  const meter = render(withSource('sole', { wp: { x: 450, y: 270 } }, { wmz: 'sensor.wp' }));
+  assert.equal(meter.card._layoutResult.code, 'unsupported-configuration');
+});
+
+test('without its own position the heat source follows the heat pump and its pipes run straight', () => {
+  for (const typ of ['sole', 'wasser']) {
+    const { card } = render(withSource(typ, { wp: { x: 450, y: 270 } }));
+    assert.equal(card._layoutResult.status, 'applied', typ);
+    const m = card._drawnModel;
+    assert.deepEqual(plain(m.components['heat-source'].origin), { x: 502, y: 524 });
+    // Nine pipes: two for the module, five for the heat pump, two for the source.
+    assert.equal(Object.keys(m.layoutRoutes).length, 9);
+    for (const id of ['source-in', 'source-out']) {
+      const route = m.layoutRoutes[id];
+      assert.equal(route.status, 'routed');
+      assert.ok(route.points.every((point) => point.x === route.points[0].x), `${typ} ${id} is a straight vertical line`);
+    }
+  }
+});
+
+test('brine draws the ground loop, well water reverses the flow animation', () => {
+  const sole = render(withSource('sole', { wp: { x: 450, y: 270 } }));
+  // The loop joins the source ports (520,660) and (550,660) and dips by 12 units.
+  assert.ok(sole.html.includes('M520 660Q520 672 535 672Q550 672 550 660'), 'ground loop');
+  assert.ok(!sole.html.includes('animation-direction:reverse'));
+  const water = render(withSource('wasser', { wp: { x: 450, y: 270 } }));
+  assert.ok(!water.html.includes('M520 660Q520 672'));
+  assert.ok(water.html.includes('animation-direction:reverse'), 'well water flows against the connection direction');
+});
+
+test('an explicit heat source position wins and the pipes route around the heat pump', () => {
+  const { card } = render(withSource('wasser', { 'heat-source': { x: 560, y: 330 } }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.ok(card._drawnModel.layoutRoutes['source-in'].points.length > 2);
+  assert.deepEqual(plain(card._drawnModel.components.wp.origin), { x: 330, y: 150 });
+});
+
+test('the heat pump and its source can move to the left of the tanks', () => {
+  for (const typ of ['sole', 'wasser']) {
+    const { card } = render(withSource(typ, { wp: { x: -260, y: 150 } }));
+    assert.equal(card._layoutResult.status, 'applied', typ);
+    const m = card._drawnModel;
+    assert.equal(m.components['heat-source'].origin.x, -208);
+    assert.equal(m.components.valve.ports.wp.side, 'left');
+  }
+});
+
+test('an overlap with the heat source names it', () => {
+  const { card } = render(withSource('sole', { 'buffer-tank': { x: 382, y: 390 } }));
+  assert.equal(card._layoutResult.code, 'collision');
+  const ids = [card._layoutResult.detail.a.id, card._layoutResult.detail.b.id];
+  assert.ok(ids.includes('heat-source'), JSON.stringify(plain(ids)));
+});
+
+test('cards with a source but without layout are drawn as before', () => {
+  const standard = render(config({ wp: { leistung: 'sensor.wp', typ: 'sole', quelle_ein: 'sensor.fm_temp' } })).html;
+  assert.equal(render(config({ wp: { leistung: 'sensor.wp', typ: 'sole', quelle_ein: 'sensor.fm_temp' }, layout_editor_beta: true })).html, standard);
+  assert.match(standard, /V381A9 9 0 0 1 400 399/);   // the fixed legacy source pipe
+});
+// Diverter valve in the supply: the heat pump feeds the valve (wp-valve-supply).
+const withSupplyValve = (components, wp = {}) => config({ wp: { leistung: 'sensor.wp', ventil_position: 'vorlauf', ...wp }, ...at(components) });
+test('the valve in the supply is routed with combined returns through a moved tee', () => {
+  for (const [x, y] of [[500, 150], [-215, 150]]) {
+    const { card, html } = render(withSupplyValve({ wp: { x, y } }));
+    assert.equal(card._layoutResult.status, 'applied', `${x},${y}`);
+    const m = card._drawnModel, tee = m.junctions['return-junction'], port = m.components.wp.ports.return;
+    assert.deepEqual(Object.keys(m.layoutRoutes).sort(), ['fm-return', 'fm-supply', 'wp-lower-return', 'wp-lower-supply', 'wp-return', 'wp-upper-return', 'wp-upper-supply', 'wp-valve-supply']);
+    // The tee sits on the heat pump's return side, 40 to 60 units in front of it.
+    const gap = (m.components.wp.origin.x + port.x - tee.x) * (port.direction === 'left' ? 1 : -1);
+    assert.ok(gap >= 40 && gap <= 60, `gap ${gap}`);
+    for (const id of ['wp-upper-return', 'wp-lower-return']) assert.deepEqual(plain(m.layoutRoutes[id].points.at(-1)), { x: tee.x, y: tee.y });
+    assert.deepEqual(plain(m.layoutRoutes['wp-return'].points[0]), { x: tee.x, y: tee.y });
+    assert.ok(html.includes(`cx="${tee.x}" cy="${tee.y}"`), 'tee drawn at the moved junction');
+    // In line with the return port: the pipe to the heat pump is straight.
+    assert.ok(m.layoutRoutes['wp-return'].points.every((p) => p.y === tee.y));
+    // The valve is fed straight from the side outlet, not over the top.
+    assert.equal(m.connections['wp-valve-supply'].from, 'wp.valve-supply');
+    assert.ok(m.layoutRoutes['wp-valve-supply'].points.every((p) => p.y === m.layoutRoutes['wp-valve-supply'].points[0].y));
+  }
+});
+test('a pipe around other components is rejected as a detour', () => {
+  // Heat pump close to the tanks: only one pipe fits between valve and tanks.
+  const { card } = render(withSupplyValve({ wp: { x: -175, y: 150 } }));
+  assert.equal(card._layoutResult.code, 'detour');
+});
+test('the valve in the supply is routed with separate returns and with a brine source', () => {
+  assert.equal(render(withSupplyValve({ wp: { x: 500, y: 150 } }, { ruecklauf_anbindung: 'getrennt' })).card._layoutResult.status, 'applied');
+  const { card } = render(withSupplyValve({ wp: { x: -215, y: 150 } }, { typ: 'sole', quelle_ein: 'sensor.fm_temp', quelle_aus: 'sensor.fm_temp' }));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(Object.keys(card._drawnModel.layoutRoutes).length, 10);
+});
+test('cards with the valve in the supply but without layout are drawn as before', () => {
+  const cfg = config({ wp: { leistung: 'sensor.wp', ventil_position: 'vorlauf' } });
+  assert.equal(render({ ...cfg, layout_editor_beta: true }).html, render(cfg).html);
+  assert.ok(render(cfg).html.includes('M310 '), 'legacy combined return');
+});
+test('components may be parked far out while rearranging', () => {
+  // The bound is absolute (±5000), not relative to the standard position (340,14).
+  const { card } = render(config(at({ fm: { x: 2500, y: 14 } })));
+  assert.equal(card._layoutResult.status, 'applied');
+  assert.equal(render(config(at({ fm: { x: 5001, y: 14 } }))).card._layoutResult.code, 'out-of-range');
+  assert.equal(render(config(at({ fm: { x: 340, y: -5001 } }))).card._layoutResult.code, 'out-of-range');
+});
+test('a buffer above the hot-water tank takes the valve outlet on top', () => {
+  const layout = { wp: { x: -175, y: 150 }, 'buffer-tank': { x: 120, y: -40 }, 'hot-tank': { x: 380, y: 260 }, fm: { x: 620, y: 200 } };
+  const { card } = render(withSupplyValve(layout, { ventil: 'sensor.top' }));
+  assert.equal(card._layoutResult.status, 'applied');
+  const m = card._drawnModel;
+  assert.equal(m.valveSwapped, true);
+  assert.equal(m.connections['wp-lower-supply'].from, 'valve.upper');
+  // Straight up to the buffer height, one bend into its port.
+  assert.equal(m.layoutRoutes['wp-lower-supply'].points.length, 5);
+  // The standard arrangement keeps the upper outlet for the hot-water tank.
+  assert.equal(render(withSupplyValve({ wp: { x: 500, y: 150 } })).card._drawnModel.valveSwapped, undefined);
 });
